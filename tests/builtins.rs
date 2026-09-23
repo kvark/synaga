@@ -155,3 +155,10 @@ fn rejects_array_length_of_a_fixed_array() {
     let msg = reject("fn f() -> u32 { let a = [1.0, 2.0]; arrayLength(a) }");
     assert!(msg.contains("mismatch"), "{msg}");
 }
+
+#[test]
+fn bitcast_reinterprets_same_width_scalars() {
+    let wgsl = roundtrip("fn f(x: f32) -> f32 { bitcast::<f32>(bitcast::<u32>(x)) }");
+    assert!(wgsl.contains("bitcast<u32>"), "{wgsl}");
+    assert!(wgsl.contains("bitcast<f32>"), "{wgsl}");
+}

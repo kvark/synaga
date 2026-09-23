@@ -117,6 +117,29 @@ fn rejects_workgroup_on_vertex() {
 }
 
 #[test]
+fn fragment_may_return_nothing() {
+    let wgsl = roundtrip(
+        r#"
+        #[fragment]
+        fn fs_main() {}
+        "#,
+    );
+    assert!(wgsl.contains("fn fs_main"), "{wgsl}");
+    assert!(!wgsl.contains("->"), "{wgsl}");
+}
+
+#[test]
+fn rejects_vertex_without_return() {
+    let msg = reject(
+        r#"
+        #[vertex]
+        fn vs_main() {}
+        "#,
+    );
+    assert!(msg.contains("return"), "{msg}");
+}
+
+#[test]
 fn rejects_missing_arg_binding() {
     let msg = reject(
         r#"

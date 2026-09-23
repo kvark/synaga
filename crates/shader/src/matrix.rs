@@ -120,3 +120,39 @@ macro_rules! square_mul {
 square_mul!(mat2x2);
 square_mul!(mat3x3);
 square_mul!(mat4x4);
+
+/// `vec4 * mat3x4 -> vec3`, the row-vector product an affine skinning matrix uses.
+impl Mul<mat3x4> for vec4 {
+    type Output = vec3;
+    #[inline]
+    fn mul(self, _rhs: mat3x4) -> vec3 {
+        crate::unimplemented_on_cpu()
+    }
+}
+
+/// `mat3x2 * vec3 -> vec2`, a 2-row matrix times a column.
+impl Mul<vec3> for mat3x2 {
+    type Output = vec2;
+    #[inline]
+    fn mul(self, _rhs: vec3) -> vec2 {
+        crate::unimplemented_on_cpu()
+    }
+}
+
+/// `mat4x3 * vec4 -> vec3`, an affine matrix times a homogeneous point.
+impl Mul<vec4> for mat4x3 {
+    type Output = vec3;
+    #[inline]
+    fn mul(self, _rhs: vec4) -> vec3 {
+        crate::unimplemented_on_cpu()
+    }
+}
+
+/// `mat4x3 * mat3x4 -> mat3x3`, the object-to-world linear part of a hit.
+impl Mul<mat3x4> for mat4x3 {
+    type Output = mat3x3;
+    #[inline]
+    fn mul(self, _rhs: mat3x4) -> mat3x3 {
+        crate::unimplemented_on_cpu()
+    }
+}

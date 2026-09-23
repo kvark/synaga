@@ -68,7 +68,6 @@ builtins! {
     Floating degrees(x);
     Floating radians(x);
     Floating step(edge, x);
-    Floating mix(x, y, a);
     Floating fma(a, b, c);
     Floating normalize(x);
     Floating reflect(i, n);
@@ -82,6 +81,12 @@ builtins! {
     Integral firstTrailingBit(x);
     Integral countLeadingZeros(x);
     Integral countTrailingZeros(x);
+}
+
+/// `mix(a, b, t)`. The factor may be a scalar while `a` and `b` are vectors.
+#[inline]
+pub fn mix<T: Floating, A>(_x: T, _y: T, _a: A) -> T {
+    unimplemented_on_cpu()
 }
 
 /// `smoothstep`, which takes its edges and the value.
@@ -219,6 +224,13 @@ packing! {
     unpack2x16snorm(u32) -> vec2;
     unpack2x16unorm(u32) -> vec2;
     unpack2x16float(u32) -> vec2;
+}
+
+/// Reinterpret the bits of `x` as `T`. `bitcast::<u32>(1.0)` is WGSL's
+/// `bitcast<u32>(1.0)`. The widths have to match: `f32` and `u32` do.
+#[inline]
+pub fn bitcast<T>(_x: impl Copy) -> T {
+    unimplemented_on_cpu()
 }
 
 /// Stop this invocation without writing anything.

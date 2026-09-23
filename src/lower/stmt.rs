@@ -393,6 +393,15 @@ fn lower_local(
     };
 
     let (value, ty) = match init {
+        // `ray_query` is not a constructible value. `ray_query::default()` is
+        // how Rust names the local; the query itself starts at `rayQueryInitialize`.
+        Some(expr) if is_ray_query_default(expr) => {
+            let ty = super::ray::parse_ray_type(ctx, "ray_query").expect("ray_query");
+            if matches!(annot, Some(want) if want != ty) {
+                return Err(Error::TypeMismatch);
+            }
+            (None, ty)
+        }
         Some(expr) => {
             let hint = annot.and_then(|ty| ctx.shape(ty).int_hint());
             let (value, value_ty) = lower_expr_hinted(ctx, function, body, expr, env, hint)?;
@@ -420,6 +429,23 @@ fn lower_local(
     }
     env.push(name, Slot::Ptr(pointer), ty);
     Ok(())
+}
+
+/// `ray_query::default()`, the checkable spelling of an uninitialized query local.
+fn is_ray_query_default(expr: &Expr) -> bool {
+    let Expr::Call(call) = expr else {
+        return false;
+    };
+    if !call.args.is_empty() {
+        return false;
+    }
+    let Expr::Path(path) = call.func.as_ref() else {
+        return false;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 2 {
+        return false;
+    }
+    path.path.segments[0].ident == "ray_query" && path.path.segments[1].ident == "default"
 }
 
 fn strip_pat(pat: &Pat) -> &Pat {

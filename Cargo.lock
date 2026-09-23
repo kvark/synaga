@@ -139,6 +139,7 @@ dependencies = [
  "once_cell",
  "rustc-hash",
  "thiserror",
+ "unicode-ident",
 ]
 
 [[package]]

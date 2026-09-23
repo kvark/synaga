@@ -129,6 +129,20 @@ fn lower_unary(
     unary: &syn::ExprUnary,
     env: &mut Env,
 ) -> Result<Typed, Error> {
+    // `*place` loads the place. Rust resource wrappers (`Workgroup<T>` and the
+    // rest) need the star to see the inner value; in the shader the name is
+    // already that value, so the star is the load.
+    if matches!(unary.op, syn::UnOp::Deref(_)) {
+        if let Some(place) = super::place::lower_place(ctx, function, body, &unary.expr, env)? {
+            return Ok((super::place::load(function, body, &place)?, place.ty));
+        }
+        let (inner, ty) = lower_expr(ctx, function, body, &unary.expr, env)?;
+        let Some(base) = ctx.pointee(ty) else {
+            return Err(Error::UnsupportedExpr("deref".into()));
+        };
+        let handle = emit(function, body, Expression::Load { pointer: inner })?;
+        return Ok((handle, base));
+    }
     let (inner, ty) = lower_expr(ctx, function, body, &unary.expr, env)?;
     let op = match unary.op {
         // Naga has no negation for matrices or unsigned integers.

@@ -161,3 +161,25 @@ fn rejects_an_unknown_format() {
     let msg = reject("static o: texture_storage_2d<Bgra4Unorm, Write> = (); fn f() -> f32 { 1.0 }");
     assert!(msg.contains("texture_storage_2d"), "{msg}");
 }
+
+#[test]
+fn names_that_end_in_a_digit_keep_it() {
+    // Naga's writer appends `_` so a later suffix stays distinct. The host
+    // matches `t_specular_f0` by that spelling, so the underscore comes back off.
+    let wgsl = roundtrip_unbound(
+        r#"
+        static t_specular_f0: texture_2d<f32> = ();
+        static samp: sampler = ();
+        fn w4(w: f32) -> vec4 { vec4(w, w, w, w) }
+        #[fragment]
+        #[output(location(0))]
+        fn fs(#[location(0)] uv: vec2) -> vec4 {
+            textureSampleLevel(t_specular_f0, samp, uv, 0.0) + w4(uv.x)
+        }
+        "#,
+    );
+    assert!(wgsl.contains("t_specular_f0"), "{wgsl}");
+    assert!(!wgsl.contains("t_specular_f0_"), "{wgsl}");
+    assert!(wgsl.contains("fn w4("), "{wgsl}");
+    assert!(!wgsl.contains("fn w4_("), "{wgsl}");
+}

@@ -226,9 +226,9 @@ fn only_rust_files_are_compiled() {
 }
 
 #[test]
-fn ray_queries_cannot_be_written_as_wgsl() {
-    // Naga's WGSL backend has no spelling for one. Better to say that than to
-    // write something wrong, and better here than at pipeline creation.
+fn ray_queries_are_written_as_wgsl_builtins() {
+    // Naga's backend cannot print a ray query. The build step rewrites it into
+    // the WGSL builtins and asks for the extension, so the file is real WGSL.
     let dir = scratch("ray");
     write(
         &dir,
@@ -251,23 +251,23 @@ fn ray_queries_cannot_be_written_as_wgsl() {
         "#,
     );
 
-    let err = Shaders::new()
+    Shaders::new()
         .dir(dir.join("shaders"))
         .bindings(Bindings::Host)
         .capabilities(synaga::naga::valid::Capabilities::RAY_QUERY)
         .emit_to(&dir.join("out"))
-        .expect_err("WGSL cannot express a ray query");
-    assert!(matches!(err.kind, BuildErrorKind::Emit(_)), "{err}");
-    assert!(err.to_string().contains("ray query"), "{err}");
+        .expect("ray query WGSL");
+    let wgsl = std::fs::read_to_string(dir.join("out").join("trace.wgsl")).unwrap();
+    assert!(wgsl.contains("enable wgpu_ray_query;"), "{wgsl}");
+    assert!(wgsl.contains("rayQueryInitialize("), "{wgsl}");
+    assert!(!wgsl.contains("fn rayQueryInitialize"), "{wgsl}");
 }
 
 #[test]
 fn an_entry_point_naga_renames_is_reported() {
-    // Naga's WGSL backend reserves names it might need to uniquify, so a name
-    // ending in a digit comes back with a `_`. A host creating a pipeline asks
-    // for an entry point by name, so a silent rename is a runtime failure at
-    // the worst possible moment. The names come from Naga's own namer, so this
-    // is what the backend did, not a reading of what it wrote.
+    // Naga appends `_` to a name that ends in a digit. The WGSL we write puts
+    // that underscore back, so the host asks for `blur3x3`, the name in the
+    // source. A collision would still be reported as a different emitted name.
     let dir = scratch("renamed");
     write(
         &dir,
@@ -293,13 +293,11 @@ fn an_entry_point_naga_renames_is_reported() {
         .iter()
         .map(|e| (e.name.as_str(), e.emitted_name.as_str()))
         .collect();
-    assert_eq!(reported, [("blur3x3", "blur3x3_"), ("blur", "blur")]);
-    assert!(shaders[0].entry_points[0].renamed());
+    assert_eq!(reported, [("blur3x3", "blur3x3"), ("blur", "blur")]);
+    assert!(!shaders[0].entry_points[0].renamed());
     assert!(!shaders[0].entry_points[1].renamed());
 
-    // The names are computed by running Naga's namer the way its WGSL backend
-    // does, rather than read out of the output -- so the output is what checks
-    // them. This is what fails if that reset ever stops matching the backend's.
+    // The emitted name is what the WGSL text actually contains.
     let wgsl = std::fs::read_to_string(dir.join("out/blur.wgsl")).expect("read wgsl");
     for entry in &shaders[0].entry_points {
         assert!(

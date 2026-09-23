@@ -104,6 +104,7 @@ macro_rules! plain {
         $(
             /// A texture or sampler with nothing to parameterise.
             #[allow(non_camel_case_types)]
+            #[derive(Clone, Copy)]
             pub struct $name;
             impl Resource for $name {
                 const BINDING: Self = $name;
@@ -143,9 +144,59 @@ storage_texture!(
 );
 
 /// A ray query, declared as a local and driven by the `rayQuery*` builtins.
-#[derive(Default)]
+///
+/// It is passed by value. The value is a marker — the query lives in the
+/// invocation — and copying it still names that same local, which is what the
+/// operations write.
+#[derive(Clone, Copy, Default)]
 #[allow(non_camel_case_types)]
 pub struct ray_query;
+
+/// Begin a query. `query` is the local the later operations name.
+#[inline]
+#[allow(non_snake_case)]
+pub fn rayQueryInitialize(
+    _query: ray_query,
+    _acceleration_structure: &acceleration_structure,
+    _desc: RayDesc,
+) {
+}
+
+/// Advance to the next candidate. `true` while one remains.
+#[inline]
+#[allow(non_snake_case)]
+pub fn rayQueryProceed(_query: ray_query) -> bool {
+    unimplemented_on_cpu()
+}
+
+/// The closest hit committed so far.
+#[inline]
+#[allow(non_snake_case)]
+pub fn rayQueryGetCommittedIntersection(_query: ray_query) -> RayIntersection {
+    unimplemented_on_cpu()
+}
+
+/// The candidate currently under consideration.
+#[inline]
+#[allow(non_snake_case)]
+pub fn rayQueryGetCandidateIntersection(_query: ray_query) -> RayIntersection {
+    unimplemented_on_cpu()
+}
+
+/// Keep the current triangle candidate as a committed hit.
+#[inline]
+#[allow(non_snake_case)]
+pub fn rayQueryConfirmIntersection(_query: ray_query) {}
+
+/// Offer a generated intersection at distance `hit_t`.
+#[inline]
+#[allow(non_snake_case)]
+pub fn rayQueryGenerateIntersection(_query: ray_query, _hit_t: f32) {}
+
+/// Stop considering candidates.
+#[inline]
+#[allow(non_snake_case)]
+pub fn rayQueryTerminate(_query: ray_query) {}
 
 /// What to trace.
 #[derive(Clone, Copy, Debug, Default)]
@@ -272,6 +323,14 @@ pub fn texture_store<F, A, C: TexelCoord>(_t: &texture_storage_2d<F, A>, _coord:
 #[inline]
 #[allow(non_snake_case)]
 pub fn textureDimensions<T>(_t: &T) -> vec2u {
+    unimplemented_on_cpu()
+}
+
+/// Size of one mip level. WGSL spells this as `textureDimensions` with another
+/// argument; Rust cannot give one name two arities.
+#[inline]
+#[allow(non_snake_case)]
+pub fn textureDimensionsLevel<T>(_t: &T, _level: i32) -> vec2u {
     unimplemented_on_cpu()
 }
 

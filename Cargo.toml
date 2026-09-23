@@ -12,7 +12,7 @@ repository = "https://github.com/kvark/synaga"
 readme = "README.md"
 
 [dependencies]
-naga = { version = "30", features = ["wgsl-out"] }
+naga = { version = "30", features = ["wgsl-out", "wgsl-in"] }
 # `span-locations` is what lets an error say which line it is about. Features
 # are additive, so this also turns it on for the copy `syn` pulls in.
 proc-macro2 = { version = "1", features = ["span-locations"] }

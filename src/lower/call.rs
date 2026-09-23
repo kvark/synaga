@@ -252,6 +252,66 @@ fn barrier(name: &str) -> Option<naga::Barrier> {
     }
 }
 
+/// `bitcast::<u32>(1.0)`: same bits, a different scalar type.
+fn bitcast_target(call: &syn::ExprCall) -> Option<&syn::Type> {
+    let Expr::Path(path) = call.func.as_ref() else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    let seg = &path.path.segments[0];
+    if seg.ident != "bitcast" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return None;
+    };
+    let mut types = args.args.iter().filter_map(|arg| match arg {
+        syn::GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    });
+    let ty = types.next()?;
+    if types.next().is_some() {
+        return None;
+    }
+    Some(ty)
+}
+
+fn lower_bitcast(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    call: &syn::ExprCall,
+    env: &mut Env,
+    target_ty: &syn::Type,
+) -> Result<Typed, Error> {
+    if call.args.len() != 1 {
+        return Err(Error::WrongArgCount("bitcast".into()));
+    }
+    let target = ctx.lower_type(target_ty)?;
+    let (value, value_ty) = lower_expr(ctx, function, body, &call.args[0], env)?;
+    let to = ctx
+        .as_scalar(target)
+        .ok_or_else(|| Error::UnsupportedCast("bitcast".into()))?;
+    let from = ctx
+        .as_scalar(value_ty)
+        .ok_or_else(|| Error::UnsupportedCast("bitcast".into()))?;
+    if from.width != to.width {
+        return Err(Error::TypeMismatch);
+    }
+    let handle = emit(
+        function,
+        body,
+        Expression::As {
+            expr: value,
+            kind: to.kind,
+            convert: None,
+        },
+    )?;
+    Ok((handle, target))
+}
+
 pub(super) fn lower_call(
     ctx: &mut Context,
     function: &mut Function,
@@ -259,6 +319,9 @@ pub(super) fn lower_call(
     call: &syn::ExprCall,
     env: &mut Env,
 ) -> Result<Typed, Error> {
+    if let Some(ty) = bitcast_target(call) {
+        return lower_bitcast(ctx, function, body, call, env, ty);
+    }
     let name = match call.func.as_ref() {
         Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
             path.path.segments[0].ident.to_string()

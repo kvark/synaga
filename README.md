@@ -85,10 +85,11 @@ drops `ValidationFlags::BINDINGS` for a host that assigns them; `validate_with`
 takes both, which is what a ray query needs (`Capabilities::RAY_QUERY`) and what
 a host validating against a real device wants anyway.
 
-`to_wgsl` refuses a module that traces a ray query — Naga's WGSL backend has no
-spelling for one and panics — with a reason rather than a panic. The module is
-still good: Naga's SPIR-V, MSL and HLSL backends handle ray queries, and a host
-taking a `naga::Module` directly never calls `to_wgsl`.
+`to_wgsl` prints a ray query as the WGSL builtins (`rayQueryInitialize` and
+the rest) and adds `enable wgpu_ray_query`. Naga's own backend has no spelling
+for the operation and panics, so the module is rewritten into calls first and
+the stand-in functions are removed from the text. A frontend that parses the
+result gets a ray query back.
 
 ### Errors
 
@@ -203,22 +204,15 @@ fails the build the way a Rust error would:
 error: sprites@0.1.0: src/shaders/tonemap.rs:20:1: `fn tonemap`: operator `-` does not apply to these operand types
 ```
 
-Naga reserves identifiers it might need to uniquify, so an entry point whose
-name ends in a digit comes out with a `_` on it. A host creating a pipeline asks
-for an entry point *by name*, so the build script says so rather than leaving it
-to be discovered at pipeline creation:
-
-```text
-warning: src/shaders/a_trous.rs: entry point `atrous3x3` is `atrous3x3_` in the
-generated WGSL, because Naga reserves names it may need to uniquify. Create the
-pipeline with `atrous3x3_`, or rename it.
-```
-
+Naga appends `_` to an identifier that ends in a digit, so a later `_1`
+stays unambiguous. That underscore is removed again when it was the only
+change, so a resource or entry point named `atrous3x3` is still `atrous3x3` in
+the WGSL and the host asks for that name. A real collision is still renamed.
 Each [`Shader`](src/build.rs) carries the whole mapping in `entry_points`,
 renamed or not. Naga's MSL, HLSL and GLSL backends hand `entry_point_names`
 back for exactly this; the WGSL one returns only a string, so the names come
-from running Naga's own `Namer` the way that backend does — the same answer
-from the same code, not a reading of the output text.
+from running Naga's own `Namer` the way that backend does, then applying the
+same underscore removal as the text.
 
 `examples/sprites` is this, working.
 

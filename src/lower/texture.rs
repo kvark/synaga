@@ -228,7 +228,10 @@ pub(super) fn texture_builtin(name: &str) -> Option<TextureOp> {
         // name two arities, so a checkable shader spells it apart.
         "textureLoadStorage" | "texture_load_storage" => TextureOp::Load,
         "textureStore" | "texture_store" => TextureOp::Store,
-        "textureDimensions" | "texture_dimensions" => TextureOp::Dimensions,
+        "textureDimensions"
+        | "texture_dimensions"
+        | "textureDimensionsLevel"
+        | "texture_dimensions_level" => TextureOp::Dimensions,
         "textureNumLevels" | "texture_num_levels" => TextureOp::NumLevels,
         "textureNumLayers" | "texture_num_layers" => TextureOp::NumLayers,
         "textureNumSamples" | "texture_num_samples" => TextureOp::NumSamples,

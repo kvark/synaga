@@ -93,6 +93,25 @@ fn ray_query_loop() {
 }
 
 #[test]
+fn ray_query_emits_wgsl() {
+    let module = trace(RAY_QUERY_SHADER);
+    let flags = naga::valid::ValidationFlags::all() ^ naga::valid::ValidationFlags::BINDINGS;
+    let info = validate_with(&module, flags, naga::valid::Capabilities::RAY_QUERY).unwrap();
+    let wgsl = to_wgsl(&module, &info).unwrap_or_else(|err| panic!("wgsl: {err}"));
+    assert!(wgsl.contains("enable wgpu_ray_query;"), "{wgsl}");
+    assert!(wgsl.contains("rayQueryInitialize("), "{wgsl}");
+    assert!(wgsl.contains("rayQueryProceed("), "{wgsl}");
+    assert!(wgsl.contains("rayQueryGetCommittedIntersection("), "{wgsl}");
+    // The stand-in functions are gone, so a frontend binds the calls to the
+    // builtins rather than to an empty definition.
+    assert!(!wgsl.contains("fn rayQueryInitialize"), "{wgsl}");
+    let parsed = naga::front::wgsl::parse_str(&wgsl)
+        .unwrap_or_else(|err| panic!("reparse: {err:?}\n{wgsl}"));
+    validate_with(&parsed, flags, naga::valid::Capabilities::RAY_QUERY)
+        .unwrap_or_else(|err| panic!("revalidate: {err}\n{wgsl}"));
+}
+
+#[test]
 fn proceed_drives_a_loop() {
     // `rayQueryProceed` produces a bool, so it can be a `while` condition.
     trace(
@@ -198,14 +217,64 @@ fn rejects_initialize_as_a_value() {
 }
 
 #[test]
-fn wgsl_output_says_it_cannot_write_a_ray_query() {
-    // Naga's WGSL backend reaches an `unreachable!()` on these, so the case is
-    // turned away with a reason instead of panicking.
+fn ray_query_inside_a_function_emits_wgsl() {
+    // The stand-in builtins have to be callable from a plain function, which
+    // means they are declared before it. An entry point is allowed to call
+    // anything, so it would not catch the ordering.
+    let module = trace(
+        r#"
+        static acc: acceleration_structure = ();
+        fn trace(o: vec3, d: vec3) -> bool {
+            let rq: ray_query;
+            rayQueryInitialize(rq, acc, RayDesc {
+                flags: 0u32, cull_mask: 0xFF, tmin: 0.0, tmax: 1.0, origin: o, dir: d,
+            });
+            rayQueryProceed(rq)
+        }
+        #[compute]
+        #[workgroup_size(1)]
+        fn main(#[builtin(local_invocation_index)] i: u32) {
+            let hit = trace(vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0));
+            let _ = hit;
+            let _ = i;
+        }
+        "#,
+    );
+    let flags = naga::valid::ValidationFlags::all() ^ naga::valid::ValidationFlags::BINDINGS;
+    let info = validate_with(&module, flags, naga::valid::Capabilities::RAY_QUERY).unwrap();
+    let wgsl = to_wgsl(&module, &info).unwrap_or_else(|err| panic!("{err}"));
+    assert!(wgsl.contains("fn trace("), "{wgsl}");
+    assert!(wgsl.contains("rayQueryProceed("), "{wgsl}");
+    assert!(!wgsl.contains("fn rayQueryProceed"), "{wgsl}");
+}
+
+#[test]
+fn ray_query_default_is_a_local() {
+    // Rust spells the query as `ray_query::default()`. It is not a value, so
+    // the local is declared and left for `rayQueryInitialize` to start.
+    trace(
+        r#"
+        static acc: acceleration_structure = ();
+        fn f(o: vec3, d: vec3) {
+            let mut rq = ray_query::default();
+            rayQueryInitialize(rq, acc, RayDesc {
+                flags: 0u32, cull_mask: 0xFF, tmin: 0.0, tmax: 1.0, origin: o, dir: d,
+            });
+            rayQueryProceed(rq);
+        }
+        "#,
+    );
+}
+
+#[test]
+fn wgsl_output_writes_a_ray_query_as_the_builtin() {
+    // Naga's backend cannot print a ray query, so the calls come back as the
+    // WGSL builtins and a frontend can read them again.
     let module = trace(RAY_QUERY_SHADER);
     let flags = naga::valid::ValidationFlags::all() ^ naga::valid::ValidationFlags::BINDINGS;
     let info = validate_with(&module, flags, naga::valid::Capabilities::RAY_QUERY).unwrap();
-    let err = to_wgsl(&module, &info).expect_err("WGSL cannot express a ray query");
-    assert!(err.to_string().contains("ray query"), "{err}");
+    let wgsl = to_wgsl(&module, &info).unwrap_or_else(|err| panic!("{err}"));
+    assert!(wgsl.contains("rayQueryInitialize("), "{wgsl}");
 }
 
 #[test]

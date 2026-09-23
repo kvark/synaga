@@ -17,6 +17,7 @@
 pub mod build;
 mod error;
 mod lower;
+mod ray_wgsl;
 
 pub use error::Error;
 pub use naga;
@@ -142,20 +143,85 @@ pub fn validate_with(
 
 /// Emit WGSL for a validated module.
 ///
-/// Naga's WGSL backend has no spelling for a ray query and panics on one, so
-/// that case is turned away first. The module is still good: Naga's SPIR-V,
-/// MSL and HLSL backends handle ray queries, and a host that takes a
-/// `naga::Module` directly never needs this function.
+/// Naga's WGSL backend has no spelling for a ray query and panics on one. A
+/// module that traces a ray is rewritten into the builtin calls WGSL does
+/// spell (`rayQueryInitialize` and the rest) before that backend runs, and the
+/// stand-in functions are removed from the text. The result asks for
+/// `enable wgpu_ray_query`, which is what a WGSL frontend needs to read those
+/// calls back as ray queries.
 pub fn to_wgsl(
     module: &naga::Module,
     info: &naga::valid::ModuleInfo,
 ) -> Result<String, naga::back::wgsl::Error> {
-    if let Some(name) = uses_ray_query(module) {
-        return Err(naga::back::wgsl::Error::Unimplemented(format!(
-            "`{name}` traces a ray query, which Naga's WGSL backend cannot write"
-        )));
+    if uses_ray_query(module).is_some() {
+        let mut module = module.clone();
+        ray_wgsl::rewrite(&mut module).map_err(naga::back::wgsl::Error::Custom)?;
+        let info = revalidate_ray(&module).map_err(naga::back::wgsl::Error::Custom)?;
+        let wgsl =
+            naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty())?;
+        return Ok(restore_digit_suffix(ray_wgsl::finish_text(wgsl)));
     }
-    naga::back::wgsl::write_string(module, info, naga::back::wgsl::WriterFlags::empty())
+    let wgsl =
+        naga::back::wgsl::write_string(module, info, naga::back::wgsl::WriterFlags::empty())?;
+    Ok(restore_digit_suffix(wgsl))
+}
+
+/// Naga's WGSL writer appends `_` to any identifier that ends in a digit, so a
+/// later numeric suffix stays separate. Resource names are matched by the host
+/// as written, so an identifier whose only change was that underscore is put back.
+pub(crate) fn restore_digit_suffix(wgsl: String) -> String {
+    let mut out = String::with_capacity(wgsl.len());
+    let mut chars = wgsl.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if is_ident_start(ch) {
+            let mut ident = String::new();
+            ident.push(ch);
+            while let Some(next) = chars.peek().copied() {
+                if is_ident_continue(next) {
+                    ident.push(next);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if let Some(kept) = ident.strip_suffix('_') {
+                if kept.ends_with(|c: char| c.is_ascii_digit()) {
+                    out.push_str(kept);
+                    continue;
+                }
+            }
+            out.push_str(&ident);
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn is_ident_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+/// The rewritten module still has unbound resources and ray-query types, so
+/// validation is the permissive host kind with every capability on.
+fn revalidate_ray(module: &naga::Module) -> Result<naga::valid::ModuleInfo, String> {
+    let flags = naga::valid::ValidationFlags::all() ^ naga::valid::ValidationFlags::BINDINGS;
+    naga::valid::Validator::new(flags, naga::valid::Capabilities::all())
+        .validate(module)
+        .map_err(|err| {
+            let mut message = err.to_string();
+            let mut source = std::error::Error::source(&err);
+            while let Some(next) = source {
+                message.push_str(": ");
+                message.push_str(&next.to_string());
+                source = next.source();
+            }
+            message
+        })
 }
 
 /// The name of the first function that traces a ray query, if any does.

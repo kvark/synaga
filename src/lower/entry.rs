@@ -253,19 +253,19 @@ pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> R
     };
 
     let result = match &item.sig.output {
+        // A fragment may write only depth, so it has nothing to return.
+        // A vertex stage still has to produce a position.
         ReturnType::Default => {
-            if stage == ShaderStage::Compute {
-                None
-            } else {
+            if stage == ShaderStage::Vertex {
                 return Err(Error::MissingReturnType(name));
             }
+            None
         }
         ReturnType::Type(_, ty) if is_unit(ty) => {
-            if stage == ShaderStage::Compute {
-                None
-            } else {
+            if stage == ShaderStage::Vertex {
                 return Err(Error::MissingReturnType(name));
             }
+            None
         }
         ReturnType::Type(_, ty) => {
             let result_ty = ctx.lower_type(ty)?;

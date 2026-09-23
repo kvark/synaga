@@ -99,7 +99,7 @@ writable!(Workgroup);
 writable!(Private);
 
 /// An atomic in a storage or workgroup buffer.
-#[derive(Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 #[allow(non_camel_case_types)]
 pub struct atomic<T>(PhantomData<T>);
 
@@ -112,16 +112,16 @@ unsafe impl<T> Send for atomic<T> {}
 
 /// An array of resources bound as one, indexed in the shader.
 #[allow(non_camel_case_types)]
-pub struct binding_array<T, const N: usize = 0>(PhantomData<T>);
+pub struct binding_array<T: ?Sized, const N: usize = 0>(PhantomData<T>);
 
-impl<T, const N: usize> Resource for binding_array<T, N> {
+impl<T: ?Sized, const N: usize> Resource for binding_array<T, N> {
     const BINDING: Self = binding_array(PhantomData);
 }
 
-unsafe impl<T, const N: usize> Sync for binding_array<T, N> {}
-unsafe impl<T, const N: usize> Send for binding_array<T, N> {}
+unsafe impl<T: ?Sized, const N: usize> Sync for binding_array<T, N> {}
+unsafe impl<T: ?Sized, const N: usize> Send for binding_array<T, N> {}
 
-impl<T, const N: usize> Index<u32> for binding_array<T, N> {
+impl<T: ?Sized, const N: usize> Index<u32> for binding_array<T, N> {
     type Output = T;
     #[inline]
     fn index(&self, index: u32) -> &T {
@@ -129,7 +129,7 @@ impl<T, const N: usize> Index<u32> for binding_array<T, N> {
     }
 }
 
-impl<T, const N: usize> Index<usize> for binding_array<T, N> {
+impl<T: ?Sized, const N: usize> Index<usize> for binding_array<T, N> {
     type Output = T;
     #[inline]
     fn index(&self, index: usize) -> &T {
@@ -137,7 +137,7 @@ impl<T, const N: usize> Index<usize> for binding_array<T, N> {
     }
 }
 
-impl<T, const N: usize> IndexMut<usize> for binding_array<T, N> {
+impl<T: ?Sized, const N: usize> IndexMut<usize> for binding_array<T, N> {
     #[inline]
     fn index_mut(&mut self, index: usize) -> &mut T {
         unimplemented_on_cpu()
@@ -154,5 +154,32 @@ pub fn arrayLength<T>(_array: &[T]) -> u32 {
 /// Number of elements in a runtime-sized array.
 #[inline]
 pub fn array_length<T>(_array: &[T]) -> u32 {
+    unimplemented_on_cpu()
+}
+
+/// Read an atomic. The argument is the atomic itself: the operation can only
+/// mean that storage, so the `&` WGSL writes is left off.
+#[inline]
+#[allow(non_snake_case)]
+pub fn atomicLoad<T>(_atomic: atomic<T>) -> T {
+    unimplemented_on_cpu()
+}
+
+/// Store `value` into an atomic.
+#[inline]
+#[allow(non_snake_case)]
+pub fn atomicStore<T>(_atomic: atomic<T>, _value: T) {}
+
+/// Add `value` and return what was there.
+#[inline]
+#[allow(non_snake_case)]
+pub fn atomicAdd<T>(_atomic: atomic<T>, _value: T) -> T {
+    unimplemented_on_cpu()
+}
+
+/// Subtract `value` and return what was there.
+#[inline]
+#[allow(non_snake_case)]
+pub fn atomicSub<T>(_atomic: atomic<T>, _value: T) -> T {
     unimplemented_on_cpu()
 }

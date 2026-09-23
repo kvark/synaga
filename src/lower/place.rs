@@ -41,6 +41,10 @@ pub(super) fn lower_place(
     match expr {
         Expr::Paren(inner) => lower_place(ctx, function, body, &inner.expr, env),
         Expr::Group(inner) => lower_place(ctx, function, body, &inner.expr, env),
+        // `*slot` is the slot. Rust writes it to dereference a resource wrapper.
+        Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+            lower_place(ctx, function, body, &unary.expr, env)
+        }
         Expr::Path(path) => {
             let Some(ident) = path.path.get_ident() else {
                 return Ok(None);

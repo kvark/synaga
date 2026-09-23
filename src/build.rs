@@ -346,6 +346,7 @@ impl Shaders {
         let _ = writeln!(
             generated,
             "\n/// Every shader here, as `(module name, WGSL)`.\n\
+             #[allow(dead_code)]\n\
              pub const ALL: [(&str, &str); {}] = [{}];",
             shaders.len(),
             shaders
@@ -439,16 +440,21 @@ impl Shaders {
 
 /// What each entry point is called on both sides of the WGSL backend.
 ///
-/// Naga reserves identifiers it might need to uniquify -- a name ending in a
-/// digit would be ambiguous once it appends `_1` -- so `atrous3x3` comes out as
-/// `atrous3x3_`. The shader is correct either way, but a host creates a pipeline
-/// by entry point name, so the difference has to reach the caller.
+/// Naga reserves identifiers it might need to uniquify. A name that only gained
+/// the `_` it appends to something already ending in a digit is written back,
+/// so `atrous3x3` stays `atrous3x3`. A real collision still comes out as
+/// `name_1`. A host creates a pipeline by entry point name, so that difference
+/// has to reach the caller.
 ///
 /// The MSL, HLSL and GLSL backends hand back `entry_point_names` for exactly
 /// this. The WGSL one returns only a string: its `names` map is private and
 /// `finish` drops it. But the namer that fills that map is public, and the
 /// backend's own `reset` is these six arguments, so this asks the same question
 /// of the same code rather than reading the output text back.
+pub fn entry_point_names(module: &naga::Module) -> Vec<EntryPoint> {
+    entry_points(module)
+}
+
 fn entry_points(module: &naga::Module) -> Vec<EntryPoint> {
     let mut names = naga::FastHashMap::default();
     naga::proc::Namer::default().reset(
@@ -467,7 +473,9 @@ fn entry_points(module: &naga::Module) -> Vec<EntryPoint> {
         .enumerate()
         .map(|(index, entry)| EntryPoint {
             name: entry.name.clone(),
-            emitted_name: names[&naga::proc::NameKey::EntryPoint(index as u16)].clone(),
+            emitted_name: crate::restore_digit_suffix(
+                names[&naga::proc::NameKey::EntryPoint(index as u16)].clone(),
+            ),
         })
         .collect()
 }
