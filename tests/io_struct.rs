@@ -1,3 +1,4 @@
+#![cfg(feature = "wgsl")]
 //! Structs carrying their own `#[location]` / `#[builtin]` bindings: the
 //! vertex-output / fragment-input shape every real shader is written in.
 

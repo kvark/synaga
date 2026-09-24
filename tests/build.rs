@@ -53,13 +53,13 @@ fn generates_a_constant_per_module() {
 
     let generated = std::fs::read_to_string(dir.join("out/shaders.rs")).expect("read generated");
     assert!(
-        generated.contains("pub const TRIANGLE: &str"),
+        generated.contains("pub const TRIANGLE: &[u8]"),
         "{generated}"
     );
-    assert!(generated.contains("pub const SOLID: &str"), "{generated}");
+    assert!(generated.contains("pub const SOLID: &[u8]"), "{generated}");
 
-    let wgsl = std::fs::read_to_string(dir.join("out/triangle.wgsl")).expect("read wgsl");
-    assert!(wgsl.contains("@vertex"), "{wgsl}");
+    let ir = std::fs::read_to_string(dir.join("out/triangle.json")).expect("read ir");
+    assert!(ir.contains("\"vs\""), "{ir}");
 }
 
 #[test]
@@ -90,8 +90,8 @@ fn a_prelude_is_shared_and_not_compiled_alone() {
     let names: Vec<&str> = shaders.iter().map(|s| s.constant.as_str()).collect();
     assert_eq!(names, ["GREY"]);
 
-    let wgsl = std::fs::read_to_string(dir.join("out/grey.wgsl")).expect("read wgsl");
-    assert!(wgsl.contains("fn luminance"), "{wgsl}");
+    let ir = std::fs::read_to_string(dir.join("out/grey.json")).expect("read ir");
+    assert!(ir.contains("luminance"), "{ir}");
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn what_a_module_does_not_use_is_pruned() {
 
     // Not merely untidy: a host that binds by name would have to find
     // something to bind an unused `camera` to.
-    let pruned = std::fs::read_to_string(out.join("solid.wgsl")).expect("read wgsl");
+    let pruned = std::fs::read_to_string(out.join("solid.json")).expect("read ir");
     assert!(!pruned.contains("camera"), "{pruned}");
     assert!(!pruned.contains("unused_helper"), "{pruned}");
 
@@ -131,7 +131,7 @@ fn what_a_module_does_not_use_is_pruned() {
         .prune(false)
         .emit_to(&kept_dir)
         .expect("emit");
-    let kept = std::fs::read_to_string(kept_dir.join("solid.wgsl")).expect("read wgsl");
+    let kept = std::fs::read_to_string(kept_dir.join("solid.json")).expect("read ir");
     assert!(kept.contains("camera"), "{kept}");
 }
 
@@ -226,9 +226,8 @@ fn only_rust_files_are_compiled() {
 }
 
 #[test]
-fn ray_queries_are_written_as_wgsl_builtins() {
-    // Naga's backend cannot print a ray query. The build step rewrites it into
-    // the WGSL builtins and asks for the extension, so the file is real WGSL.
+fn ray_queries_stay_in_the_module() {
+    // The serialized module keeps the ray query. Nothing on this path prints WGSL.
     let dir = scratch("ray");
     write(
         &dir,
@@ -256,19 +255,19 @@ fn ray_queries_are_written_as_wgsl_builtins() {
         .bindings(Bindings::Host)
         .capabilities(synaga::naga::valid::Capabilities::RAY_QUERY)
         .emit_to(&dir.join("out"))
-        .expect("ray query WGSL");
-    let wgsl = std::fs::read_to_string(dir.join("out").join("trace.wgsl")).unwrap();
-    assert!(wgsl.contains("enable wgpu_ray_query;"), "{wgsl}");
-    assert!(wgsl.contains("rayQueryInitialize("), "{wgsl}");
-    assert!(!wgsl.contains("fn rayQueryInitialize"), "{wgsl}");
+        .expect("ray query module");
+    let ir = std::fs::read_to_string(dir.join("out").join("trace.json")).unwrap();
+    assert!(ir.contains("RayQuery"), "{ir}");
+    assert!(
+        ir.contains("acceleration_structure") || ir.contains("AccelerationStructure"),
+        "{ir}"
+    );
 }
 
 #[test]
-fn an_entry_point_naga_renames_is_reported() {
-    // Naga appends `_` to a name that ends in a digit. The WGSL we write puts
-    // that underscore back, so the host asks for `blur3x3`, the name in the
-    // source. A collision would still be reported as a different emitted name.
-    let dir = scratch("renamed");
+fn entry_point_names_are_the_source_names() {
+    // The IR keeps the name from the source, including one that ends in a digit.
+    let dir = scratch("names");
     write(
         &dir,
         "blur.rs",
@@ -287,25 +286,16 @@ fn an_entry_point_naga_renames_is_reported() {
         .dir(dir.join("shaders"))
         .emit_to(&dir.join("out"))
         .expect("emit");
-    // Every entry point is reported, renamed or not.
-    let reported: Vec<(&str, &str)> = shaders[0]
+    let reported: Vec<&str> = shaders[0]
         .entry_points
         .iter()
-        .map(|e| (e.name.as_str(), e.emitted_name.as_str()))
+        .map(|e| e.name.as_str())
         .collect();
-    assert_eq!(reported, [("blur3x3", "blur3x3"), ("blur", "blur")]);
-    assert!(!shaders[0].entry_points[0].renamed());
-    assert!(!shaders[0].entry_points[1].renamed());
+    assert_eq!(reported, ["blur3x3", "blur"]);
 
-    // The emitted name is what the WGSL text actually contains.
-    let wgsl = std::fs::read_to_string(dir.join("out/blur.wgsl")).expect("read wgsl");
-    for entry in &shaders[0].entry_points {
-        assert!(
-            wgsl.contains(&format!("fn {}(", entry.emitted_name)),
-            "no `fn {}(` in:\n{wgsl}",
-            entry.emitted_name
-        );
-    }
+    let ir = std::fs::read_to_string(dir.join("out/blur.json")).expect("read ir");
+    assert!(ir.contains("blur3x3"), "{ir}");
+    assert!(ir.contains("\"blur\""), "{ir}");
 }
 
 #[test]
@@ -322,7 +312,7 @@ fn the_generated_module_lists_every_shader() {
     let generated = std::fs::read_to_string(dir.join("out/shaders.rs")).expect("read generated");
     assert!(
         generated.contains(
-            r#"pub const ALL: [(&str, &str); 2] = [("solid", SOLID), ("triangle", TRIANGLE), ];"#
+            r#"pub const ALL: [(&str, &[u8]); 2] = [("solid", SOLID), ("triangle", TRIANGLE), ];"#
         ),
         "{generated}"
     );

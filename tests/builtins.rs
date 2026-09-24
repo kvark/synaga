@@ -1,3 +1,4 @@
+#![cfg(feature = "wgsl")]
 //! The rest of WGSL's builtin surface: data packing, relational folds,
 //! barriers, `discard`, atomics, and the memory spaces that are not resources.
 

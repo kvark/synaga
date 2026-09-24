@@ -85,11 +85,11 @@ drops `ValidationFlags::BINDINGS` for a host that assigns them; `validate_with`
 takes both, which is what a ray query needs (`Capabilities::RAY_QUERY`) and what
 a host validating against a real device wants anyway.
 
-`to_wgsl` prints a ray query as the WGSL builtins (`rayQueryInitialize` and
-the rest) and adds `enable wgpu_ray_query`. Naga's own backend has no spelling
-for the operation and panics, so the module is rewritten into calls first and
-the stand-in functions are removed from the text. A frontend that parses the
-result gets a ray query back.
+The module is the product. `to_wgsl` is `feature = "wgsl"`, for a client that
+wants to read the shader as text. It prints a ray query as the WGSL builtins
+(`rayQueryInitialize` and the rest) and adds `enable wgpu_ray_query`. Naga's
+own backend has no spelling for the operation and panics, so the module is
+rewritten into calls first and the stand-in functions are removed from the text.
 
 ### Errors
 
@@ -192,27 +192,21 @@ mod shaders {
     include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
 }
 
-let wgsl: &str = shaders::SPRITE;
+let module: naga::Module = serde_json::from_slice(shaders::SPRITE).unwrap();
 ```
 
-One `pub const` per module, named after the file, plus an `ALL` table of
-`(name, wgsl)` for a host that hands every shader to the same place. Cargo
-re-runs the build when any shader changes, and a shader that does not compile
-fails the build the way a Rust error would:
+One `pub const` per module, named after the file: the JSON from Naga's
+`serialize` feature. `ALL` is `(name, bytes)` for a host that hands every
+shader to the same place. Cargo re-runs the build when any shader changes, and
+a shader that does not compile fails the build the way a Rust error would:
 
 ```text
 error: sprites@0.1.0: src/shaders/tonemap.rs:20:1: `fn tonemap`: operator `-` does not apply to these operand types
 ```
 
-Naga appends `_` to an identifier that ends in a digit, so a later `_1`
-stays unambiguous. That underscore is removed again when it was the only
-change, so a resource or entry point named `atrous3x3` is still `atrous3x3` in
-the WGSL and the host asks for that name. A real collision is still renamed.
-Each [`Shader`](src/build.rs) carries the whole mapping in `entry_points`,
-renamed or not. Naga's MSL, HLSL and GLSL backends hand `entry_point_names`
-back for exactly this; the WGSL one returns only a string, so the names come
-from running Naga's own `Namer` the way that backend does, then applying the
-same underscore removal as the text.
+Entry point names in the module are the names from the source. A pipeline asks
+for `atrous3x3` if that is what the function is called. [`entry_point_names`](src/build.rs)
+lists them.
 
 `examples/sprites` is this, working.
 
@@ -221,8 +215,8 @@ same underscore removal as the text.
 Add [`synaga-shader`](crates/shader) as a dependency and a shader module is
 an ordinary Rust module: `mod shaders;` like any other, `rustc` type-checks it,
 `cargo fmt` formats it, and rust-analyzer understands it. The build script
-reads the same files as text and transpiles them, so each one is compiled
-twice — once to be checked, once to become WGSL.
+reads the same files as text and lowers them, so each one is compiled
+twice — once to be checked, once to become a Naga module.
 
 ```rust,ignore
 use synaga_shader::*;
@@ -294,11 +288,11 @@ by name and would otherwise have to find something to bind an unused uniform to.
 ### Or call it directly
 
 ```rust
-use synaga::{parse_str, to_wgsl, validate};
+use synaga::{parse_str, validate};
 
 let module = parse_str("fn add(a: f32, b: f32) -> f32 { a + b }")?;
-let info = validate(&module)?;
-println!("{}", to_wgsl(&module, &info)?);
+validate(&module)?;
+// Printing WGSL is `synaga::to_wgsl`, and it needs `features = ["wgsl"]`.
 ```
 
 ## Status

@@ -1,3 +1,4 @@
+#![cfg(feature = "wgsl")]
 //! Turn ray-query statements into ordinary calls so Naga's WGSL backend can
 //! print them.
 //!

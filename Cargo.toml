@@ -11,8 +11,14 @@ license = "MIT"
 repository = "https://github.com/kvark/synaga"
 readme = "README.md"
 
+[features]
+# Print the module as WGSL. Off unless a client asks: the IR is the product,
+# and Naga's WGSL frontend and backend are not part of producing it.
+wgsl = ["naga/wgsl-in", "naga/wgsl-out"]
+
 [dependencies]
-naga = { version = "30", features = ["wgsl-out", "wgsl-in"] }
+naga = { version = "30", features = ["serialize"] }
+serde_json = "1"
 # `span-locations` is what lets an error say which line it is about. Features
 # are additive, so this also turns it on for the copy `syn` pulls in.
 proc-macro2 = { version = "1", features = ["span-locations"] }

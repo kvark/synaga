@@ -1,3 +1,4 @@
+#![cfg(feature = "wgsl")]
 //! Functions that hand nothing back, and functions that write through their
 //! arguments.
 
@@ -72,9 +73,10 @@ fn out_parameter() {
     // Writes land through the pointer…
     assert!(wgsl.contains("(*rng).seed = "), "{wgsl}");
     // …a name that is already a pointer passes straight through…
-    assert!(wgsl.contains("random_u32_(rng_1)"), "{wgsl}");
-    // …and a fresh borrow takes the address.
-    assert!(wgsl.contains("random_f32_((&rng_2))"), "{wgsl}");
+    assert!(wgsl.contains("random_u32(rng_1)"), "{wgsl}");
+    // …and a fresh borrow takes the address. `random_f32` ends in a digit;
+    // the optional WGSL printer puts that source name back.
+    assert!(wgsl.contains("random_f32((&rng_2))"), "{wgsl}");
 }
 
 #[test]

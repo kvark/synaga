@@ -1,3 +1,4 @@
+#![cfg(feature = "wgsl")]
 //! One realistic multi-stage shader, exercised end to end.
 //!
 //! The per-feature tests each pin down one rule; this one checks they still

@@ -1,3 +1,4 @@
+#![cfg(feature = "wgsl")]
 //! The spelling that is also valid Rust.
 //!
 //! A shader written this way is checked twice: `rustc` type-checks the module

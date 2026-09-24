@@ -1,3 +1,4 @@
+#![cfg(feature = "wgsl")]
 //! `[T; N]` and `[T]` — the latter being what a storage buffer holds.
 
 mod common;

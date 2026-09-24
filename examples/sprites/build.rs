@@ -1,4 +1,4 @@
-//! Turns `src/shaders/*.rs` into WGSL before the crate is compiled.
+//! Turns `src/shaders/*.rs` into a serialized Naga module before the crate is compiled.
 
 fn main() {
     synaga::build::Shaders::new()

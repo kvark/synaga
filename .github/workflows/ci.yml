@@ -18,8 +18,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
+      # The WGSL printer is optional. These tests read what it prints.
+      - run: cargo test --workspace --features wgsl
       # The example crate wires a build script up for real: its shader modules
-      # are type-checked by rustc and transpiled by the build script, so this
+      # are type-checked by rustc and serialized by the build script, so this
       # failing means the documented workflow is broken however green the unit
       # tests are.
       - run: cargo run -p sprites
@@ -37,6 +39,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --features wgsl -- -D warnings
 
   msrv:
     runs-on: ubuntu-latest
@@ -45,3 +48,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.87.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets
+      - run: cargo check --workspace --all-targets --features wgsl

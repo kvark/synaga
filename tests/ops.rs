@@ -1,3 +1,4 @@
+#![cfg(feature = "wgsl")]
 //! Operator typing: what the frontend accepts, and what it turns away before
 //! Naga's validator would have to.
 

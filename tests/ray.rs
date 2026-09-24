@@ -1,3 +1,4 @@
+#![cfg(feature = "wgsl")]
 //! Inline ray tracing: `ray_query`, `acceleration_structure`, and the
 //! operations on them.
 //!

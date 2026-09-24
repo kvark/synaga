@@ -1,3 +1,4 @@
+#![cfg(feature = "wgsl")]
 mod common;
 
 use common::*;

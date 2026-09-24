@@ -17,6 +17,7 @@
 pub mod build;
 mod error;
 mod lower;
+#[cfg(feature = "wgsl")]
 mod ray_wgsl;
 
 pub use error::Error;
@@ -143,12 +144,13 @@ pub fn validate_with(
 
 /// Emit WGSL for a validated module.
 ///
-/// Naga's WGSL backend has no spelling for a ray query and panics on one. A
-/// module that traces a ray is rewritten into the builtin calls WGSL does
-/// spell (`rayQueryInitialize` and the rest) before that backend runs, and the
-/// stand-in functions are removed from the text. The result asks for
-/// `enable wgpu_ray_query`, which is what a WGSL frontend needs to read those
-/// calls back as ray queries.
+/// This is optional (`feature = "wgsl"`). The module is the product; printing
+/// it is a client's choice. Naga's WGSL backend has no spelling for a ray
+/// query and panics on one, so a module that traces a ray is rewritten into
+/// the builtin calls (`rayQueryInitialize` and the rest) before that backend
+/// runs, and the stand-in functions are removed from the text. The result asks
+/// for `enable wgpu_ray_query`.
+#[cfg(feature = "wgsl")]
 pub fn to_wgsl(
     module: &naga::Module,
     info: &naga::valid::ModuleInfo,
@@ -169,6 +171,7 @@ pub fn to_wgsl(
 /// Naga's WGSL writer appends `_` to any identifier that ends in a digit, so a
 /// later numeric suffix stays separate. Resource names are matched by the host
 /// as written, so an identifier whose only change was that underscore is put back.
+#[cfg(feature = "wgsl")]
 pub(crate) fn restore_digit_suffix(wgsl: String) -> String {
     let mut out = String::with_capacity(wgsl.len());
     let mut chars = wgsl.chars().peekable();
@@ -198,16 +201,19 @@ pub(crate) fn restore_digit_suffix(wgsl: String) -> String {
     out
 }
 
+#[cfg(feature = "wgsl")]
 fn is_ident_start(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphabetic()
 }
 
+#[cfg(feature = "wgsl")]
 fn is_ident_continue(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphanumeric()
 }
 
 /// The rewritten module still has unbound resources and ray-query types, so
 /// validation is the permissive host kind with every capability on.
+#[cfg(feature = "wgsl")]
 fn revalidate_ray(module: &naga::Module) -> Result<naga::valid::ModuleInfo, String> {
     let flags = naga::valid::ValidationFlags::all() ^ naga::valid::ValidationFlags::BINDINGS;
     naga::valid::Validator::new(flags, naga::valid::Capabilities::all())
@@ -225,6 +231,7 @@ fn revalidate_ray(module: &naga::Module) -> Result<naga::valid::ModuleInfo, Stri
 }
 
 /// The name of the first function that traces a ray query, if any does.
+#[cfg(feature = "wgsl")]
 fn uses_ray_query(module: &naga::Module) -> Option<String> {
     fn in_block(block: &naga::Block) -> bool {
         block.iter().any(|stmt| match stmt {
@@ -252,7 +259,7 @@ fn uses_ray_query(module: &naga::Module) -> Option<String> {
         .map(|(name, _)| name)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "wgsl"))]
 mod tests {
     use super::*;
 

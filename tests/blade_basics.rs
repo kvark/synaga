@@ -1,3 +1,4 @@
+#![cfg(feature = "wgsl")]
 //! The parts of the dialect Blade-style shaders lean on: host-assigned
 //! bindings, `select`, deferred `let`, `for` over a range, and `const`.
 

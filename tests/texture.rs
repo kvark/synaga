@@ -1,3 +1,4 @@
+#![cfg(feature = "wgsl")]
 //! Textures and samplers, spelled as WGSL spells them.
 
 mod common;

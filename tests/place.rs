@@ -1,3 +1,4 @@
+#![cfg(feature = "wgsl")]
 //! Writing through a field, a component or an element — and reading through
 //! one without dragging the whole aggregate along.
 
