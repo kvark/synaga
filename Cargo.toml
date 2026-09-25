@@ -22,5 +22,5 @@ serde_json = "1"
 # `span-locations` is what lets an error say which line it is about. Features
 # are additive, so this also turns it on for the copy `syn` pulls in.
 proc-macro2 = { version = "1", features = ["span-locations"] }
-syn = { version = "2", features = ["full", "parsing"] }
+syn = { version = "2", features = ["full", "parsing", "visit"] }
 thiserror = "2"

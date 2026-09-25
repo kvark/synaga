@@ -1,4 +1,5 @@
 use core::num::NonZeroU32;
+use std::collections::HashSet;
 
 use naga::{
     AddressSpace, ArraySize, Block, Expression, Function, FunctionArgument, FunctionResult, Handle,
@@ -81,6 +82,9 @@ pub struct Context {
     /// by the global being declared. A type mentions its space at most once,
     /// and only a global asks.
     pub(super) pending_space: Option<AddressSpace>,
+    /// Locals in the function currently being lowered that are assigned or
+    /// passed as storage. Everything else can stay a value.
+    pub(super) addressed: HashSet<String>,
 }
 
 impl Context {
@@ -91,6 +95,7 @@ impl Context {
             structs: Vec::new(),
             consts: Vec::new(),
             pending_space: None,
+            addressed: HashSet::new(),
         }
     }
 
@@ -500,6 +505,7 @@ impl Context {
         lower_signature(self, &mut function, &item.sig, &mut env)?;
         let mut body = Block::new();
         env.push_scope();
+        self.addressed = stmt::addressed_names(&item.block);
         let tail = lower_block(self, &mut function, &mut body, &item.block, &mut env)?;
         env.pop_scope();
         match tail {

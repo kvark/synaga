@@ -195,7 +195,10 @@ fn lower_binary(
 
     if shift {
         splat_shift(ctx, function, body, left_ty, &mut right, &mut right_ty)?;
-    } else {
+    } else if op != BinaryOperator::Multiply {
+        // `vec * scalar` is a single Naga multiply. Splatting the scalar first
+        // forces a component-wise product, which the SPIR-V writer cannot emit
+        // as OpVectorTimesScalar.
         splat_mix(
             ctx,
             function,

@@ -1,5 +1,8 @@
+use std::collections::HashSet;
+
 use naga::{Block, Expression, Function, Handle, LocalVariable, Span, Statement, Type};
-use syn::{Block as SynBlock, Expr, Local, Pat, Stmt, Type as SynType};
+use syn::visit::{self, Visit};
+use syn::{BinOp, Block as SynBlock, Expr, Local, Pat, Stmt, Type as SynType};
 
 use super::emit::emit;
 use super::env::{Env, Slot};
@@ -413,6 +416,22 @@ fn lower_local(
         None => (None, annot.expect("checked above")),
     };
 
+    // A binding that is never assigned and never passed as storage is a value.
+    // A local for it forces a store and a reload, and that extra function
+    // memory is what Windows lavapipe crashes on or miscompiles.
+    if !ctx.addressed.contains(&name) {
+        if let Some(value) = value {
+            env.push_in(
+                name,
+                Slot::Value(value),
+                ty,
+                false,
+                naga::AddressSpace::Function,
+            );
+            return Ok(());
+        }
+    }
+
     let local_var = function.local_variables.append(
         LocalVariable {
             name: Some(name.clone()),
@@ -432,6 +451,87 @@ fn lower_local(
 }
 
 /// `ray_query::default()`, the checkable spelling of an uninitialized query local.
+/// Names assigned, borrowed, or passed as storage anywhere in `block`.
+pub(super) fn addressed_names(block: &SynBlock) -> HashSet<String> {
+    let mut found = Addressed::default();
+    found.visit_block(block);
+    found.names
+}
+
+#[derive(Default)]
+struct Addressed {
+    names: HashSet<String>,
+}
+
+impl<'ast> Visit<'ast> for Addressed {
+    fn visit_expr(&mut self, expr: &'ast Expr) {
+        match expr {
+            Expr::Assign(assign) => note_root(&assign.left, &mut self.names),
+            Expr::Binary(bin) if is_compound_assign(&bin.op) => {
+                note_root(&bin.left, &mut self.names);
+            }
+            Expr::Reference(reference) => note_root(&reference.expr, &mut self.names),
+            Expr::Call(call) if callee_takes_place(call) => {
+                if let Some(arg) = call.args.first() {
+                    note_root(arg, &mut self.names);
+                }
+            }
+            _ => {}
+        }
+        visit::visit_expr(self, expr);
+    }
+}
+
+fn is_compound_assign(op: &BinOp) -> bool {
+    matches!(
+        op,
+        BinOp::AddAssign(_)
+            | BinOp::SubAssign(_)
+            | BinOp::MulAssign(_)
+            | BinOp::DivAssign(_)
+            | BinOp::RemAssign(_)
+            | BinOp::BitAndAssign(_)
+            | BinOp::BitOrAssign(_)
+            | BinOp::BitXorAssign(_)
+            | BinOp::ShlAssign(_)
+            | BinOp::ShrAssign(_)
+    )
+}
+
+/// Ray queries, atomics, and `arrayLength` take storage rather than a value.
+fn callee_takes_place(call: &syn::ExprCall) -> bool {
+    let Expr::Path(path) = call.func.as_ref() else {
+        return false;
+    };
+    let Some(name) = path.path.get_ident() else {
+        return false;
+    };
+    let name = name.to_string();
+    name.starts_with("rayQuery")
+        || name.starts_with("ray_query_")
+        || name.starts_with("atomic")
+        || name == "arrayLength"
+        || name == "array_length"
+}
+
+fn note_root(expr: &Expr, names: &mut HashSet<String>) {
+    match expr {
+        Expr::Path(path) => {
+            if let Some(ident) = path.path.get_ident() {
+                names.insert(ident.to_string());
+            }
+        }
+        Expr::Field(field) => note_root(&field.base, names),
+        Expr::Index(index) => note_root(&index.expr, names),
+        Expr::Paren(inner) => note_root(&inner.expr, names),
+        Expr::Group(inner) => note_root(&inner.expr, names),
+        Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+            note_root(&unary.expr, names);
+        }
+        _ => {}
+    }
+}
+
 fn is_ray_query_default(expr: &Expr) -> bool {
     let Expr::Call(call) = expr else {
         return false;

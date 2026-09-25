@@ -7,7 +7,8 @@ use common::*;
 fn let_inferred() {
     let wgsl = roundtrip("fn add(a: f32, b: f32) -> f32 { let x = a + b; x }");
     assert!(wgsl.contains("fn add"), "{wgsl}");
-    assert!(wgsl.contains("var") || wgsl.contains("let"), "{wgsl}");
+    // `x` is never stored to, so it stays a value and the sum is inlined.
+    assert!(wgsl.contains("a + b"), "{wgsl}");
 }
 
 #[test]

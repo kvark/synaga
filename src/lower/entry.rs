@@ -333,6 +333,7 @@ pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> R
 
     let mut body = naga::Block::new();
     env.push_scope();
+    ctx.addressed = super::stmt::addressed_names(&item.block);
     let tail = super::stmt::lower_block(ctx, &mut function, &mut body, &item.block, &mut env)?;
     env.pop_scope();
     match tail {
