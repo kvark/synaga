@@ -30,11 +30,12 @@
 //!
 //! # These files are not part of your crate
 //!
-//! A shader module mentions `vec3`, `texture_2d<f32>`, `#[vertex]` — none of
-//! which are Rust. So the files must not be reachable from your crate root: no
-//! `mod shaders;` next to `mod` declarations that *are* compiled. Cargo never
-//! looks at a file nothing declares, so `src/shaders/` sitting there is fine,
-//! and the `.rs` extension still buys syntax highlighting and brace matching.
+//! A shader module mentions `vec3`, `texture_2d<f32>`,
+//! `#[entry_point(vertex)]` — none of which are Rust. So the files must not be
+//! reachable from your crate root: no `mod shaders;` next to `mod` declarations
+//! that *are* compiled. Cargo never looks at a file nothing declares, so
+//! `src/shaders/` sitting there is fine, and the `.rs` extension still buys
+//! syntax highlighting and brace matching.
 //!
 //! The cost is honest: `rustc` never sees these files, so they get no
 //! borrow checking and no type inference beyond what this crate does, and

@@ -19,8 +19,7 @@ pub fn encode_srgb(linear: vec3) -> vec3 {
     select(high, low, linear.cmple(vec3::splat(0.0031308)))
 }
 
-#[compute]
-#[workgroup_size(8, 8)]
+#[entry_point(compute, threads(8, 8))]
 pub fn tonemap(#[builtin(global_invocation_id)] gid: vec3u) {
     let size = textureDimensions(&hdr);
     if gid.x >= size.x || gid.y >= size.y {

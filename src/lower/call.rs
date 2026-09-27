@@ -138,9 +138,6 @@ pub(super) fn lower_call_stmt(
             body.push(Statement::Kill, Span::UNDEFINED);
             return Ok(());
         }
-        if let Some(fun) = atomic_fn(&name) {
-            return lower_atomic(ctx, function, body, call, env, &name, fun, false).map(|_| ());
-        }
     }
     match lower_call(ctx, function, body, call, env) {
         Ok(_) => Ok(()),
@@ -170,114 +167,6 @@ fn lower_array_length(
     }
     let handle = emit(function, body, Expression::ArrayLength(place.pointer))?;
     Ok((handle, ctx.intern_scalar(naga::Scalar::U32)))
-}
-
-fn atomic_fn(name: &str) -> Option<AtomicKind> {
-    use naga::AtomicFunction as Af;
-    Some(match name {
-        "atomicLoad" | "atomic_load" => AtomicKind::Load,
-        "atomicStore" | "atomic_store" => AtomicKind::Store,
-        "atomicAdd" | "atomic_add" => AtomicKind::Rmw(Af::Add),
-        "atomicSub" | "atomic_sub" => AtomicKind::Rmw(Af::Subtract),
-        "atomicAnd" | "atomic_and" => AtomicKind::Rmw(Af::And),
-        "atomicOr" | "atomic_or" => AtomicKind::Rmw(Af::InclusiveOr),
-        "atomicXor" | "atomic_xor" => AtomicKind::Rmw(Af::ExclusiveOr),
-        "atomicMin" | "atomic_min" => AtomicKind::Rmw(Af::Min),
-        "atomicMax" | "atomic_max" => AtomicKind::Rmw(Af::Max),
-        "atomicExchange" | "atomic_exchange" => AtomicKind::Rmw(Af::Exchange { compare: None }),
-        _ => return None,
-    })
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum AtomicKind {
-    Load,
-    Store,
-    Rmw(naga::AtomicFunction),
-}
-
-/// Atomics take the variable itself rather than a reference: the argument has
-/// to name storage, and there is nothing else it could mean.
-#[allow(clippy::too_many_arguments)]
-fn lower_atomic(
-    ctx: &mut Context,
-    function: &mut Function,
-    body: &mut Block,
-    call: &syn::ExprCall,
-    env: &mut Env,
-    name: &str,
-    kind: AtomicKind,
-    as_value: bool,
-) -> Result<Typed, Error> {
-    let args: Vec<&Expr> = call.args.iter().collect();
-    let want = if matches!(kind, AtomicKind::Load) {
-        1
-    } else {
-        2
-    };
-    if args.len() != want {
-        return Err(Error::WrongArgCount(name.into()));
-    }
-    let place = super::place::lower_place(ctx, function, body, args[0], env)?
-        .ok_or_else(|| Error::NotAPlace(name.into()))?;
-    let scalar = match ctx.module.types[place.ty].inner {
-        naga::TypeInner::Atomic(scalar) => scalar,
-        _ => return Err(Error::NotAnAtomic(name.into())),
-    };
-    let ty = ctx.intern_scalar(scalar);
-
-    if let AtomicKind::Load = kind {
-        let handle = emit(
-            function,
-            body,
-            Expression::Load {
-                pointer: place.pointer,
-            },
-        )?;
-        return Ok((handle, ty));
-    }
-
-    let hint = ctx.shape(ty).int_hint();
-    let (value, value_ty) = lower_expr_hinted(ctx, function, body, args[1], env, hint)?;
-    if value_ty != ty {
-        return Err(Error::TypeMismatch);
-    }
-    match kind {
-        AtomicKind::Store => {
-            if as_value {
-                return Err(Error::ValueFromStatement(name.into()));
-            }
-            body.push(
-                Statement::Store {
-                    pointer: place.pointer,
-                    value,
-                },
-                Span::UNDEFINED,
-            );
-            Ok((value, ty))
-        }
-        AtomicKind::Rmw(fun) => {
-            // The old value is produced whether or not anybody wants it.
-            let result = function.expressions.append(
-                Expression::AtomicResult {
-                    ty,
-                    comparison: false,
-                },
-                Span::UNDEFINED,
-            );
-            body.push(
-                Statement::Atomic {
-                    pointer: place.pointer,
-                    fun,
-                    value,
-                    result: Some(result),
-                },
-                Span::UNDEFINED,
-            );
-            Ok((result, ty))
-        }
-        AtomicKind::Load => unreachable!("handled above"),
-    }
 }
 
 fn barrier(name: &str) -> Option<naga::Barrier> {
@@ -430,9 +319,6 @@ pub(super) fn lower_call(
         }
         if name == "arrayLength" || name == "array_length" {
             return lower_array_length(ctx, function, body, call, env, &name);
-        }
-        if let Some(fun) = atomic_fn(&name) {
-            return lower_atomic(ctx, function, body, call, env, &name, fun, true);
         }
         if let Some(fun) = relational(&name) {
             return lower_relational(ctx, function, body, call, env, &name, fun);

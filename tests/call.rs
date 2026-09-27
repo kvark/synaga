@@ -20,7 +20,7 @@ fn call_in_entry() {
     validate_only(
         r#"
         fn scale(v: vec3, s: f32) -> vec3 { v * s }
-        #[vertex]
+        #[entry_point(vertex)]
         #[output(builtin(position))]
         fn vs_main(#[location(0)] pos: vec3) -> vec4 {
             let p = scale(pos, 2.0);
@@ -79,7 +79,7 @@ fn rejects_entry_point_clashing_with_a_function() {
     let msg = reject(
         r#"
         fn fs(a: f32) -> f32 { a }
-        #[fragment] #[output(location(0))] fn fs() -> vec4 { vec4(1.0) }
+        #[entry_point(fragment)] #[output(location(0))] fn fs() -> vec4 { vec4(1.0) }
         "#,
     );
     assert!(msg.contains("duplicate"), "{msg}");

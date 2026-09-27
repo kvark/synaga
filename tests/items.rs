@@ -21,7 +21,7 @@ fn named<'a>(sources: &[(&'a str, &'a str)]) -> Vec<Source<'a>> {
 fn a_function_may_be_called_before_it_is_defined() {
     validate_only(
         r#"
-        #[compute] #[workgroup_size(1)]
+        #[entry_point(compute, threads(1))]
         fn main() { let x = twice(1.0); }
         fn twice(a: f32) -> f32 { half(a) * 4.0 }
         fn half(a: f32) -> f32 { a * 0.5 }
@@ -36,7 +36,7 @@ fn a_struct_may_be_named_before_it_is_defined() {
         fn f(p: Later) -> f32 { p.inner.a }
         struct Later { inner: Inner }
         struct Inner { a: f32 }
-        #[compute] #[workgroup_size(1)]
+        #[entry_point(compute, threads(1))]
         fn main() { let x = f(Later { inner: Inner { a: 1.0 } }); }
         "#,
     );
@@ -48,7 +48,7 @@ fn a_const_may_use_one_defined_after_it() {
         r#"
         const LEN: u32 = TWO;
         const TWO: u32 = 2u32;
-        #[compute] #[workgroup_size(1)]
+        #[entry_point(compute, threads(1))]
         fn main() { let x: [u32; LEN] = [1u32, 2u32]; }
         "#,
     );
@@ -89,7 +89,7 @@ fn recursion_is_refused_by_name() {
 fn an_entry_point_cannot_be_called() {
     let msg = reject(
         r#"
-        #[compute] #[workgroup_size(1)]
+        #[entry_point(compute, threads(1))]
         fn main() {}
         fn helper() { main(); }
         "#,
@@ -106,7 +106,7 @@ fn modules_reach_each_other_by_use_and_by_path() {
                 r#"
                 use super::math::*;
                 use super::light::{Sun as Light, strength};
-                #[fragment]
+                #[entry_point(fragment)]
                 #[output(location(0))]
                 fn fs() -> vec4 {
                     let l = Light { dir: vec3(0.0, 1.0, 0.0) };
@@ -140,7 +140,7 @@ fn each_module_keeps_its_own_helpers() {
                 r#"
                 use super::a;
                 use super::b;
-                #[compute] #[workgroup_size(1)]
+                #[entry_point(compute, threads(1))]
                 fn main() { let x = a::run() + b::run(); }
                 "#,
             ),
@@ -174,7 +174,7 @@ fn a_name_two_globs_bring_in_is_ambiguous() {
                 r#"
                 use super::a::*;
                 use super::b::*;
-                #[compute] #[workgroup_size(1)]
+                #[entry_point(compute, threads(1))]
                 fn main() { let x = helper(); }
                 "#,
             ),
@@ -194,7 +194,7 @@ fn an_error_is_blamed_on_the_source_it_is_in() {
         &named(&[
             (
                 "main",
-                "use super::broken::f;\n#[compute] #[workgroup_size(1)]\nfn main() { let x = f(); }",
+                "use super::broken::f;\n#[entry_point(compute, threads(1))]\nfn main() { let x = f(); }",
             ),
             ("broken", "pub fn f() -> f32 {\n    nope\n}"),
         ]),
@@ -223,7 +223,7 @@ fn cfg_drops_items_and_answers_cfg_macros() {
         #[cfg(not(debug_assertions))]
         const LEVEL: u32 = 0u32;
         const CHECKED: bool = cfg!(all(debug_assertions, feature = "checks"));
-        #[compute] #[workgroup_size(1)]
+        #[entry_point(compute, threads(1))]
         fn main() {
             let checked = cfg!(any(feature = "checks", feature = "more"));
             let x = LEVEL;
@@ -286,7 +286,7 @@ fn a_glob_brings_in_only_what_its_module_has() {
                 r#"
                 use super::a::*;
                 use super::b::*;
-                #[compute] #[workgroup_size(1)]
+                #[entry_point(compute, threads(1))]
                 fn main() { let x = helper() + other(); }
                 "#,
             ),

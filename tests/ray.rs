@@ -42,8 +42,7 @@ const RAY_QUERY_SHADER: &str = r#"
         v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v)
     }
 
-    #[compute]
-    #[workgroup_size(8, 8)]
+    #[entry_point(compute, threads(8, 8))]
     fn main(#[builtin(global_invocation_id)] global_id: vec3<u32>) {
         let target_size = textureDimensions(output);
         if any(global_id.xy > target_size) {
@@ -232,8 +231,7 @@ fn ray_query_inside_a_function_emits_wgsl() {
             });
             rayQueryProceed(rq)
         }
-        #[compute]
-        #[workgroup_size(1)]
+        #[entry_point(compute, threads(1))]
         fn main(#[builtin(local_invocation_index)] i: u32) {
             let hit = trace(vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0));
             let _ = hit;

@@ -88,7 +88,7 @@ fn store_through_a_storage_global() {
         r#"
         struct Particle { pos: vec3, life: f32 }
         #[group(0)] #[binding(0)] #[storage(read_write)] static p: Particle = ();
-        #[compute] #[workgroup_size(1)]
+        #[entry_point(compute, threads(1))]
         fn cs() { p.life = 0.0; p.pos.y = 1.0; }
         "#,
     );
@@ -116,7 +116,7 @@ fn rejects_store_to_a_read_only_global() {
         r#"
         struct S { a: f32 }
         #[group(0)] #[binding(0)] static u: S = ();
-        #[compute] #[workgroup_size(1)] fn cs() { u.a = 1.0; }
+        #[entry_point(compute, threads(1))] fn cs() { u.a = 1.0; }
         "#,
     );
     assert!(msg.contains("read-only"), "{msg}");

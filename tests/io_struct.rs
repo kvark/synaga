@@ -12,12 +12,12 @@ const VS_FS: &str = r#"
         #[location(0)] uv: vec2,
     }
 
-    #[vertex]
+    #[entry_point(vertex)]
     fn vs(#[location(0)] p: vec4, #[location(1)] uv: vec2) -> VsOut {
         VsOut { pos: p, uv }
     }
 
-    #[fragment]
+    #[entry_point(fragment)]
     #[output(location(0))]
     fn fs(varying: VsOut) -> vec4 {
         vec4(varying.uv, 0.0, 1.0)
@@ -44,7 +44,7 @@ fn multiple_render_targets() {
             #[location(1)] normal: vec4,
         }
 
-        #[fragment]
+        #[entry_point(fragment)]
         fn fs() -> FsOut {
             FsOut { color: vec4(1.0), normal: vec4(0.0) }
         }
@@ -61,7 +61,7 @@ fn integer_varying_needs_flat() {
             #[builtin(position)] pos: vec4,
             #[location(0)] id: u32,
         }
-        #[vertex]
+        #[entry_point(vertex)]
         fn vs(#[location(0)] p: vec4) -> VsOut { VsOut { pos: p, id: 0u32 } }
         "#,
     );
@@ -76,7 +76,7 @@ fn integer_varying_with_flat() {
             #[builtin(position)] pos: vec4,
             #[location(0)] #[flat] id: u32,
         }
-        #[vertex]
+        #[entry_point(vertex)]
         fn vs(#[location(0)] p: vec4) -> VsOut { VsOut { pos: p, id: 0u32 } }
         "#,
     );
@@ -107,7 +107,7 @@ fn rejects_redundant_output_attribute() {
     let msg = reject(
         r#"
         struct VsOut { #[builtin(position)] pos: vec4 }
-        #[vertex]
+        #[entry_point(vertex)]
         #[output(location(0))]
         fn vs() -> VsOut { VsOut { pos: vec4(0.0) } }
         "#,

@@ -54,7 +54,7 @@ fn workgroup_memory_and_barrier() {
     let wgsl = roundtrip_unbound(
         r#"
         #[workgroup] static scratch: [f32; 64] = ();
-        #[compute] #[workgroup_size(64)]
+        #[entry_point(compute, threads(64))]
         fn cs(#[builtin(local_invocation_index)] i: u32) {
             scratch[i] = 1.0;
             workgroupBarrier();
@@ -84,7 +84,7 @@ fn rejects_a_binding_on_workgroup_memory() {
 fn discard_in_a_fragment_shader() {
     let wgsl = roundtrip_unbound(
         r#"
-        #[fragment] #[output(location(0))]
+        #[entry_point(fragment)] #[output(location(0))]
         fn fs(#[location(0)] c: vec4) -> vec4 { if c.a < 0.5 { discard(); } c }
         "#,
     );
@@ -99,45 +99,78 @@ fn rejects_discard_as_a_value() {
 
 #[test]
 fn atomics() {
-    // The variable is passed directly; there is nothing else the argument to an
-    // atomic could mean, so the `&` WGSL requires is left out.
+    // `synaga_shader::AtomicU32`: the standard methods, without an `Ordering`.
+    // They take `&self`, so a buffer changed only through its atomics needs
+    // no `static mut`.
     let wgsl = roundtrip_unbound(
         r#"
-        #[storage(read_write)] static counter: atomic<u32> = ();
-        #[compute] #[workgroup_size(1)]
+        struct Counters { hits: AtomicU32, low: AtomicI32 }
+        static counters: StorageMut<Counters> = binding();
+        static scratch: Workgroup<AtomicU32> = binding();
+        #[entry_point(compute, threads(64))]
         fn cs() {
-            atomicAdd(counter, 1);
-            atomicStore(counter, 0u32);
+            counters.hits.fetch_add(1);
+            counters.hits.store(0);
+            counters.low.fetch_min(-4);
+            scratch.fetch_or(2);
+            let old = counters.hits.swap(7);
         }
-        fn read_back() -> u32 { atomicLoad(counter) }
+        fn read_back() -> u32 { counters.hits.load() + scratch.load() }
         "#,
     );
-    assert!(wgsl.contains("atomic<u32>"), "{wgsl}");
-    assert!(wgsl.contains("atomicAdd((&counter), 1u)"), "{wgsl}");
-    assert!(wgsl.contains("atomicStore"), "{wgsl}");
-    assert!(wgsl.contains("atomicLoad"), "{wgsl}");
+    assert!(wgsl.contains("hits: atomic<u32>"), "{wgsl}");
+    assert!(wgsl.contains("low: atomic<i32>"), "{wgsl}");
+    assert!(wgsl.contains("atomicAdd((&counters.hits), 1u)"), "{wgsl}");
+    assert!(wgsl.contains("atomicStore((&counters.hits), 0u)"), "{wgsl}");
+    assert!(wgsl.contains("atomicMin((&counters.low), -(4i))"), "{wgsl}");
+    assert!(wgsl.contains("atomicOr((&scratch), 2u)"), "{wgsl}");
+    assert!(
+        wgsl.contains("atomicExchange((&counters.hits), 7u)"),
+        "{wgsl}"
+    );
+    assert!(wgsl.contains("atomicLoad((&counters.hits))"), "{wgsl}");
 }
 
 #[test]
 fn atomic_read_modify_write_yields_the_old_value() {
     let wgsl = roundtrip_unbound(
         r#"
-        #[storage(read_write)] static counter: atomic<u32> = ();
-        fn bump() -> u32 { atomicAdd(counter, 1) }
+        static counter: StorageMut<AtomicU32> = binding();
+        fn bump() -> u32 { counter.fetch_add(1) }
         "#,
     );
     assert!(wgsl.contains("= atomicAdd("), "{wgsl}");
 }
 
 #[test]
-fn rejects_an_atomic_op_on_a_plain_variable() {
-    let msg = reject(
+fn compare_exchange_hands_back_a_plain_pair() {
+    // WGSL's `__atomic_compare_exchange_result`, not a `Result`.
+    let wgsl = roundtrip_unbound(
         r#"
-        #[storage(read_write)] static counter: u32 = ();
-        #[compute] #[workgroup_size(1)] fn cs() { atomicAdd(counter, 1); }
+        static lock: StorageMut<AtomicU32> = binding();
+        fn try_lock() -> bool {
+            let r: CompareExchange<u32> = lock.compare_exchange_weak(0, 1);
+            r.exchanged && r.old_value == 0
+        }
         "#,
     );
-    assert!(msg.contains("atomic"), "{msg}");
+    assert!(
+        wgsl.contains("atomicCompareExchangeWeak((&lock), 0u, 1u)"),
+        "{wgsl}"
+    );
+    assert!(wgsl.contains(".exchanged"), "{wgsl}");
+    assert!(wgsl.contains(".old_value"), "{wgsl}");
+}
+
+#[test]
+fn an_atomic_method_on_a_plain_variable_is_not_one() {
+    let msg = reject(
+        r#"
+        static counter: StorageMut<u32> = binding();
+        #[entry_point(compute, threads(1))] fn cs() { counter.fetch_add(1); }
+        "#,
+    );
+    assert!(msg.contains("fetch_add"), "{msg}");
 }
 
 #[test]
