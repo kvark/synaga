@@ -9,7 +9,10 @@ use super::expr::lower_expr_hinted;
 use super::{Context, Typed};
 use crate::Error;
 
-pub(super) fn lower_struct_item(ctx: &mut Context, item: ItemStruct) -> Result<(), Error> {
+pub(super) fn lower_struct_item(
+    ctx: &mut Context,
+    item: ItemStruct,
+) -> Result<Handle<Type>, Error> {
     if !item.generics.params.is_empty() {
         return Err(Error::UnsupportedItem(format!(
             "generic struct `{}`",
@@ -17,9 +20,6 @@ pub(super) fn lower_struct_item(ctx: &mut Context, item: ItemStruct) -> Result<(
         )));
     }
     let name = item.ident.to_string();
-    if ctx.struct_by_name(&name).is_some() {
-        return Err(Error::DuplicateStruct(name));
-    }
     let named = match item.fields {
         Fields::Named(fields) => fields,
         Fields::Unnamed(_) => return Err(Error::UnsupportedItem("tuple struct".into())),
@@ -85,15 +85,13 @@ pub(super) fn lower_struct_item(ctx: &mut Context, item: ItemStruct) -> Result<(
     }
     let span = struct_align.round_up(offset);
 
-    let handle = ctx.module.types.insert(
+    Ok(ctx.module.types.insert(
         Type {
-            name: Some(name.clone()),
+            name: Some(name),
             inner: TypeInner::Struct { members, span },
         },
         Span::UNDEFINED,
-    );
-    ctx.structs.push((name, handle));
-    Ok(())
+    ))
 }
 
 pub(super) fn lower_struct_lit(
@@ -103,15 +101,16 @@ pub(super) fn lower_struct_lit(
     lit: &syn::ExprStruct,
     env: &mut Env,
 ) -> Result<Typed, Error> {
-    if lit.qself.is_some() || lit.path.segments.len() != 1 {
+    if lit.qself.is_some() {
         return Err(Error::UnsupportedExpr("struct literal".into()));
     }
     if lit.rest.is_some() {
         return Err(Error::UnsupportedExpr("struct rest `..`".into()));
     }
-    let name = lit.path.segments[0].ident.to_string();
+    let path = super::path_segments(&lit.path);
+    let name = super::last(&path);
     let ty = ctx
-        .struct_by_name(&name)
+        .named_type(&path)?
         .ok_or_else(|| Error::UnknownStruct(name.clone()))?;
     let members = ctx
         .as_struct(ty)

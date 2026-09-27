@@ -138,6 +138,14 @@ pub enum Error {
     RedundantReturnBinding(String),
     #[error("`#[location]` field `{0}` is an integer, so it needs `#[flat]`")]
     MissingFlat(String),
+    #[error("unsupported `cfg` predicate `{0}`")]
+    UnsupportedCfg(String),
+    #[error("`{0}` could mean items in more than one module; import the one you mean")]
+    AmbiguousName(String),
+    #[error("`{0}` depends on itself; a shader cannot recurse, and a type cannot contain itself")]
+    Cycle(String),
+    #[error("`{0}` is an entry point, which only the GPU calls")]
+    CallToEntryPoint(String),
 }
 
 impl Error {

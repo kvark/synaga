@@ -20,6 +20,7 @@ mod matrix;
 mod method;
 mod place;
 mod ray;
+mod scope;
 mod stmt;
 mod structure;
 mod texture;
@@ -27,6 +28,7 @@ mod vector;
 
 use emit::item_kind;
 use env::{Env, Slot};
+use scope::{Lowered, Ns, Scope, State};
 use stmt::{always_jumps, lower_block};
 
 /// A lowered expression and the type it evaluates to. Every `lower_*` that
@@ -76,8 +78,17 @@ impl Shape {
 pub struct Context {
     pub module: Module,
     pub(super) globals: Vec<global::GlobalInfo>,
-    pub(super) structs: Vec<(String, Handle<Type>)>,
     pub(super) consts: Vec<constant::ConstInfo>,
+    /// Every item of every source, and how names reach them.
+    pub(super) scope: Scope,
+    /// The source whose item is being lowered, which is where its names are
+    /// resolved from.
+    pub(super) current: usize,
+    /// The source of the item that failed, for [`crate::SourceError::index`].
+    /// An item can fail while another one that needed it is being lowered,
+    /// so this is not always the source that was being worked through.
+    pub failed_source: Option<usize>,
+    pub(super) cfg: crate::Cfg,
     /// Set by `lower_type` when it unwraps an address-space wrapper, and taken
     /// by the global being declared. A type mentions its space at most once,
     /// and only a global asks.
@@ -88,43 +99,138 @@ pub struct Context {
 }
 
 impl Context {
-    pub fn new() -> Self {
+    pub fn new(cfg: crate::Cfg) -> Self {
         Self {
             module: Module::default(),
             globals: Vec::new(),
-            structs: Vec::new(),
             consts: Vec::new(),
+            scope: Scope::default(),
+            current: 0,
+            failed_source: None,
+            cfg,
             pending_space: None,
             addressed: HashSet::new(),
         }
     }
 
-    pub fn lower_file(&mut self, file: syn::File) -> Result<(), Error> {
-        for item in file.items {
-            let (name, line) = item_location(&item);
-            self.lower_item(item).map_err(|source| Error::At {
-                item: name,
-                line,
-                source: Box::new(source),
-            })?;
+    /// Lower every item of `files`, each named by the module it is, in an
+    /// order that puts what an item needs before it.
+    ///
+    /// Globals and constants go first: every function binds the globals as it
+    /// starts, so they have to exist by then. Everything else follows in
+    /// source order, and anything an item needs that is not lowered yet is
+    /// lowered right there. Naga wants a function after the functions it
+    /// calls, and this is what gives it that.
+    pub fn lower_sources(&mut self, files: Vec<(Option<String>, syn::File)>) -> Result<(), Error> {
+        self.scope = Scope::index(files, &self.cfg).map_err(|err| {
+            self.failed_source = Some(err.source);
+            err.error
+        })?;
+        let (first, rest): (Vec<usize>, Vec<usize>) = (0..self.scope.entries.len())
+            .partition(|&i| self.scope.entries[i].is_static_or_const());
+        for index in first.into_iter().chain(rest) {
+            self.ensure(index)?;
         }
         Ok(())
     }
 
-    fn lower_item(&mut self, item: Item) -> Result<(), Error> {
+    /// Lower entry `index` if it is not already, and say what it became.
+    fn ensure(&mut self, index: usize) -> Result<Lowered, Error> {
+        let entry = &mut self.scope.entries[index];
+        match entry.state {
+            State::Done(lowered) => return Ok(lowered),
+            State::InProgress => {
+                let name = entry.name.clone().map(|(_, n)| n).unwrap_or_default();
+                return Err(Error::Cycle(name));
+            }
+            State::Pending => {}
+        }
+        entry.state = State::InProgress;
+        let item = entry.item.take().expect("a pending entry keeps its item");
+        let source = entry.source;
+        let (label, line) = item_location(&item);
+
+        // Lowering one item can start another, so whatever belongs to the
+        // item in progress is set aside and put back afterwards.
+        let current = std::mem::replace(&mut self.current, source);
+        let addressed = std::mem::take(&mut self.addressed);
+        let pending_space = self.pending_space.take();
+        let result = self.lower_item(item);
+        self.current = current;
+        self.addressed = addressed;
+        self.pending_space = pending_space;
+
+        match result {
+            Ok(lowered) => {
+                self.scope.entries[index].state = State::Done(lowered);
+                Ok(lowered)
+            }
+            // Already placed inside the item that failed: that is where the
+            // problem is, not in whatever needed it.
+            Err(err @ Error::At { .. }) => Err(err),
+            Err(err) => {
+                self.failed_source.get_or_insert(source);
+                Err(Error::At {
+                    item: label,
+                    line,
+                    source: Box::new(err),
+                })
+            }
+        }
+    }
+
+    fn lower_item(&mut self, item: Item) -> Result<Lowered, Error> {
         match item {
-            // A shader module is also an ordinary Rust module, so it carries
-            // the `use` that brings the shader prelude into scope and the
-            // `mod` that lists its siblings. Neither says anything about the
-            // shader.
-            Item::Use(_) | Item::Mod(_) => Ok(()),
+            // A shader module is also an ordinary Rust module, so it may list
+            // its siblings with `mod`, or keep something of its own in an
+            // inline one. Neither is part of the shader.
+            Item::Mod(_) => Ok(Lowered::Nothing),
             Item::Fn(func) => self.lower_fn(func),
-            Item::Static(st) => global::lower_static(self, st),
-            Item::ForeignMod(fm) => global::lower_foreign_mod(self, fm),
-            Item::Struct(st) => structure::lower_struct_item(self, st),
-            Item::Const(c) => constant::lower_const_item(self, c),
+            Item::Static(st) => global::lower_static(self, st).map(|()| Lowered::Static),
+            Item::ForeignMod(fm) => global::lower_foreign_mod(self, fm).map(|()| Lowered::Static),
+            Item::Struct(st) => structure::lower_struct_item(self, st).map(Lowered::Type),
+            Item::Const(c) => constant::lower_const_item(self, c).map(Lowered::Const),
+            // `type Color = vec4;` names a type another way.
+            Item::Type(alias) => {
+                if !alias.generics.params.is_empty() {
+                    return Err(Error::UnsupportedItem("generic type alias".into()));
+                }
+                self.lower_type(&alias.ty).map(Lowered::Type)
+            }
             other => Err(Error::UnsupportedItem(item_kind(&other))),
         }
+    }
+
+    /// Resolve `path` in namespace `ns` from the item being lowered, lowering
+    /// what it names if nothing has yet.
+    pub(super) fn resolve(&mut self, ns: Ns, path: &[String]) -> Result<Option<Lowered>, Error> {
+        match self.scope.resolve(self.current, ns, path)? {
+            Some(index) => self.ensure(index).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// The function `path` names, if it names one the sources declare.
+    pub(super) fn function(&mut self, path: &[String]) -> Result<Option<Handle<Function>>, Error> {
+        match self.resolve(Ns::Value, path)? {
+            Some(Lowered::Function(handle)) => Ok(Some(handle)),
+            Some(Lowered::EntryPoint) => Err(Error::CallToEntryPoint(last(path))),
+            _ => Ok(None),
+        }
+    }
+
+    /// The `const` `path` names, as an index into `consts`.
+    pub(super) fn constant(&mut self, path: &[String]) -> Result<Option<usize>, Error> {
+        match self.resolve(Ns::Value, path)? {
+            Some(Lowered::Const(index)) => Ok(Some(index)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Is `path` headed by one of the sources, as `brdf::sample` is, rather
+    /// than by a type, as `vec3::splat` is?
+    pub(super) fn is_module_path(&self, path: &[String]) -> bool {
+        self.scope.is_module_path(self.current, path)
     }
 
     /// Intern a type that has no component structure of its own: an image or
@@ -255,6 +361,7 @@ impl Context {
             .last()
             .ok_or_else(|| Error::UnsupportedType("empty path".into()))?;
         let name = seg.ident.to_string();
+        let full = path_segments(&path.path);
 
         // Textures and samplers take their own argument shapes —
         // `texture_storage_2d<Format, Access>` has two — so they are resolved
@@ -348,49 +455,47 @@ impl Context {
             "i32" | "isize" => Ok(self.intern_scalar(Scalar::I32)),
             "bool" => Ok(self.intern_scalar(Scalar::BOOL)),
             other => self
-                .struct_by_name(other)
+                .named_type(&full)?
                 .ok_or_else(|| Error::UnsupportedType(other.into())),
         }
     }
 
-    /// Functions and entry points share one namespace, as they do in WGSL.
-    /// Without this, two `fn f` end up as `f` and `f_1` in the output and calls
-    /// silently pick the first.
-    pub(super) fn claim_fn_name(&self, name: &str) -> Result<(), Error> {
-        let taken = self
-            .module
-            .functions
-            .iter()
-            .any(|(_, f)| f.name.as_deref() == Some(name))
-            || self.module.entry_points.iter().any(|e| e.name == name);
-        if taken {
+    /// A host asks for an entry point by name, so two in different modules
+    /// cannot share one. Other functions are reached through their module and
+    /// may.
+    pub(super) fn claim_entry_point_name(&self, name: &str) -> Result<(), Error> {
+        if self.module.entry_points.iter().any(|e| e.name == name) {
             return Err(Error::DuplicateFunction(name.into()));
         }
         Ok(())
     }
 
     /// An array length: a literal, or a `const` naming one.
-    fn array_len(&self, len: &syn::Expr) -> Result<NonZeroU32, Error> {
+    fn array_len(&mut self, len: &syn::Expr) -> Result<NonZeroU32, Error> {
         let value = match len {
             syn::Expr::Lit(syn::ExprLit {
                 lit: syn::Lit::Int(int),
                 ..
             }) => int.base10_parse::<u32>().map_err(Error::from)?,
             syn::Expr::Path(path) => {
-                let name = path
-                    .path
-                    .get_ident()
-                    .ok_or_else(|| Error::UnsupportedType("array length".into()))?
-                    .to_string();
-                let info = self
-                    .consts
-                    .iter()
-                    .find(|c| c.name == name)
-                    .ok_or(Error::UnknownIdent(name))?;
-                match self.module.global_expressions[info.init_expr] {
-                    naga::Expression::Literal(naga::Literal::U32(v)) => v,
-                    naga::Expression::Literal(naga::Literal::I32(v)) if v >= 0 => v as u32,
-                    _ => return Err(Error::UnsupportedType("array length".into())),
+                let segments = path_segments(&path.path);
+                let index = self
+                    .constant(&segments)?
+                    .ok_or_else(|| Error::UnknownIdent(last(&segments)))?;
+                // A `const` may be defined as another one, so follow the chain
+                // down to the literal.
+                let mut init = self.consts[index].init_expr;
+                loop {
+                    match self.module.global_expressions[init] {
+                        naga::Expression::Literal(naga::Literal::U32(v)) => break v,
+                        naga::Expression::Literal(naga::Literal::I32(v)) if v >= 0 => {
+                            break v as u32
+                        }
+                        naga::Expression::Constant(other) => {
+                            init = self.module.constants[other].init
+                        }
+                        _ => return Err(Error::UnsupportedType("array length".into())),
+                    }
                 }
             }
             _ => return Err(Error::UnsupportedType("array length".into())),
@@ -398,15 +503,14 @@ impl Context {
         NonZeroU32::new(value).ok_or_else(|| Error::UnsupportedType("zero-length array".into()))
     }
 
-    pub(super) fn struct_by_name(&mut self, name: &str) -> Option<Handle<Type>> {
-        let declared = self
-            .structs
-            .iter()
-            .rev()
-            .find(|(n, _)| n == name)
-            .map(|(_, h)| *h);
+    /// The type `path` names: a struct or alias the sources declare, or one of
+    /// the structs Naga predeclares.
+    pub(super) fn named_type(&mut self, path: &[String]) -> Result<Option<Handle<Type>>, Error> {
+        if let Some(Lowered::Type(handle)) = self.resolve(Ns::Type, path)? {
+            return Ok(Some(handle));
+        }
         // `RayDesc` and `RayIntersection` are Naga's, generated on first use.
-        declared.or_else(|| ray::special_struct(self, name))
+        Ok(ray::special_struct(self, &last(path)))
     }
 
     /// What `ty` points at, if it is a pointer.
@@ -456,7 +560,7 @@ impl Context {
         }
     }
 
-    fn lower_fn(&mut self, item: ItemFn) -> Result<(), Error> {
+    fn lower_fn(&mut self, item: ItemFn) -> Result<Lowered, Error> {
         if !item.sig.generics.params.is_empty() {
             return Err(Error::UnsupportedItem(format!(
                 "generic function `{}`",
@@ -472,7 +576,7 @@ impl Context {
 
         let info = entry::parse_fn_attrs(&item.attrs)?;
         if info.stage.is_some() {
-            return entry::lower_entry(self, item, info);
+            return entry::lower_entry(self, item, info).map(|()| Lowered::EntryPoint);
         }
         if info.workgroup_size.is_some() || info.return_binding.is_some() {
             return Err(Error::UnsupportedItem(
@@ -481,7 +585,6 @@ impl Context {
         }
 
         let name = item.sig.ident.to_string();
-        self.claim_fn_name(&name)?;
         // A function with no return type produces nothing, as in Rust; calls to
         // it are statements.
         let result = match &item.sig.output {
@@ -518,9 +621,19 @@ impl Context {
             None => {}
         }
         function.body = body;
-        self.module.functions.append(function, Span::UNDEFINED);
-        Ok(())
+        let handle = self.module.functions.append(function, Span::UNDEFINED);
+        Ok(Lowered::Function(handle))
     }
+}
+
+/// The identifiers of `path`, in order.
+pub(super) fn path_segments(path: &syn::Path) -> Vec<String> {
+    path.segments.iter().map(|s| s.ident.to_string()).collect()
+}
+
+/// The last identifier of a path, which is the item's own name.
+pub(super) fn last(path: &[String]) -> String {
+    path.last().cloned().unwrap_or_default()
 }
 
 /// How to name an item in an error, and the line it opens on.

@@ -12,21 +12,17 @@ use super::{parse_mat_ident, parse_vec_ident, Context, Shape};
 use crate::Error;
 
 pub(crate) struct ConstInfo {
-    pub name: String,
     pub handle: Handle<Constant>,
     pub ty: Handle<Type>,
     /// The initializer, so a `const` can serve as an array length.
     pub init_expr: Handle<Expression>,
 }
 
-pub(super) fn lower_const_item(ctx: &mut Context, item: ItemConst) -> Result<(), Error> {
+pub(super) fn lower_const_item(ctx: &mut Context, item: ItemConst) -> Result<usize, Error> {
     if !item.generics.params.is_empty() {
         return Err(Error::UnsupportedItem("generic const".into()));
     }
     let name = item.ident.to_string();
-    if ctx.consts.iter().any(|c| c.name == name) {
-        return Err(Error::DuplicateConst(name));
-    }
     let ty = ctx.lower_type(&item.ty)?;
     let hint = ctx.shape(ty).int_hint();
     let (init, init_ty) = lower_const_expr(ctx, &item.expr, hint)?;
@@ -42,12 +38,11 @@ pub(super) fn lower_const_item(ctx: &mut Context, item: ItemConst) -> Result<(),
         Span::UNDEFINED,
     );
     ctx.consts.push(ConstInfo {
-        name,
         handle,
         ty,
         init_expr: init,
     });
-    Ok(())
+    Ok(ctx.consts.len() - 1)
 }
 
 /// Lower `expr` into `module.global_expressions`.
@@ -90,16 +85,11 @@ fn lower_const_expr(
             Ok((handle, ty))
         }
         Expr::Path(path) => {
-            let ident = path
-                .path
-                .get_ident()
-                .ok_or_else(|| Error::UnsupportedExpr("path".into()))?
-                .to_string();
-            let info = ctx
-                .consts
-                .iter()
-                .find(|c| c.name == ident)
-                .ok_or(Error::UnknownIdent(ident))?;
+            let segments = super::path_segments(&path.path);
+            let index = ctx
+                .constant(&segments)?
+                .ok_or_else(|| Error::UnknownIdent(super::last(&segments)))?;
+            let info = &ctx.consts[index];
             let (handle, ty) = (info.handle, info.ty);
             let expr = ctx
                 .module
@@ -108,6 +98,15 @@ fn lower_const_expr(
             Ok((expr, ty))
         }
         Expr::Call(call) => lower_const_ctor(ctx, call, hint),
+        // `cfg!(debug_assertions)`, settled by what the build was told.
+        Expr::Macro(mac) if mac.mac.path.is_ident("cfg") => {
+            let value = super::expr::eval_cfg(ctx, &mac.mac)?;
+            let handle = ctx.module.global_expressions.append(
+                Expression::Literal(naga::Literal::Bool(value)),
+                Span::UNDEFINED,
+            );
+            Ok((handle, ctx.intern_scalar(Scalar::BOOL)))
+        }
         other => Err(Error::UnsupportedConstExpr(super::emit::expr_kind(other))),
     }
 }

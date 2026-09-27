@@ -108,15 +108,16 @@ pub(super) fn lower_qualified_call(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
-    ty_name: &str,
+    ty_path: &[String],
     method: &str,
     args: &[&Expr],
     env: &mut Env,
 ) -> Result<Typed, Error> {
+    let ty_name = &super::last(ty_path);
     // `T::default()` is how Rust spells a zero value, and WGSL's `T()` is the
     // same thing. Any type may have one, so this comes before the vector names.
     if method == "default" && args.is_empty() {
-        if let Some(ty) = super::call::zero_value_type(ctx, ty_name) {
+        if let Some(ty) = super::call::zero_value_type(ctx, ty_path)? {
             let handle = function
                 .expressions
                 .append(Expression::ZeroValue(ty), naga::Span::UNDEFINED);
