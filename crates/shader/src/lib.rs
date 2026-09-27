@@ -21,9 +21,10 @@
 //!
 //! # What runs on the CPU
 //!
-//! Very little, yet. The atomics are real atomics; everything else panics.
-//! The types are here to be *checked*, and the shader runs on a GPU.
-//! Implementations can be filled in later without a signature changing.
+//! Very little, yet. The atomics are real atomics, and the [`ir`] module
+//! decodes what the build step wrote. Everything else panics: the types are
+//! here to be *checked*, and the shader runs on a GPU. Implementations can be
+//! filled in later without a signature changing.
 //!
 //! # Where this differs from WGSL
 //!
@@ -53,6 +54,7 @@
 
 pub mod atomic;
 pub mod builtins;
+pub mod ir;
 pub mod matrix;
 pub mod resource;
 pub mod texture;

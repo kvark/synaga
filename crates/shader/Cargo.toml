@@ -7,5 +7,13 @@ description = "Rust types for shaders written in the synaga dialect"
 license = "MIT"
 repository = "https://github.com/kvark/synaga"
 
+[features]
+default = ["ir"]
+# Decoding the modules the build step writes. A crate that only type-checks
+# shaders can go without.
+ir = ["dep:serde", "dep:bincode"]
+
 [dependencies]
 synaga-macros = { path = "../macros", version = "0.1.0" }
+serde = { version = "1", optional = true }
+bincode = { version = "2", default-features = false, features = ["std", "serde"], optional = true }

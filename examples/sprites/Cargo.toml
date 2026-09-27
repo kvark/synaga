@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 synaga-shader = { path = "../../crates/shader" }
+naga = { version = "30", features = ["deserialize"] }
 
 [build-dependencies]
 synaga = { path = "../.." }

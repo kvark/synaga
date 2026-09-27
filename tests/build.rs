@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use synaga::build::{Bindings, BuildErrorKind, Shaders};
+use synaga::naga;
 
 /// A scratch directory unique to one test. `CARGO_TARGET_TMPDIR` is cleaned by
 /// `cargo clean` and needs no dependency.
@@ -20,6 +21,21 @@ fn scratch(name: &str) -> PathBuf {
 
 fn write(dir: &Path, name: &str, source: &str) {
     std::fs::write(dir.join("shaders").join(name), source).expect("write shader");
+}
+
+/// Read a module back the way a host does.
+fn decode(path: impl AsRef<Path>) -> naga::Module {
+    let bytes = std::fs::read(path).expect("read module");
+    let ir = synaga_shader::ir::Ir::new(Box::leak(bytes.into_boxed_slice()));
+    ir.decode().expect("decode module")
+}
+
+fn function_names(module: &naga::Module) -> Vec<String> {
+    module
+        .functions
+        .iter()
+        .filter_map(|(_, f)| f.name.clone())
+        .collect()
 }
 
 const TRIANGLE: &str = r#"
@@ -53,45 +69,145 @@ fn generates_a_constant_per_module() {
 
     let generated = std::fs::read_to_string(dir.join("out/shaders.rs")).expect("read generated");
     assert!(
-        generated.contains("pub const TRIANGLE: &[u8]"),
+        generated.contains("pub const TRIANGLE: ::synaga_shader::ir::Ir"),
         "{generated}"
     );
-    assert!(generated.contains("pub const SOLID: &[u8]"), "{generated}");
+    assert!(
+        generated.contains("pub const SOLID: ::synaga_shader::ir::Ir"),
+        "{generated}"
+    );
 
-    let ir = std::fs::read_to_string(dir.join("out/triangle.json")).expect("read ir");
-    assert!(ir.contains("\"vs\""), "{ir}");
+    let module = decode(dir.join("out/triangle.naga"));
+    assert_eq!(module.entry_points[0].name, "vs");
 }
 
 #[test]
-fn a_prelude_is_shared_and_not_compiled_alone() {
-    let dir = scratch("prelude");
+fn the_header_says_who_wrote_it() {
+    let dir = scratch("header");
+    write(&dir, "solid.rs", SOLID);
+    Shaders::new()
+        .dir(dir.join("shaders"))
+        .emit_to(&dir.join("out"))
+        .expect("emit");
+    let bytes = std::fs::read(dir.join("out/solid.naga")).unwrap();
+    assert_eq!(&bytes[..6], b"SYNAGA");
+    let ir = synaga_shader::ir::Ir::new(Box::leak(bytes.into_boxed_slice()));
+    assert_eq!(ir.naga_major(), Some(synaga::build::NAGA_MAJOR));
+
+    // Something else entirely is refused as such, not misread.
+    let err = synaga_shader::ir::Ir::new(b"{\"json\": true}")
+        .decode::<naga::Module>()
+        .unwrap_err();
+    assert_eq!(err, synaga_shader::ir::DecodeError::NotIr);
+}
+
+#[test]
+fn a_helper_file_comes_along_through_use() {
+    let dir = scratch("helpers");
     write(
         &dir,
         "common.rs",
-        "fn luminance(c: vec3) -> f32 { dot(c, vec3(0.2126, 0.7152, 0.0722)) }",
+        "pub fn luminance(c: vec3) -> f32 { dot(c, vec3(0.2126, 0.7152, 0.0722)) }",
     );
     write(
         &dir,
         "grey.rs",
         r#"
+        use super::common::luminance;
         #[entry_point(fragment)]
         #[output(location(0))]
         fn fs(#[location(0)] c: vec4) -> vec4 { vec4(vec3(luminance(c.xyz)), 1.0) }
         "#,
     );
+    write(
+        &dir,
+        "path.rs",
+        r#"
+        #[entry_point(fragment)]
+        #[output(location(0))]
+        fn fs(#[location(0)] c: vec4) -> vec4 { vec4(vec3(super::common::luminance(c.xyz)), 1.0) }
+        "#,
+    );
 
     let shaders = Shaders::new()
         .dir(dir.join("shaders"))
-        .prelude("common.rs")
         .emit_to(&dir.join("out"))
         .expect("emit");
 
-    // The prelude is a source of declarations, not a shader of its own.
+    // A file with no entry point is a source of declarations, not a shader.
     let names: Vec<&str> = shaders.iter().map(|s| s.constant.as_str()).collect();
-    assert_eq!(names, ["GREY"]);
+    assert_eq!(names, ["GREY", "PATH"]);
+    for shader in &shaders {
+        let used: Vec<_> = shader
+            .sources
+            .iter()
+            .map(|p| p.file_name().unwrap())
+            .collect();
+        assert_eq!(used.len(), 2, "{used:?}");
+        assert_eq!(used[1], "common.rs");
+        assert!(function_names(&decode(&shader.output_path)).contains(&"luminance".to_string()));
+    }
+}
 
-    let ir = std::fs::read_to_string(dir.join("out/grey.json")).expect("read ir");
-    assert!(ir.contains("luminance"), "{ir}");
+#[test]
+fn a_file_no_shader_uses_is_left_alone() {
+    let dir = scratch("unused_file");
+    // Not in the dialect at all, and nothing reaches it.
+    write(
+        &dir,
+        "cpu_only.rs",
+        "pub fn f() -> String { String::new() }",
+    );
+    write(&dir, "solid.rs", SOLID);
+    let shaders = Shaders::new()
+        .dir(dir.join("shaders"))
+        .emit_to(&dir.join("out"))
+        .expect("emit");
+    assert_eq!(shaders.len(), 1);
+}
+
+#[test]
+fn cfg_follows_the_build() {
+    let dir = scratch("cfg");
+    write(
+        &dir,
+        "debug.rs",
+        r#"
+        #[cfg(debug_assertions)]
+        fn level() -> f32 { 1.0 }
+        #[cfg(not(debug_assertions))]
+        fn level() -> f32 { 0.0 }
+        #[entry_point(fragment)]
+        #[output(location(0))]
+        fn fs() -> vec4 {
+            if cfg!(feature = "red") { vec4(level(), 0.0, 0.0, 1.0) } else { vec4::splat(level()) }
+        }
+        "#,
+    );
+    let level = |cfg: synaga::Cfg| {
+        Shaders::new()
+            .dir(dir.join("shaders"))
+            .cfg(cfg)
+            .emit_to(&dir.join("out"))
+            .expect("emit");
+        let module = decode(dir.join("out/debug.naga"));
+        let (_, level) = module
+            .functions
+            .iter()
+            .find(|(_, f)| f.name.as_deref() == Some("level"))
+            .expect("level");
+        let value = level
+            .expressions
+            .iter()
+            .find_map(|(_, e)| match e {
+                naga::Expression::Literal(naga::Literal::F32(v)) => Some(*v),
+                _ => None,
+            })
+            .unwrap();
+        value
+    };
+    assert_eq!(level(synaga::Cfg::new()), 0.0);
+    assert_eq!(level(synaga::Cfg::new().with("debug_assertions")), 1.0);
 }
 
 #[test]
@@ -101,38 +217,37 @@ fn what_a_module_does_not_use_is_pruned() {
         &dir,
         "common.rs",
         r#"
-        struct Camera { view: mat4 }
-        static camera: Camera = ();
-        fn unused_helper(x: f32) -> f32 { x * 2.0 }
+        pub struct Camera { view: mat4 }
+        pub static camera: Camera = ();
+        pub fn unused_helper(x: f32) -> f32 { x * 2.0 }
         "#,
     );
-    write(&dir, "solid.rs", SOLID);
+    write(&dir, "solid.rs", &format!("use super::common::*;\n{SOLID}"));
 
     let out = dir.join("out");
     Shaders::new()
         .dir(dir.join("shaders"))
-        .prelude("common.rs")
         .bindings(Bindings::Host)
         .emit_to(&out)
         .expect("emit");
 
     // Not merely untidy: a host that binds by name would have to find
     // something to bind an unused `camera` to.
-    let pruned = std::fs::read_to_string(out.join("solid.json")).expect("read ir");
-    assert!(!pruned.contains("camera"), "{pruned}");
-    assert!(!pruned.contains("unused_helper"), "{pruned}");
+    let pruned = decode(out.join("solid.naga"));
+    assert!(pruned.global_variables.is_empty());
+    assert!(function_names(&pruned).is_empty());
 
     let kept_dir = dir.join("kept");
     std::fs::create_dir_all(&kept_dir).unwrap();
     Shaders::new()
         .dir(dir.join("shaders"))
-        .prelude("common.rs")
         .bindings(Bindings::Host)
         .prune(false)
         .emit_to(&kept_dir)
         .expect("emit");
-    let kept = std::fs::read_to_string(kept_dir.join("solid.json")).expect("read ir");
-    assert!(kept.contains("camera"), "{kept}");
+    let kept = decode(kept_dir.join("solid.naga"));
+    assert_eq!(kept.global_variables.len(), 1);
+    assert_eq!(function_names(&kept), ["unused_helper"]);
 }
 
 #[test]
@@ -169,7 +284,7 @@ fn a_failure_names_the_file_and_the_line() {
     write(
         &dir,
         "broken.rs",
-        "\n\n\nfn bad(a: u32) -> u32 {\n    -a\n}\n",
+        "\n\n\nfn bad(a: u32) -> u32 {\n    -a\n}\n#[entry_point(compute, threads(1))]\nfn main() {}\n",
     );
 
     let err = Shaders::new()
@@ -184,16 +299,15 @@ fn a_failure_names_the_file_and_the_line() {
 }
 
 #[test]
-fn a_failure_in_the_prelude_names_the_prelude() {
-    let dir = scratch("prelude_failure");
-    write(&dir, "common.rs", "fn bad(a: u32) -> u32 { -a }");
-    write(&dir, "solid.rs", SOLID);
+fn a_failure_in_a_helper_file_names_that_file() {
+    let dir = scratch("helper_failure");
+    write(&dir, "common.rs", "pub fn bad(a: u32) -> u32 { -a }");
+    write(&dir, "solid.rs", &format!("use super::common::*;\n{SOLID}"));
 
     let err = Shaders::new()
         .dir(dir.join("shaders"))
-        .prelude("common.rs")
         .emit_to(&dir.join("out"))
-        .expect_err("broken prelude");
+        .expect_err("broken helper");
     let msg = err.to_string();
     assert!(msg.contains("common.rs"), "{msg}");
     assert!(!msg.contains("solid.rs"), "{msg}");
@@ -255,12 +369,15 @@ fn ray_queries_stay_in_the_module() {
         .capabilities(synaga::naga::valid::Capabilities::RAY_QUERY)
         .emit_to(&dir.join("out"))
         .expect("ray query module");
-    let ir = std::fs::read_to_string(dir.join("out").join("trace.json")).unwrap();
-    assert!(ir.contains("RayQuery"), "{ir}");
-    assert!(
-        ir.contains("acceleration_structure") || ir.contains("AccelerationStructure"),
-        "{ir}"
-    );
+    let module = decode(dir.join("out/trace.naga"));
+    assert!(module
+        .types
+        .iter()
+        .any(|(_, ty)| matches!(ty.inner, naga::TypeInner::RayQuery { .. })));
+    assert!(module
+        .global_variables
+        .iter()
+        .any(|(_, var)| var.name.as_deref() == Some("acc")));
 }
 
 #[test]
@@ -290,9 +407,13 @@ fn entry_point_names_are_the_source_names() {
         .collect();
     assert_eq!(reported, ["blur3x3", "blur"]);
 
-    let ir = std::fs::read_to_string(dir.join("out/blur.json")).expect("read ir");
-    assert!(ir.contains("blur3x3"), "{ir}");
-    assert!(ir.contains("\"blur\""), "{ir}");
+    let module = decode(dir.join("out/blur.naga"));
+    let names: Vec<&str> = module
+        .entry_points
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect();
+    assert_eq!(names, ["blur3x3", "blur"]);
 }
 
 #[test]
@@ -309,7 +430,7 @@ fn the_generated_module_lists_every_shader() {
     let generated = std::fs::read_to_string(dir.join("out/shaders.rs")).expect("read generated");
     assert!(
         generated.contains(
-            r#"pub const ALL: [(&str, &[u8]); 2] = [("solid", SOLID), ("triangle", TRIANGLE), ];"#
+            r#"pub const ALL: [(&str, ::synaga_shader::ir::Ir); 2] = [("solid", SOLID), ("triangle", TRIANGLE), ];"#
         ),
         "{generated}"
     );
