@@ -9,9 +9,9 @@ pub struct PostParams {
     pub needs_srgb: u32,
 }
 
-pub static post_params: Uniform<PostParams> = binding();
-pub static hdr: texture_2d<f32> = binding();
-pub static ldr: texture_storage_2d<Rgba8Unorm, Write> = binding();
+pub static post_params: Uniform<PostParams> = group(0).binding(0);
+pub static hdr: texture_2d<f32> = group(0).binding(1);
+pub static ldr: texture_storage_2d<Rgba8Unorm, Write> = group(0).binding(2);
 
 pub fn encode_srgb(linear: vec3) -> vec3 {
     let low = 12.92 * linear;

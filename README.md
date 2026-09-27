@@ -74,9 +74,9 @@ pub struct Camera {
     pub view_proj: mat4,
 }
 
-pub static camera: Uniform<Camera> = binding();
-pub static albedo: texture_2d<f32> = binding();
-pub static linear: sampler = binding();
+pub static camera: Uniform<Camera> = group(0).binding(0);
+pub static albedo: texture_2d<f32> = group(1).binding(0);
+pub static linear: sampler = group(1).binding(1);
 
 #[derive(Clone, Copy, Io)]
 pub struct VsOut {
@@ -103,8 +103,8 @@ A shader module is an ordinary module of your crate, with
 `cargo fmt` formats it, rust-analyzer understands it, and nothing silences
 their complaints: an unused variable, a needless `mut`, a helper nothing calls
 are all reported. The one lint a shader tree usually wants off is
-`non_upper_case_globals`, because resources keep the lowercase names a host
-binds them by.
+`non_upper_case_globals`, because resources keep lowercase names: WGSL's, and
+the ones a host that binds by name looks for.
 
 ### Entry points and their interface
 
@@ -119,10 +119,26 @@ reader is often the rasterizer or another stage, which `rustc` cannot see.
 
 ### Resources
 
-A resource is a `static` initialised with `= binding()`. The address space is
-in the type: `Uniform<T>`, `Storage<T>`, `StorageMut<T>`, `Workgroup<T>`,
-`Private<T>`; textures, samplers and acceleration structures are their own
-types. Each derefs to what it holds, so `camera.view_proj` reads through it.
+A resource is a `static` whose type says what it is and whose initialiser says
+where it binds. `= group(0).binding(1)` is WGSL's `@group(0) @binding(1)`, and
+either number may be a `const`, which the host can build its layouts from too:
+
+```rust,ignore
+pub const MATERIAL: u32 = 1;
+
+pub static albedo: texture_2d<f32> = group(MATERIAL).binding(0);
+```
+
+`= binding()` leaves the binding to the host (see
+[below](#host-assigned-bindings)), and is also how workgroup and private
+memory is written: it binds to nothing, and `rustc` refuses
+`group(..).binding(..)` on it. The build script refuses a resource with no
+binding, at the line it is on, unless the host assigns them.
+
+The address space is in the type: `Uniform<T>`, `Storage<T>`, `StorageMut<T>`,
+`Workgroup<T>`, `Private<T>`; textures, samplers and acceleration structures
+are their own types. Each derefs to what it holds, so `camera.view_proj` reads
+through it.
 
 None of them is a `static mut`. Other invocations run at the same time and may
 write the same memory, which Rust calls shared mutable state; edition 2024
@@ -131,7 +147,7 @@ refuses even a read through a `static mut`. So a write goes through
 invocations apart:
 
 ```rust,ignore
-pub static particles: StorageMut<[Particle]> = binding();
+pub static particles: StorageMut<[Particle]> = group(0).binding(0);
 
 let p = particles[i];                                  // a read needs nothing
 unsafe { particles.get_mut()[i].life -= delta };       // a write says so
@@ -279,6 +295,11 @@ Some engines leave `@group`/`@binding` out of the shader and fill them in at
 pipeline creation, matching globals up by name — [Blade][blade] does, and
 asserts the module has none. `Shaders::bindings(Bindings::Host)` says so to the
 build script, and `validate_unbound` is the same for a module built by hand.
+Every resource is then written `= binding()`, and one that says where it binds
+is refused at the line it is on, rather than by the host at pipeline creation.
+A vertex struct argument whose fields have no `#[location]` is the same
+arrangement for vertex attributes: Blade matches them up by name too, so it
+builds only in this mode.
 Blade takes a `naga::Module` directly (`ShaderDesc::naga_module`), so a module
 built here needs no WGSL round trip to reach it.
 
@@ -303,7 +324,8 @@ struct VsOut {
 
 An entry point returning a bound struct does not take `#[output(...)]`, and a
 struct argument whose fields carry no bindings is left for the host to fill
-in — which is how Blade supplies vertex attributes.
+in — which is how Blade supplies vertex attributes, and needs
+`Bindings::Host`.
 
 ### Blade
 

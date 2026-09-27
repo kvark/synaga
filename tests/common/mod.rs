@@ -6,9 +6,12 @@
 
 #![allow(dead_code)]
 
-use synaga::{parse_str, to_wgsl, validate, validate_unbound};
+#[cfg(feature = "wgsl")]
+use synaga::to_wgsl;
+use synaga::{parse_str, validate, validate_unbound};
 
 /// Lower, validate, and emit WGSL. Panics with the reason on any failure.
+#[cfg(feature = "wgsl")]
 pub fn roundtrip(src: &str) -> String {
     let module = parse_str(src).unwrap_or_else(|e| panic!("parse: {e}\n{src}"));
     let info = validate(&module).unwrap_or_else(|e| panic!("validate: {e}\n{src}"));
@@ -16,6 +19,7 @@ pub fn roundtrip(src: &str) -> String {
 }
 
 /// Like `roundtrip`, for a module whose `@group`/`@binding` the host assigns.
+#[cfg(feature = "wgsl")]
 pub fn roundtrip_unbound(src: &str) -> String {
     let module = parse_str(src).unwrap_or_else(|e| panic!("parse: {e}\n{src}"));
     let info = validate_unbound(&module).unwrap_or_else(|e| panic!("validate: {e}\n{src}"));

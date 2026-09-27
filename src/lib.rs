@@ -63,6 +63,17 @@ pub fn parse_all<'a>(
 /// Parsed separately rather than concatenated, each file keeps its own line
 /// numbers, and [`SourceError::index`] says which one went wrong.
 pub fn parse(sources: &[Source<'_>], cfg: &Cfg) -> Result<naga::Module, SourceError> {
+    parse_expecting(sources, cfg, None)
+}
+
+/// [`parse`], holding the module to what `bindings` says about who assigns
+/// bindings, so that a resource or a vertex struct that does otherwise is
+/// reported where it is written.
+pub(crate) fn parse_expecting(
+    sources: &[Source<'_>],
+    cfg: &Cfg,
+    bindings: Option<build::Bindings>,
+) -> Result<naga::Module, SourceError> {
     let mut files = Vec::with_capacity(sources.len());
     for (index, source) in sources.iter().enumerate() {
         let file: syn::File = syn::parse_str(source.text).map_err(|e| SourceError {
@@ -71,7 +82,7 @@ pub fn parse(sources: &[Source<'_>], cfg: &Cfg) -> Result<naga::Module, SourceEr
         })?;
         files.push((source.name.map(str::to_string), file));
     }
-    let mut ctx = Context::new(cfg.clone());
+    let mut ctx = Context::new(cfg.clone(), bindings);
     ctx.lower_sources(files).map_err(|error| SourceError {
         index: ctx.failed_source.unwrap_or(0),
         error,

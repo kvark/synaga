@@ -121,7 +121,7 @@ fn lower_const_expr(
     }
 }
 
-fn strip_parens(expr: &Expr) -> &Expr {
+pub(super) fn strip_parens(expr: &Expr) -> &Expr {
     match expr {
         Expr::Paren(inner) => strip_parens(&inner.expr),
         Expr::Group(inner) => strip_parens(&inner.expr),

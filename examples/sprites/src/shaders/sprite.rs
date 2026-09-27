@@ -12,11 +12,16 @@ pub struct Locals {
     pub color: u32,
 }
 
-pub static locals: Uniform<Locals> = binding();
-pub static sprite_texture: texture_2d<f32> = binding();
-pub static sprite_sampler: sampler = binding();
+/// The bind group each batch of sprites sets.
+pub const BATCH: u32 = 1;
 
+pub static locals: Uniform<Locals> = group(BATCH).binding(0);
+pub static sprite_texture: texture_2d<f32> = group(BATCH).binding(1);
+pub static sprite_sampler: sampler = group(BATCH).binding(2);
+
+#[derive(Io)]
 pub struct Vertex {
+    #[location(0)]
     pub pos: vec2,
 }
 

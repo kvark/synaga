@@ -11,7 +11,7 @@
 //! its atomics can be a plain `static`:
 //!
 //! ```ignore
-//! static counters: StorageMut<Counters> = binding();
+//! static counters: StorageMut<Counters> = group(0).binding(0);
 //! let slot = counters.next.fetch_add(1);
 //! ```
 

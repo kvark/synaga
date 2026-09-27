@@ -7,6 +7,7 @@ use naga::{
 };
 use syn::{FnArg, Item, ItemFn, ReturnType, Signature};
 
+use crate::build::Bindings;
 use crate::Error;
 
 mod atomic;
@@ -97,10 +98,13 @@ pub struct Context {
     /// Locals in the function currently being lowered that are assigned or
     /// passed as storage. Everything else can stay a value.
     pub(super) addressed: HashSet<String>,
+    /// Who the build says assigns bindings, if it said. Without it, a missing
+    /// binding is left for Naga's validation to find.
+    pub(super) bindings: Option<Bindings>,
 }
 
 impl Context {
-    pub fn new(cfg: crate::Cfg) -> Self {
+    pub fn new(cfg: crate::Cfg, bindings: Option<Bindings>) -> Self {
         Self {
             module: Module::default(),
             globals: Vec::new(),
@@ -111,6 +115,7 @@ impl Context {
             cfg,
             pending_space: None,
             addressed: HashSet::new(),
+            bindings,
         }
     }
 
@@ -488,11 +493,21 @@ impl Context {
 
     /// An array length: a literal, or a `const` naming one.
     fn array_len(&mut self, len: &syn::Expr) -> Result<NonZeroU32, Error> {
-        let value = match len {
+        let value = self
+            .const_u32(len)?
+            .ok_or_else(|| Error::UnsupportedType("array length".into()))?;
+        NonZeroU32::new(value).ok_or_else(|| Error::UnsupportedType("zero-length array".into()))
+    }
+
+    /// A `u32` known before the shader runs: an integer literal, or a `const`
+    /// naming one. `None` for anything else, which each caller refuses in its
+    /// own words.
+    pub(super) fn const_u32(&mut self, expr: &syn::Expr) -> Result<Option<u32>, Error> {
+        match constant::strip_parens(expr) {
             syn::Expr::Lit(syn::ExprLit {
                 lit: syn::Lit::Int(int),
                 ..
-            }) => int.base10_parse::<u32>().map_err(Error::from)?,
+            }) => int.base10_parse::<u32>().map(Some).map_err(Error::from),
             syn::Expr::Path(path) => {
                 let segments = path_segments(&path.path);
                 let index = self
@@ -503,20 +518,19 @@ impl Context {
                 let mut init = self.consts[index].init_expr;
                 loop {
                     match self.module.global_expressions[init] {
-                        naga::Expression::Literal(naga::Literal::U32(v)) => break v,
+                        naga::Expression::Literal(naga::Literal::U32(v)) => return Ok(Some(v)),
                         naga::Expression::Literal(naga::Literal::I32(v)) if v >= 0 => {
-                            break v as u32
+                            return Ok(Some(v as u32))
                         }
                         naga::Expression::Constant(other) => {
                             init = self.module.constants[other].init
                         }
-                        _ => return Err(Error::UnsupportedType("array length".into())),
+                        _ => return Ok(None),
                     }
                 }
             }
-            _ => return Err(Error::UnsupportedType("array length".into())),
-        };
-        NonZeroU32::new(value).ok_or_else(|| Error::UnsupportedType("zero-length array".into()))
+            _ => Ok(None),
+        }
     }
 
     /// The type `path` names: a struct or alias the sources declare, or one of

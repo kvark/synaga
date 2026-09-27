@@ -2,10 +2,12 @@ use naga::{
     AddressSpace, Expression, Function, GlobalVariable, Handle, MemoryDecorations, ResourceBinding,
     Span, StorageAccess, Type,
 };
-use syn::{Attribute, ForeignItem, ItemForeignMod, ItemStatic, LitInt};
+use syn::{Attribute, Expr, ForeignItem, ItemForeignMod, ItemStatic, LitInt};
 
+use super::constant::strip_parens;
 use super::env::{Env, Slot};
 use super::Context;
+use crate::build::Bindings;
 use crate::Error;
 
 pub(crate) struct GlobalInfo {
@@ -56,7 +58,59 @@ pub(super) fn lower_static(ctx: &mut Context, item: ItemStatic) -> Result<(), Er
     ctx.pending_space = None;
     let ty = ctx.lower_type(&item.ty)?;
     let from_type = ctx.pending_space.take();
-    insert_global(ctx, name, ty, &item.attrs, from_type)
+    let from_init = initializer_binding(ctx, &name, &item.expr)?;
+    insert_global(ctx, name, ty, &item.attrs, from_type, from_init)
+}
+
+/// Where a static's initialiser says it binds.
+///
+/// `group(G).binding(B)` says, as WGSL's `@group(G) @binding(B)` does.
+/// `binding()` leaves it to the host, or to nothing for the shader's own
+/// memory, and so does `()`, the placeholder of the spelling that says it
+/// with attributes. The numbers are integer literals or `const`s, so a host
+/// can share them.
+fn initializer_binding(
+    ctx: &mut Context,
+    name: &str,
+    init: &Expr,
+) -> Result<Option<ResourceBinding>, Error> {
+    let unsupported = || Error::UnsupportedInitializer(name.into());
+    match strip_parens(init) {
+        Expr::Tuple(unit) if unit.elems.is_empty() => Ok(None),
+        Expr::Call(call) if call.args.is_empty() && is_named(&call.func, "binding") => Ok(None),
+        Expr::MethodCall(call) if call.method == "binding" && call.args.len() == 1 => {
+            let Expr::Call(group) = strip_parens(&call.receiver) else {
+                return Err(unsupported());
+            };
+            if group.args.len() != 1 || !is_named(&group.func, "group") {
+                return Err(unsupported());
+            }
+            Ok(Some(ResourceBinding {
+                group: binding_number(ctx, &group.args[0])?,
+                binding: binding_number(ctx, &call.args[0])?,
+            }))
+        }
+        _ => Err(unsupported()),
+    }
+}
+
+/// Does `func` name `name`, as `binding` and `synaga_shader::binding` do?
+fn is_named(func: &Expr, name: &str) -> bool {
+    match func {
+        Expr::Path(path) if path.qself.is_none() => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|seg| seg.ident == name),
+        _ => false,
+    }
+}
+
+fn binding_number(ctx: &mut Context, expr: &Expr) -> Result<u32, Error> {
+    ctx.const_u32(expr)?.ok_or_else(|| {
+        let text = quote::ToTokens::to_token_stream(expr).to_string();
+        Error::UnsupportedBindingNumber(text.replace(" :: ", "::"))
+    })
 }
 
 pub(super) fn lower_foreign_mod(ctx: &mut Context, item: ItemForeignMod) -> Result<(), Error> {
@@ -67,7 +121,7 @@ pub(super) fn lower_foreign_mod(ctx: &mut Context, item: ItemForeignMod) -> Resu
                 ctx.pending_space = None;
                 let ty = ctx.lower_type(&st.ty)?;
                 let from_type = ctx.pending_space.take();
-                insert_global(ctx, name, ty, &st.attrs, from_type)?;
+                insert_global(ctx, name, ty, &st.attrs, from_type, None)?;
             }
             other => {
                 return Err(Error::UnsupportedItem(foreign_kind(&other)));
@@ -83,15 +137,20 @@ fn insert_global(
     ty: Handle<Type>,
     attrs: &[Attribute],
     from_type: Option<AddressSpace>,
+    from_init: Option<ResourceBinding>,
 ) -> Result<(), Error> {
     let info = parse_resource_attrs(attrs)?;
     // Both or neither: a host that assigns bindings itself (Blade matches
     // globals up by name at pipeline creation) wants them left unset, but half
     // a binding is a typo.
-    let binding = match (info.group, info.binding) {
+    let from_attrs = match (info.group, info.binding) {
         (Some(group), Some(binding)) => Some(ResourceBinding { group, binding }),
         (None, None) => None,
-        _ => return Err(Error::MissingResourceBinding(name.clone())),
+        _ => return Err(Error::HalfBinding(name)),
+    };
+    let binding = match (from_attrs, from_init) {
+        (Some(_), Some(_)) => return Err(Error::BindingTwice(name)),
+        (from_attrs, from_init) => from_attrs.or(from_init),
     };
 
     if ctx.globals.iter().any(|g| g.name == name) {
@@ -139,15 +198,6 @@ fn insert_global(
         SpaceKind::Private => (AddressSpace::Private, true),
     };
 
-    // Only resources are bound; workgroup and private memory belongs to the
-    // shader itself.
-    let binding = match (space, binding) {
-        (AddressSpace::WorkGroup | AddressSpace::Private, Some(_)) => {
-            return Err(Error::UnexpectedBinding(name))
-        }
-        (_, binding) => binding,
-    };
-
     // WGSL puts runtime-sized arrays in storage only. Naga notices too, but as
     // an alignment complaint about a stride nobody wrote.
     if !matches!(space, AddressSpace::Storage { .. }) && has_runtime_array(ctx, ty) {
@@ -165,6 +215,23 @@ fn finish_global(
     writable: bool,
     binding: Option<ResourceBinding>,
 ) -> Result<(), Error> {
+    // Only resources are bound; workgroup and private memory belongs to the
+    // shader itself. A build that said who assigns bindings holds each
+    // resource to it here, where the error can name the line: Naga would
+    // notice a missing binding too, but only as a complaint about the module.
+    let resource = matches!(
+        space,
+        AddressSpace::Uniform | AddressSpace::Storage { .. } | AddressSpace::Handle
+    );
+    match (binding, ctx.bindings) {
+        (Some(_), _) if !resource => return Err(Error::UnexpectedBinding(name)),
+        (None, Some(Bindings::Explicit)) if resource => {
+            return Err(Error::MissingResourceBinding(name))
+        }
+        (Some(_), Some(Bindings::Host)) => return Err(Error::HostAssignedBinding(name)),
+        _ => {}
+    }
+
     let handle = ctx.module.global_variables.append(
         GlobalVariable {
             name: Some(name.clone()),

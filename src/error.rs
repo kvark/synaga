@@ -76,6 +76,8 @@ pub enum Error {
     UnsupportedBinding(String),
     #[error("entry point argument `{0}` needs #[location] or #[builtin]")]
     MissingArgBinding(String),
+    #[error("entry point argument `{0}` is a struct with no `#[location]`s, which only a host that assigns them can fill in: derive `Io` and give each field one, or build with `Bindings::Host`")]
+    UnboundStructArg(String),
     #[error("a compute entry point needs `threads(x, y, z)`")]
     MissingWorkgroupSize,
     #[error("`threads` is only for a compute entry point")]
@@ -102,8 +104,18 @@ pub enum Error {
     BadMatCtor(String),
     #[error("wrong number of components for matrix constructor")]
     MatCtorArgs,
-    #[error("resource `{0}` needs #[group] and #[binding]")]
+    #[error("`{0}` has no binding: initialise it with `group(G).binding(B)`, or build with `Bindings::Host` if the host assigns bindings")]
     MissingResourceBinding(String),
+    #[error("`{0}` needs `#[group]` and `#[binding]` together")]
+    HalfBinding(String),
+    #[error("`{0}` is given a binding twice, by attributes and by its initialiser")]
+    BindingTwice(String),
+    #[error("`{0}` says where it binds, but under `Bindings::Host` the host assigns bindings: initialise it with `binding()`")]
+    HostAssignedBinding(String),
+    #[error("`{0}` is initialised with `binding()`, or with `group(G).binding(B)` to say where it binds")]
+    UnsupportedInitializer(String),
+    #[error("a binding number is a `u32` literal or `const`, which `{0}` is not")]
+    UnsupportedBindingNumber(String),
     #[error("`{0}` is a runtime-sized array, so it needs `#[storage]`")]
     RuntimeArrayNotStorage(String),
     #[error("duplicate global `{0}`")]

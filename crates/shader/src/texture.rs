@@ -12,7 +12,7 @@
 
 use core::marker::PhantomData;
 
-use crate::resource::Resource;
+use crate::resource::{Bindable, Resource};
 use crate::unimplemented_on_cpu;
 use crate::vector::{vec2, vec2i, vec2u, vec3, vec3i, vec3u, vec4, vec4i, vec4u};
 
@@ -121,6 +121,7 @@ macro_rules! marker {
         impl<$($param),*> Resource for $name<$($param),*> {
             const BINDING: Self = $name(PhantomData);
         }
+        impl<$($param),*> Bindable for $name<$($param),*> {}
         unsafe impl<$($param),*> Sync for $name<$($param),*> {}
         unsafe impl<$($param),*> Send for $name<$($param),*> {}
     };
@@ -131,6 +132,7 @@ macro_rules! marker {
         impl Resource for $name {
             const BINDING: Self = $name;
         }
+        impl Bindable for $name {}
     };
 }
 
@@ -200,6 +202,7 @@ pub struct sampler;
 impl Resource for sampler {
     const BINDING: Self = sampler;
 }
+impl Bindable for sampler {}
 
 /// Samples a depth texture, comparing against a reference.
 #[allow(non_camel_case_types)]
@@ -208,6 +211,7 @@ pub struct sampler_comparison;
 impl Resource for sampler_comparison {
     const BINDING: Self = sampler_comparison;
 }
+impl Bindable for sampler_comparison {}
 
 /// What a ray query traces against.
 #[allow(non_camel_case_types)]
@@ -216,6 +220,7 @@ pub struct acceleration_structure;
 impl Resource for acceleration_structure {
     const BINDING: Self = acceleration_structure;
 }
+impl Bindable for acceleration_structure {}
 
 // The size queries. `dimensions` is the base level; `level_dimensions` is
 // WGSL's `textureDimensions(t, level)`, which Rust cannot overload by arity.

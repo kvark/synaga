@@ -6,6 +6,7 @@ use syn::{Attribute, FnArg, ItemFn, LitInt, Meta, ReturnType};
 
 use super::env::Env;
 use super::{is_unit, lower_signature, Context};
+use crate::build::Bindings;
 use crate::Error;
 
 #[derive(Default)]
@@ -343,6 +344,10 @@ pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> R
             None if ctx.as_struct(arg.ty).is_some() => {
                 if is_io_struct(ctx, arg.ty) {
                     check_io_struct(ctx, arg.ty, stage, true)?;
+                } else if ctx.bindings == Some(Bindings::Explicit) {
+                    return Err(Error::UnboundStructArg(
+                        arg.name.clone().unwrap_or_default(),
+                    ));
                 }
             }
             None => {

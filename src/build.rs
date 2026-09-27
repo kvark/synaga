@@ -66,13 +66,15 @@ const HEADER: [u8; 8] = [b'S', b'Y', b'N', b'A', b'G', b'A', 1, NAGA_MAJOR];
 /// Who assigns `@group` and `@binding`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Bindings {
-    /// The shader writes them itself, with `#[group]` and `#[binding]`.
+    /// The shader says where each resource binds, as a WGSL shader does: it
+    /// is initialised with `group(0).binding(1)`. A resource that does not
+    /// say is an error.
     #[default]
     Explicit,
     /// The host assigns them at pipeline creation, matching globals up by
-    /// name — what [Blade](https://github.com/kvark/blade) does. Globals are
-    /// expected to carry no binding attributes, and validation is told not to
-    /// ask for any.
+    /// name — what [Blade](https://github.com/kvark/blade) does. Every
+    /// resource is initialised with `binding()`, one that says where it binds
+    /// is an error, and validation is told not to ask.
     Host,
 }
 
@@ -408,11 +410,12 @@ impl Shaders {
                 text: &files[i].text,
             })
             .collect();
-        let mut module = crate::parse(&texts, cfg).map_err(|err| BuildError {
-            // Blame the file the failure is in, which need not be the shader.
-            path: Some(files[sources[err.index]].path.clone()),
-            kind: BuildErrorKind::Transpile(err.error),
-        })?;
+        let mut module =
+            crate::parse_expecting(&texts, cfg, Some(self.bindings)).map_err(|err| BuildError {
+                // Blame the file the failure is in, which need not be the shader.
+                path: Some(files[sources[err.index]].path.clone()),
+                kind: BuildErrorKind::Transpile(err.error),
+            })?;
 
         let flags = match self.bindings {
             Bindings::Explicit => naga::valid::ValidationFlags::all(),

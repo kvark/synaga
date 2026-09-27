@@ -270,12 +270,139 @@ fn host_bindings_accept_globals_with_none() {
         .emit_to(&dir.join("out"))
         .expect("host bindings");
 
-    // The default expects the shader to have said where things bind.
+    // The default expects the shader to have said where things bind, and
+    // says which global did not, where it is written.
     let err = Shaders::new()
         .dir(dir.join("shaders"))
         .emit_to(&dir.join("out"))
         .expect_err("explicit bindings");
-    assert!(matches!(err.kind, BuildErrorKind::Validate(_)), "{err}");
+    assert!(matches!(err.kind, BuildErrorKind::Transpile(_)), "{err}");
+    let msg = err.to_string();
+    assert!(msg.contains("tint.rs:2:"), "{msg}");
+    assert!(msg.contains("`tint` has no binding"), "{msg}");
+    assert!(msg.contains("group(G).binding(B)"), "{msg}");
+}
+
+#[test]
+fn explicit_bindings_are_written_where_the_resource_is() {
+    let dir = scratch("explicit_bindings");
+    // A helper file says where its resource binds, with a `const` the host
+    // can use too; the shader that brings it along adds its own.
+    write(
+        &dir,
+        "common.rs",
+        r#"
+        use synaga_shader::*;
+        pub const GLOBALS: u32 = 0;
+        pub static globals: Uniform<vec4> = group(GLOBALS).binding(0);
+        "#,
+    );
+    write(
+        &dir,
+        "tint.rs",
+        r#"
+        use synaga_shader::*;
+        use super::common::*;
+        const MATERIAL: u32 = 1;
+        pub static albedo: texture_2d<f32> = group(MATERIAL).binding(0);
+        pub static linear: sampler = synaga_shader::group(MATERIAL).binding(1);
+        #[entry_point(fragment)]
+        #[output(location(0))]
+        pub fn fs(#[location(0)] uv: vec2) -> vec4 {
+            *globals * albedo.sample(&linear, uv)
+        }
+        "#,
+    );
+
+    let shaders = Shaders::new()
+        .dir(dir.join("shaders"))
+        .emit_to(&dir.join("out"))
+        .expect("explicit bindings");
+    let module = decode(&shaders[0].output_path);
+    let mut bound: Vec<(String, u32, u32)> = module
+        .global_variables
+        .iter()
+        .map(|(_, var)| {
+            let at = var.binding.as_ref().expect("every resource is bound");
+            (var.name.clone().unwrap(), at.group, at.binding)
+        })
+        .collect();
+    bound.sort();
+    assert_eq!(
+        bound,
+        [
+            ("albedo".to_string(), 1, 0),
+            ("globals".to_string(), 0, 0),
+            ("linear".to_string(), 1, 1),
+        ]
+    );
+}
+
+#[test]
+fn a_vertex_struct_without_locations_needs_host_bindings() {
+    let dir = scratch("unbound_vertex");
+    // Blade fills a struct argument's fields in by name; any other host needs
+    // them to say where they come from.
+    write(
+        &dir,
+        "quad.rs",
+        r#"
+        use synaga_shader::*;
+        pub struct Vertex { pub pos: vec2 }
+        #[entry_point(vertex)]
+        #[output(builtin(position))]
+        pub fn vs(vertex: Vertex) -> vec4 { vertex.pos.extend(0.0).extend(1.0) }
+        "#,
+    );
+
+    Shaders::new()
+        .dir(dir.join("shaders"))
+        .bindings(Bindings::Host)
+        .emit_to(&dir.join("out"))
+        .expect("host bindings");
+    let err = Shaders::new()
+        .dir(dir.join("shaders"))
+        .emit_to(&dir.join("out"))
+        .expect_err("explicit bindings");
+    let msg = err.to_string();
+    assert!(msg.contains("quad.rs:4:"), "{msg}");
+    assert!(
+        msg.contains("`vertex` is a struct with no `#[location]`s"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn host_bindings_refuse_a_resource_that_says_where() {
+    let dir = scratch("host_refuses");
+    write(
+        &dir,
+        "tint.rs",
+        r#"
+        use synaga_shader::*;
+        pub static tint: Uniform<vec4> = group(0).binding(0);
+        #[entry_point(fragment)]
+        #[output(location(0))]
+        pub fn fs() -> vec4 { *tint }
+        "#,
+    );
+
+    // Blade asserts a module has no bindings, at pipeline creation; this says
+    // so at build time, at the line that has one.
+    let err = Shaders::new()
+        .dir(dir.join("shaders"))
+        .bindings(Bindings::Host)
+        .emit_to(&dir.join("out"))
+        .expect_err("a binding under Bindings::Host");
+    let msg = err.to_string();
+    assert!(msg.contains("tint.rs:3:"), "{msg}");
+    assert!(msg.contains("the host assigns bindings"), "{msg}");
+
+    // The same source is fine for a host that takes the shader's word.
+    Shaders::new()
+        .dir(dir.join("shaders"))
+        .emit_to(&dir.join("out"))
+        .expect("explicit bindings");
 }
 
 #[test]

@@ -3,8 +3,9 @@
 //! These are compiled twice: `rustc` checks them as ordinary Rust, and the
 //! build script reads the same files and serializes a Naga module.
 //!
-//! Resources keep the lowercase names the host binds them by, which is the
-//! one Rust convention a shader breaks on purpose.
+//! Resources keep lowercase names, as WGSL globals have and as a host that
+//! binds by name needs, which is the one Rust convention a shader breaks on
+//! purpose.
 #![allow(non_upper_case_globals)]
 
 pub mod common;

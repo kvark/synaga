@@ -11,7 +11,7 @@
 //!     #[location(0)] uv: vec2,
 //! }
 //!
-//! static camera: Uniform<mat4> = binding();
+//! static camera: Uniform<mat4> = group(0).binding(0);
 //!
 //! #[entry_point(vertex)]
 //! fn vs(#[location(0)] pos: vec3, #[location(1)] uv: vec2) -> VsOut {

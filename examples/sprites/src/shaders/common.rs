@@ -7,7 +7,11 @@ pub struct Globals {
     pub sprite_size: vec2,
 }
 
-pub static globals: Uniform<Globals> = binding();
+/// The bind group every sprite shader shares, set once a frame. The host can
+/// name it by this constant too.
+pub const FRAME: u32 = 0;
+
+pub static globals: Uniform<Globals> = group(FRAME).binding(0);
 
 pub fn unpack_color(raw: u32) -> vec4 {
     let bytes = (vec4u::splat(raw) >> vec4u(0, 8, 16, 24)) & vec4u::splat(0xFF);
