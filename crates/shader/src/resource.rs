@@ -5,19 +5,26 @@
 //!
 //! ```ignore
 //! static camera: Uniform<Camera> = binding();
-//! static mut counters: StorageMut<[u32]> = binding();
+//! static counters: StorageMut<[u32]> = binding();
 //! static albedo: texture_2d<f32> = binding();
 //! ```
 //!
 //! Each derefs to what it holds, so `camera.view` reads through it.
 //!
-//! A writable resource is a `static mut`, because assigning through a shared
-//! `static` is not something Rust allows however the type is arranged. Using
-//! one takes `unsafe`, which the shader author writes: other invocations run
-//! at the same time, and nothing but the shader keeps them apart.
+//! None of them is a `static mut`. Other invocations run at the same time and
+//! may be writing the same memory, which Rust calls shared mutable state; a
+//! `static mut` says so too, but edition 2024 refuses even a read through one.
+//! So a writable resource is a plain `static`: reading it is safe, its atomics
+//! take `&self`, and a write goes through [`StorageMut::get_mut`], which is
+//! `unsafe` because the shader, not the compiler, keeps the invocations apart:
+//!
+//! ```ignore
+//! let slot = counters[0];
+//! unsafe { counters.get_mut()[1] = slot + 1 };
+//! ```
 
 use core::marker::PhantomData;
-use core::ops::{Deref, DerefMut, Index, IndexMut};
+use core::ops::{Deref, Index, IndexMut};
 
 use crate::unimplemented_on_cpu;
 
@@ -68,27 +75,37 @@ space!(
     false
 );
 space!(
-    /// A read-write storage buffer. Declare it `static mut`.
+    /// A read-write storage buffer. Write through [`StorageMut::get_mut`].
     StorageMut,
     true
 );
 space!(
-    /// Memory shared across a workgroup, zeroed each dispatch. Declare it
-    /// `static mut`.
+    /// Memory shared across a workgroup, zeroed each dispatch. Write through
+    /// [`Workgroup::get_mut`].
     Workgroup,
     true
 );
 space!(
-    /// Memory private to each invocation. Declare it `static mut`.
+    /// Memory private to each invocation. Write through [`Private::get_mut`].
     Private,
     true
 );
 
 macro_rules! writable {
     ($name:ident) => {
-        impl<T: ?Sized> DerefMut for $name<T> {
+        impl<T: ?Sized> $name<T> {
+            /// What this holds, to write to: `unsafe { buf.get_mut().x = 1 }`.
+            ///
+            /// # Safety
+            ///
+            /// Other invocations may be reading or writing the same memory at
+            /// the same time. The shader has to keep the writes that matter
+            /// apart, by giving each invocation its own part of the memory or
+            /// by a barrier between them, as it has to on a GPU. On the CPU,
+            /// two of these must not be alive at once.
             #[inline]
-            fn deref_mut(&mut self) -> &mut T {
+            #[allow(clippy::mut_from_ref)]
+            pub unsafe fn get_mut(&self) -> &mut T {
                 unimplemented_on_cpu()
             }
         }
@@ -130,17 +147,4 @@ impl<T: ?Sized, const N: usize> IndexMut<usize> for binding_array<T, N> {
     fn index_mut(&mut self, index: usize) -> &mut T {
         unimplemented_on_cpu()
     }
-}
-
-/// Number of elements in a runtime-sized array.
-#[inline]
-#[allow(non_snake_case)]
-pub fn arrayLength<T>(_array: &[T]) -> u32 {
-    unimplemented_on_cpu()
-}
-
-/// Number of elements in a runtime-sized array.
-#[inline]
-pub fn array_length<T>(_array: &[T]) -> u32 {
-    unimplemented_on_cpu()
 }

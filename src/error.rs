@@ -86,15 +86,11 @@ pub enum Error {
     ValueFromStatement(String),
     #[error("unexpected address space on `{0}`: a texture or sampler is a handle")]
     UnexpectedAddressSpace(String),
-    #[error("`{0}` needs something that names storage as its first argument")]
-    NotAPlace(String),
-    #[error("`{0}` needs a `ray_query` as its first argument")]
-    NotARayQuery(String),
     #[error("`{0}` needs an `acceleration_structure`")]
     NotAnAccelerationStructure(String),
     #[error("`{0}` is workgroup or private memory, so it takes no binding")]
     UnexpectedBinding(String),
-    #[error("`{0}` needs a texture as its first argument")]
+    #[error("`{0}` is a texture method, and this is not a texture")]
     NotATexture(String),
     #[error("unknown function `{0}`")]
     UnknownFunction(String),

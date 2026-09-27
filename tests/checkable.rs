@@ -109,7 +109,7 @@ fn a_reference_to_a_handle_is_the_handle() {
         r#"
         static tex: texture_2d<f32> = binding();
         static samp: sampler = binding();
-        fn f(uv: vec2) -> vec4 { textureSampleLevel(&tex, &samp, uv, 0.0) }
+        fn f(uv: vec2) -> vec4 { tex.sample_level(&samp, uv, 0.0) }
         "#,
     );
     assert!(wgsl.contains("textureSampleLevel(tex, samp"), "{wgsl}");
@@ -121,7 +121,7 @@ fn storage_load_has_its_own_spelling() {
     validate_only(
         r#"
         #[group(0)] #[binding(0)] static acc: texture_storage_2d<Rgba32Float, ReadWrite> = binding();
-        fn f(c: vec2<i32>) -> vec4 { textureLoadStorage(&acc, c) }
+        fn f(c: vec2<i32>) -> vec4 { acc.load(c) }
         "#,
     );
 }
@@ -168,19 +168,20 @@ fn usize_indexes_what_rust_insists_on_indexing_by_usize() {
 }
 
 #[test]
-fn unsafe_is_for_rustc_and_lowers_as_a_block() {
-    // A `static mut` needs `unsafe` in Rust; the shader has nothing to say
-    // about it, so the block is lowered like any other.
+fn a_write_goes_through_get_mut() {
+    // A writable resource is a plain `static`: reads need nothing, and a
+    // write says `unsafe`, since the shader keeps its invocations apart. The
+    // block and the accessor are for `rustc`; the storage is the same.
     let wgsl = roundtrip_unbound(
         r#"
-        static mut counts: StorageMut<[u32]> = binding();
+        static counts: StorageMut<[u32]> = binding();
         #[entry_point(compute, threads(64))]
         fn tally(#[builtin(global_invocation_id)] id: vec3u) {
             unsafe {
-                counts[id.x as usize] += 1;
+                counts.get_mut()[id.x as usize] += 1;
             }
-            let doubled = unsafe { counts[0] * 2 };
-            unsafe { counts[1] = doubled };
+            let doubled = counts[0] * 2;
+            unsafe { counts.get_mut()[1] = doubled };
         }
         "#,
     );

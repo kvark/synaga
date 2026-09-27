@@ -45,6 +45,15 @@ pub(super) fn lower_place(
         Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
             lower_place(ctx, function, body, &unary.expr, env)
         }
+        // `buf.get_mut()` is how Rust writes to a resource: the same storage,
+        // with the `unsafe` that says the shader keeps its invocations apart.
+        Expr::MethodCall(call) if is_get_mut(call) => {
+            lower_place(ctx, function, body, &call.receiver, env)
+        }
+        Expr::Unsafe(block) => match single_expr(&block.block) {
+            Some(inner) => lower_place(ctx, function, body, inner, env),
+            None => Ok(None),
+        },
         Expr::Path(path) => {
             let Some(ident) = path.path.get_ident() else {
                 return Ok(None);
@@ -121,6 +130,19 @@ pub(super) fn lower_place(
             }))
         }
         _ => Ok(None),
+    }
+}
+
+/// `x.get_mut()`: the accessor a writable resource is written through.
+pub(super) fn is_get_mut(call: &syn::ExprMethodCall) -> bool {
+    call.method == "get_mut" && call.args.is_empty()
+}
+
+/// The expression a block is, when it is nothing but one: `unsafe { x }`.
+pub(super) fn single_expr(block: &syn::Block) -> Option<&Expr> {
+    match &block.stmts[..] {
+        [syn::Stmt::Expr(expr, None)] => Some(expr),
+        _ => None,
     }
 }
 
@@ -261,6 +283,8 @@ fn root_ident(expr: &Expr) -> Option<String> {
         Expr::Path(path) => path.path.get_ident().map(|i| i.to_string()),
         Expr::Field(field) => root_ident(&field.base),
         Expr::Index(index) => root_ident(&index.expr),
+        Expr::MethodCall(call) if is_get_mut(call) => root_ident(&call.receiver),
+        Expr::Unsafe(block) => single_expr(&block.block).and_then(root_ident),
         _ => None,
     }
 }

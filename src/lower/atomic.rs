@@ -26,7 +26,7 @@ pub(super) fn lower_atomic_method(
     name: &str,
     args: &[&Expr],
     env: &mut Env,
-) -> Result<Typed, Error> {
+) -> Result<Option<Typed>, Error> {
     let ty = ctx.intern_scalar(scalar);
 
     let fun = match (name, args) {
@@ -38,7 +38,7 @@ pub(super) fn lower_atomic_method(
                     pointer: place.pointer,
                 },
             )?;
-            return Ok((handle, ty));
+            return Ok(Some((handle, ty)));
         }
         // Naga has no atomic store of its own: a store through a pointer to
         // an atomic is one.
@@ -51,8 +51,7 @@ pub(super) fn lower_atomic_method(
                 },
                 Span::UNDEFINED,
             );
-            // Nothing to hand back; `()` in Rust, and never used as a value.
-            return Ok((value, ty));
+            return Ok(None);
         }
         ("compare_exchange_weak", [current, new]) => {
             let compare = operand(ctx, function, body, current, env, scalar)?;
@@ -78,7 +77,7 @@ pub(super) fn lower_atomic_method(
                 },
                 Span::UNDEFINED,
             );
-            return Ok((result, result_ty));
+            return Ok(Some((result, result_ty)));
         }
         ("swap", [_]) => AtomicFunction::Exchange { compare: None },
         ("fetch_add", [_]) => AtomicFunction::Add,
@@ -123,7 +122,7 @@ pub(super) fn lower_atomic_method(
         },
         Span::UNDEFINED,
     );
-    Ok((result, ty))
+    Ok(Some((result, ty)))
 }
 
 /// A value for the atomic to combine with: the atomic's own scalar, which an

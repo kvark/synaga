@@ -93,8 +93,24 @@ fn discard_in_a_fragment_shader() {
 
 #[test]
 fn rejects_discard_as_a_value() {
-    let msg = reject("fn f() -> f32 { discard() }");
+    let msg = reject("fn f() -> f32 { discard() + 1.0 }");
     assert!(msg.contains("no value"), "{msg}");
+}
+
+#[test]
+fn discard_can_end_a_function_that_returns() {
+    // It never returns, so nothing falls off the end.
+    validate_only(
+        r#"
+        #[entry_point(fragment)]
+        #[output(location(0))]
+        fn fs(#[location(0)] a: f32) -> vec4 {
+            if a < 0.5 { discard() }
+            vec4::splat(a)
+        }
+        fn f() -> f32 { discard() }
+        "#,
+    );
 }
 
 #[test]
@@ -174,20 +190,22 @@ fn an_atomic_method_on_a_plain_variable_is_not_one() {
 }
 
 #[test]
-fn array_length() {
+fn a_runtime_sized_array_asks_for_its_length() {
+    // Rust's `len()`: `arrayLength` in WGSL, and `usize` is `u32` here.
     let wgsl = roundtrip_unbound(
         r#"
         #[storage] static data: [f32] = ();
-        fn n() -> u32 { arrayLength(data) }
+        fn n() -> u32 { data.len() }
         "#,
     );
     assert!(wgsl.contains("arrayLength("), "{wgsl}");
 }
 
 #[test]
-fn rejects_array_length_of_a_fixed_array() {
-    let msg = reject("fn f() -> u32 { let a = [1.0, 2.0]; arrayLength(a) }");
-    assert!(msg.contains("mismatch"), "{msg}");
+fn a_fixed_array_knows_its_length() {
+    // `.len()` as Rust has it: part of the type, so a constant.
+    let wgsl = roundtrip("fn f() -> u32 { let a = [1.0, 2.0]; a.len() }");
+    assert!(wgsl.contains("return 2u;"), "{wgsl}");
 }
 
 #[test]

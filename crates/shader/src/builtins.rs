@@ -233,10 +233,11 @@ pub fn bitcast<T>(_x: impl Copy) -> T {
     unimplemented_on_cpu()
 }
 
-/// Stop this invocation without writing anything.
+/// Stop this invocation without writing anything. It never returns, so
+/// `discard()` can end a function whatever that function returns.
 #[inline]
-pub fn discard() {
-    unimplemented_on_cpu()
+pub fn discard() -> ! {
+    panic!("shader functions describe GPU work and cannot run on the CPU")
 }
 
 /// Wait for every invocation in the workgroup.

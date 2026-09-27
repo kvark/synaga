@@ -37,7 +37,7 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
   `mix`, `step`, `sin`, `cos`, `pow`, `transpose`, `determinant`, the bit-twiddling
   set (`countOneBits`, `reverseBits`, `extractBits`, …) and the packing set
   (`pack4x8snorm`, `unpack4x8unorm`, …) — each also spelled snake_case
-- `all`, `any`, `isNan`, `isInf`; `arrayLength(buf)`; `discard()`;
+- `all`, `any`, `isNan`, `isInf`; `buf.len()` on an array; `discard()`, which never returns;
   `workgroupBarrier()` / `storageBarrier()`
 - globals: `#[group(N)] #[binding(M)] static x: T = ();` (init ignored) or `extern { static x: T; }`;
   both attributes may be dropped for a host that assigns bindings itself — see [`validate_unbound`](#host-assigned-bindings)
@@ -47,17 +47,16 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
   methods minus the `Ordering`: `load` / `store` / `fetch_add` / `fetch_max` / … /
   `swap` / `compare_exchange_weak`, which hands back `{ old_value, exchanged }`
 - ray queries: `acceleration_structure`, `ray_query`, `RayDesc`, `RayIntersection`,
-  `rayQueryInitialize` / `Proceed` / `GetCommittedIntersection` / …, and the
-  predeclared `RAY_FLAG_*` and `RAY_QUERY_INTERSECTION_*` names
+  `rq.initialize(&acc, desc)` / `proceed()` / `committed_intersection()` / …, and
+  the predeclared `RAY_FLAG_*` and `RAY_QUERY_INTERSECTION_*` names
 - `binding_array<T>` and `binding_array<T, N>`
 - zero values: `T()`, or `T::default()`, for a struct, vector, matrix or scalar
 - structs: `struct S { a: vec3, b: f32 }`, literals `S { a, b: x }`, field access `s.a`
 - arrays: `[T; N]` and literals `[a, b, c]`; `[T]` for a runtime-sized storage buffer
 - textures and samplers: `texture_2d<f32>`, `texture_storage_2d<Rgba8Unorm, Write>`,
   `texture_depth_2d`, `sampler`, `sampler_comparison`, arrayed and multisampled variants
-- texture builtins: `textureSample`, `textureSampleLevel`, `textureSampleCompare`,
-  `textureLoad`, `textureStore`, `textureDimensions`, `textureNumLevels`, … — each also
-  spelled snake_case (`texture_load`)
+- texture methods: `t.sample(&s, uv)`, `sample_level`, `sample_compare`, `load`,
+  `store`, `dimensions`, `num_levels`, … — see [the table](#textures-and-ray-queries-are-methods)
 - I/O structs: `#[location]` / `#[builtin]` on struct fields, for vertex outputs,
   fragment inputs, and multiple render targets
 
@@ -244,7 +243,7 @@ atomics, and every other body panics. The types are there to be *checked*; the
 shader runs on a GPU. Real implementations can be filled in later without a
 signature changing.
 
-#### Three things Rust spells differently
+#### Things Rust spells differently
 
 Rust cannot do what WGSL does here, so a checkable shader says it another way.
 Both spellings transpile identically; only one of them type-checks.
@@ -256,7 +255,6 @@ Both spellings transpile identically; only one of them type-checks.
 | `a <= b` on vectors | `a.cmple(b)` | Rust's `<=` yields one `bool`, a shader's yields one per lane |
 | `v as vec3<f32>` | `vec3::from(v)` | `as` only converts primitives |
 | `T()` | `T::default()` | `T()` is a call, and a struct is not a function |
-| `textureLoad(t, c)` on storage | `textureLoadStorage(t, c)` | same name, one argument fewer |
 
 `usize` is `u32`. A GPU index is 32-bit and WGSL has no `usize`, but `[T; N]`,
 `[T]` and the prelude's vectors index by it and `Index` offers nothing else, so
@@ -266,14 +264,50 @@ The address space moves into the type, so a global needs no attribute:
 `Uniform<T>`, `Storage<T>`, `StorageMut<T>`, `Workgroup<T>`, `Private<T>`, each
 initialised `= binding()`.
 
-Writable resources are `static mut`: assigning through a shared `static` is not
-something Rust allows however the type is arranged. Using one takes `unsafe`,
-which the shader says itself: other invocations run at the same time, and
-nothing but the shader keeps them apart.
+None of them is a `static mut`. Other invocations run at the same time and may
+write the same memory, which Rust calls shared mutable state; edition 2024
+refuses even a read through a `static mut`. So a write goes through
+`get_mut`, which is `unsafe` because the shader, not the compiler, keeps the
+invocations apart:
+
+```rust,ignore
+pub static particles: StorageMut<[Particle]> = binding();
+
+let p = particles[i];                                  // a read needs nothing
+unsafe { particles.get_mut()[i].life -= delta };       // a write says so
+```
 
 Atomics are `AtomicU32` and `AtomicI32`, with the standard methods but no
 `Ordering`, since WGSL's atomics are relaxed and nothing stronger. They take
-`&self`, as the standard ones do, and on the CPU they are real atomics.
+`&self`, as the standard ones do, so a buffer changed only through its atomics
+needs no `unsafe` at all. On the CPU they are real atomics.
+
+#### Textures and ray queries are methods
+
+Each operation lives on the types it applies to, so `rustc` turns away what
+WGSL would: sampling an integer texture, storing to a sampled one, a depth
+comparison without a comparison sampler, loading from a write-only storage
+texture.
+
+| WGSL | Rust |
+| --- | --- |
+| `textureSample(t, s, uv)` | `t.sample(&s, uv)` |
+| `textureSampleLevel(t, s, uv, l)` | `t.sample_level(&s, uv, l)` |
+| `textureSampleBias`, `…Grad`, `…Compare`, `…CompareLevel` | `sample_bias`, `sample_grad`, `sample_compare`, `sample_compare_level` |
+| `textureLoad(t, c, level)` | `t.load(c, level)` — a storage texture's takes no level |
+| `textureStore(t, c, v)` | `t.store(c, v)` |
+| `textureDimensions(t)`, `textureDimensions(t, l)` | `t.dimensions()`, `t.level_dimensions(l)` |
+| `textureNumLevels(t)`, `…Layers`, `…Samples` | `t.num_levels()`, `num_layers`, `num_samples` |
+| `rayQueryInitialize(&rq, acc, desc)` | `rq.initialize(&acc, desc)` |
+| `rayQueryProceed(&rq)` | `rq.proceed()` |
+| `rayQueryGetCommittedIntersection(&rq)` | `rq.committed_intersection()` |
+| `arrayLength(&buf.items)` | `buf.items.len()` |
+
+An array texture takes its layer after the coordinate, as WGSL does:
+`layers.sample_level(&s, uv, layer, 0.0)`.
+
+`discard()` never returns, so it may end a function whatever that function
+returns. A call that returns nothing can end a block, as in Rust.
 
 Nothing silences `rustc`: an unused variable, a needless `mut`, a helper
 nothing calls are all reported. `#[entry_point]` allows `dead_code` on the

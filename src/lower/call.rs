@@ -7,7 +7,6 @@ use super::expr::{lower_expr, lower_expr_hinted};
 use super::matrix::lower_mat_ctor;
 use super::parse_mat_ident;
 use super::parse_vec_ident;
-use super::texture;
 use super::vector::lower_vec_ctor;
 use super::{Context, Shape, Typed};
 use crate::Error;
@@ -111,62 +110,27 @@ pub(super) fn lower_call_stmt(
     call: &syn::ExprCall,
     env: &mut Env,
 ) -> Result<(), Error> {
-    if let Some(name) = builtin_name(ctx, call)? {
-        if let Some(op) = texture::texture_builtin(&name) {
-            if op.is_statement() {
-                texture::lower_texture_call(ctx, function, body, call, env, &name, op)?;
-                return Ok(());
-            }
-        }
-        if let Some(op) = super::ray::ray_builtin(&name) {
-            if op.is_statement() {
-                super::ray::lower_ray_call(ctx, function, body, call, env, &name, op)?;
-                return Ok(());
-            }
-        }
-        if let Some(barrier) = barrier(&name) {
-            if !call.args.is_empty() {
-                return Err(Error::WrongArgCount(name));
-            }
-            body.push(Statement::ControlBarrier(barrier), Span::UNDEFINED);
-            return Ok(());
-        }
-        if name == "discard" {
-            if !call.args.is_empty() {
-                return Err(Error::WrongArgCount(name));
-            }
-            body.push(Statement::Kill, Span::UNDEFINED);
-            return Ok(());
-        }
-    }
-    match lower_call(ctx, function, body, call, env) {
-        Ok(_) => Ok(()),
-        // The call was lowered; it simply had nothing to hand back.
-        Err(Error::ValueFromStatement(_)) => Ok(()),
-        Err(e) => Err(e),
-    }
+    lower_call_any(ctx, function, body, call, env).map(|_| ())
 }
 
-/// `arrayLength(buf)`: Naga wants a pointer to the runtime-sized array, which
-/// is what the place walk produces.
-fn lower_array_length(
+/// A call in value position: it has to produce something.
+pub(super) fn lower_call(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
     call: &syn::ExprCall,
     env: &mut Env,
-    name: &str,
 ) -> Result<Typed, Error> {
-    let [arg] = call.args.iter().collect::<Vec<_>>()[..] else {
-        return Err(Error::WrongArgCount(name.into()));
-    };
-    let place = super::place::lower_place(ctx, function, body, arg, env)?
-        .ok_or_else(|| Error::NotAPlace(name.into()))?;
-    if !matches!(ctx.as_array(place.ty), Some((_, naga::ArraySize::Dynamic))) {
-        return Err(Error::TypeMismatch);
+    lower_call_any(ctx, function, body, call, env)?
+        .ok_or_else(|| Error::ValueFromStatement(callee_label(call)))
+}
+
+/// What a call's callee is called, for an error.
+fn callee_label(call: &syn::ExprCall) -> String {
+    match call.func.as_ref() {
+        Expr::Path(path) => super::last(&super::path_segments(&path.path)),
+        _ => "call".into(),
     }
-    let handle = emit(function, body, Expression::ArrayLength(place.pointer))?;
-    Ok((handle, ctx.intern_scalar(naga::Scalar::U32)))
 }
 
 fn barrier(name: &str) -> Option<naga::Barrier> {
@@ -238,30 +202,17 @@ fn lower_bitcast(
     Ok((handle, target))
 }
 
-/// The builtin a call names, if it is not a function the sources declare.
-fn builtin_name(ctx: &mut Context, call: &syn::ExprCall) -> Result<Option<String>, Error> {
-    let Expr::Path(path) = call.func.as_ref() else {
-        return Ok(None);
-    };
-    if path.qself.is_some() {
-        return Ok(None);
-    }
-    let segments = super::path_segments(&path.path);
-    match classify_path(ctx, &segments)? {
-        Callee::Function(path) if ctx.function(&path)?.is_none() => Ok(Some(super::last(&path))),
-        _ => Ok(None),
-    }
-}
-
-pub(super) fn lower_call(
+/// A call anywhere: what it produces, or `None` for a call to something that
+/// produces nothing, which is fine in statement or tail position.
+pub(super) fn lower_call_any(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
     call: &syn::ExprCall,
     env: &mut Env,
-) -> Result<Typed, Error> {
+) -> Result<Option<Typed>, Error> {
     if let Some(ty) = bitcast_target(call) {
-        return lower_bitcast(ctx, function, body, call, env, ty);
+        return lower_bitcast(ctx, function, body, call, env, ty).map(Some);
     }
     let path = match call.func.as_ref() {
         Expr::Path(path) if path.qself.is_none() => super::path_segments(&path.path),
@@ -273,7 +224,8 @@ pub(super) fn lower_call(
             let args: Vec<&Expr> = call.args.iter().collect();
             return super::method::lower_qualified_call(
                 ctx, function, body, &ty, &item, &args, env,
-            );
+            )
+            .map(Some);
         }
         Callee::Function(path) => path,
     };
@@ -289,43 +241,37 @@ pub(super) fn lower_call(
             let handle = function
                 .expressions
                 .append(Expression::ZeroValue(ty), Span::UNDEFINED);
-            return Ok((handle, ty));
+            return Ok(Some((handle, ty)));
         }
     }
     if parse_vec_ident(&name).is_some() {
-        return lower_vec_ctor(ctx, function, body, call, env);
+        return lower_vec_ctor(ctx, function, body, call, env).map(Some);
     }
     if parse_mat_ident(&name).is_some() {
-        return lower_mat_ctor(ctx, function, body, call, env);
+        return lower_mat_ctor(ctx, function, body, call, env).map(Some);
     }
-    {
-        if name == "select" {
-            return lower_select(ctx, function, body, call, env);
+    if name == "select" {
+        return lower_select(ctx, function, body, call, env).map(Some);
+    }
+    if let Some(barrier) = barrier(&name) {
+        if !call.args.is_empty() {
+            return Err(Error::WrongArgCount(name));
         }
-        if let Some(op) = texture::texture_builtin(&name) {
-            if op.is_statement() {
-                return Err(Error::ValueFromStatement(name));
-            }
-            return texture::lower_texture_call(ctx, function, body, call, env, &name, op);
+        body.push(Statement::ControlBarrier(barrier), Span::UNDEFINED);
+        return Ok(None);
+    }
+    if name == "discard" {
+        if !call.args.is_empty() {
+            return Err(Error::WrongArgCount(name));
         }
-        if let Some(op) = super::ray::ray_builtin(&name) {
-            if op.is_statement() {
-                return Err(Error::ValueFromStatement(name));
-            }
-            return super::ray::lower_ray_call(ctx, function, body, call, env, &name, op);
-        }
-        if barrier(&name).is_some() || name == "discard" {
-            return Err(Error::ValueFromStatement(name));
-        }
-        if name == "arrayLength" || name == "array_length" {
-            return lower_array_length(ctx, function, body, call, env, &name);
-        }
-        if let Some(fun) = relational(&name) {
-            return lower_relational(ctx, function, body, call, env, &name, fun);
-        }
-        if let Some(spec) = math_spec(&name) {
-            return lower_math(ctx, function, body, call, env, &name, spec);
-        }
+        body.push(Statement::Kill, Span::UNDEFINED);
+        return Ok(None);
+    }
+    if let Some(fun) = relational(&name) {
+        return lower_relational(ctx, function, body, call, env, &name, fun).map(Some);
+    }
+    if let Some(spec) = math_spec(&name) {
+        return lower_math(ctx, function, body, call, env, &name, spec).map(Some);
     }
     Err(Error::UnknownFunction(name))
 }
@@ -575,7 +521,7 @@ fn lower_fn_call(
     call: &syn::ExprCall,
     env: &mut Env,
     callee: Handle<Function>,
-) -> Result<Typed, Error> {
+) -> Result<Option<Typed>, Error> {
     let (name, expected, ret_ty): (String, Vec<_>, Option<_>) = {
         let func = &ctx.module.functions[callee];
         let expected = func.arguments.iter().map(|a| a.ty).collect();
@@ -621,8 +567,5 @@ fn lower_fn_call(
         },
         Span::UNDEFINED,
     );
-    match (result, ret_ty) {
-        (Some(result), Some(ty)) => Ok((result, ty)),
-        _ => Err(Error::ValueFromStatement(name.into())),
-    }
+    Ok(result.zip(ret_ty))
 }

@@ -21,13 +21,13 @@ pub fn encode_srgb(linear: vec3) -> vec3 {
 
 #[entry_point(compute, threads(8, 8))]
 pub fn tonemap(#[builtin(global_invocation_id)] gid: vec3u) {
-    let size = textureDimensions(&hdr);
+    let size = hdr.dimensions();
     if gid.x >= size.x || gid.y >= size.y {
         return;
     }
     let coord = vec2i::from(gid.xy());
-    let raw = textureLoad(&hdr, coord, 0);
+    let raw = hdr.load(coord, 0);
     let mapped = raw.xyz() * post_params.exposure / (dot(raw.xyz(), LUMA) + 1.0);
     let encoded = select(mapped, encode_srgb(mapped), post_params.needs_srgb != 0);
-    textureStore(&ldr, coord, encoded.extend(raw.w));
+    ldr.store(coord, encoded.extend(raw.w));
 }

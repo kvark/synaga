@@ -35,6 +35,8 @@ fn unit_return_type_is_the_same_thing() {
 #[test]
 fn rejects_a_void_call_as_a_value() {
     let msg = reject("fn nothing() { } fn f() -> f32 { nothing() }");
+    assert!(msg.contains("without returning a value"), "{msg}");
+    let msg = reject("fn nothing() { } fn f() -> f32 { nothing() + 1.0 }");
     assert!(msg.contains("no value"), "{msg}");
 }
 
@@ -135,4 +137,42 @@ fn rejects_a_reference_of_the_wrong_type() {
         "#,
     );
     assert!(msg.contains("mismatch"), "{msg}");
+}
+
+#[test]
+fn a_call_that_returns_nothing_can_end_a_block() {
+    // `f()` is `()` when `f` returns nothing, so it ends a function returning
+    // nothing, with or without the semicolon.
+    let wgsl = roundtrip(
+        r#"
+        fn g() {}
+        fn f() { g() }
+        fn h(c: bool) { if c { g() } else { f() } }
+        #[entry_point(compute, threads(1))]
+        fn main() { workgroupBarrier() }
+        "#,
+    );
+    assert!(wgsl.contains("fn f() {\n    g();"), "{wgsl}");
+    assert!(wgsl.contains("workgroupBarrier();"), "{wgsl}");
+}
+
+#[test]
+fn a_method_that_returns_nothing_can_end_a_block() {
+    validate_only_unbound(
+        r#"
+        static t: texture_storage_2d<Rgba8Unorm, Write> = binding();
+        fn put(c: vec2i) { t.store(c, vec4::splat(1.0)) }
+        "#,
+    );
+}
+
+#[test]
+fn nothing_is_not_a_value() {
+    let msg = reject(
+        r#"
+        fn g() {}
+        fn f() -> f32 { let x = g(); 1.0 }
+        "#,
+    );
+    assert!(msg.contains("no value"), "{msg}");
 }

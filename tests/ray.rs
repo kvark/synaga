@@ -44,7 +44,7 @@ const RAY_QUERY_SHADER: &str = r#"
 
     #[entry_point(compute, threads(8, 8))]
     fn main(#[builtin(global_invocation_id)] global_id: vec3<u32>) {
-        let target_size = textureDimensions(output);
+        let target_size = output.dimensions();
         if any(global_id.xy > target_size) {
             return;
         }
@@ -55,7 +55,7 @@ const RAY_QUERY_SHADER: &str = r#"
 
         loop {
             let rq: ray_query;
-            rayQueryInitialize(rq, acc_struct, RayDesc {
+            rq.initialize(&acc_struct, RayDesc {
                 flags: RAY_FLAG_NONE,
                 cull_mask: 0xFF,
                 tmin: 0.1,
@@ -63,8 +63,8 @@ const RAY_QUERY_SHADER: &str = r#"
                 origin: ray_pos,
                 dir: ray_dir,
             });
-            rayQueryProceed(rq);
-            let intersection = rayQueryGetCommittedIntersection(rq);
+            rq.proceed();
+            let intersection = rq.committed_intersection();
             if intersection.kind == RAY_QUERY_INTERSECTION_NONE {
                 break;
             }
@@ -79,7 +79,7 @@ const RAY_QUERY_SHADER: &str = r#"
             }
         }
 
-        textureStore(output, global_id.xy as vec2<i32>, vec4(ray_dir, 1.0));
+        output.store(global_id.xy as vec2<i32>, vec4(ray_dir, 1.0));
     }
 "#;
 
@@ -119,14 +119,14 @@ fn proceed_drives_a_loop() {
         static acc: acceleration_structure = ();
         fn trace_one(o: vec3, d: vec3) -> f32 {
             let rq: ray_query;
-            rayQueryInitialize(rq, acc, RayDesc {
+            rq.initialize(&acc, RayDesc {
                 flags: RAY_FLAG_NONE, cull_mask: 0xFF,
                 tmin: 0.0, tmax: 100.0, origin: o, dir: d,
             });
-            while rayQueryProceed(rq) {
-                rayQueryConfirmIntersection(rq);
+            while rq.proceed() {
+                rq.confirm_intersection();
             }
-            rayQueryGetCommittedIntersection(rq).t
+            rq.committed_intersection().t
         }
         "#,
     );
@@ -139,17 +139,17 @@ fn candidate_intersections_and_terminate() {
         static acc: acceleration_structure = ();
         fn any_hit(o: vec3, d: vec3) -> bool {
             let rq: ray_query;
-            rayQueryInitialize(rq, acc, RayDesc {
+            rq.initialize(&acc, RayDesc {
                 flags: RAY_FLAG_TERMINATE_ON_FIRST_HIT, cull_mask: 0xFF,
                 tmin: 0.0, tmax: 100.0, origin: o, dir: d,
             });
-            while rayQueryProceed(rq) {
-                let candidate = rayQueryGetCandidateIntersection(rq);
+            while rq.proceed() {
+                let candidate = rq.candidate_intersection();
                 if candidate.t < 1.0 {
-                    rayQueryTerminate(rq);
+                    rq.terminate();
                 }
             }
-            rayQueryGetCommittedIntersection(rq).kind != RAY_QUERY_INTERSECTION_NONE
+            rq.committed_intersection().kind != RAY_QUERY_INTERSECTION_NONE
         }
         "#,
     );
@@ -163,12 +163,12 @@ fn intersection_transforms() {
         static acc: acceleration_structure = ();
         fn local_point(o: vec3, d: vec3) -> vec3 {
             let rq: ray_query;
-            rayQueryInitialize(rq, acc, RayDesc {
+            rq.initialize(&acc, RayDesc {
                 flags: RAY_FLAG_NONE, cull_mask: 0xFF,
                 tmin: 0.0, tmax: 100.0, origin: o, dir: d,
             });
-            rayQueryProceed(rq);
-            let hit = rayQueryGetCommittedIntersection(rq);
+            rq.proceed();
+            let hit = rq.committed_intersection();
             (hit.world_to_object * vec4(o + d * hit.t, 1.0)).xyz
         }
         "#,
@@ -177,11 +177,8 @@ fn intersection_transforms() {
 
 #[test]
 fn rejects_a_ray_op_on_something_else() {
-    let msg = reject("fn f(x: f32) { rayQueryProceed(x); }");
-    assert!(
-        msg.contains("storage") || msg.contains("ray_query"),
-        "{msg}"
-    );
+    let msg = reject("fn f(x: f32) { x.proceed(); }");
+    assert!(msg.contains("`proceed`"), "{msg}");
 }
 
 #[test]
@@ -191,7 +188,7 @@ fn rejects_initialize_without_an_acceleration_structure() {
         static acc: texture_2d<f32> = ();
         fn f(o: vec3, d: vec3) {
             let rq: ray_query;
-            rayQueryInitialize(rq, acc, RayDesc {
+            rq.initialize(&acc, RayDesc {
                 flags: 0u32, cull_mask: 0xFF, tmin: 0.0, tmax: 1.0, origin: o, dir: d,
             });
         }
@@ -207,9 +204,10 @@ fn rejects_initialize_as_a_value() {
         static acc: acceleration_structure = ();
         fn f(o: vec3, d: vec3) -> u32 {
             let rq: ray_query;
-            rayQueryInitialize(rq, acc, RayDesc {
+            let started = rq.initialize(&acc, RayDesc {
                 flags: 0u32, cull_mask: 0xFF, tmin: 0.0, tmax: 1.0, origin: o, dir: d,
-            })
+            });
+            1u32
         }
         "#,
     );
@@ -226,10 +224,10 @@ fn ray_query_inside_a_function_emits_wgsl() {
         static acc: acceleration_structure = ();
         fn trace(o: vec3, d: vec3) -> bool {
             let rq: ray_query;
-            rayQueryInitialize(rq, acc, RayDesc {
+            rq.initialize(&acc, RayDesc {
                 flags: 0u32, cull_mask: 0xFF, tmin: 0.0, tmax: 1.0, origin: o, dir: d,
             });
-            rayQueryProceed(rq)
+            rq.proceed()
         }
         #[entry_point(compute, threads(1))]
         fn main(#[builtin(local_invocation_index)] i: u32) {
@@ -256,10 +254,10 @@ fn ray_query_default_is_a_local() {
         static acc: acceleration_structure = ();
         fn f(o: vec3, d: vec3) {
             let mut rq = ray_query::default();
-            rayQueryInitialize(rq, acc, RayDesc {
+            rq.initialize(&acc, RayDesc {
                 flags: 0u32, cull_mask: 0xFF, tmin: 0.0, tmax: 1.0, origin: o, dir: d,
             });
-            rayQueryProceed(rq);
+            rq.proceed();
         }
         "#,
     );
@@ -293,7 +291,7 @@ fn binding_arrays() {
         static textures: binding_array<texture_2d<f32>> = ();
         static samp: sampler = ();
         fn sample_one(i: u32, uv: vec2) -> vec4 {
-            textureSampleLevel(textures[i], samp, uv, 0.0)
+            textures[i].sample_level(&samp, uv, 0.0)
         }
         "#,
     )
@@ -310,7 +308,7 @@ fn sized_binding_array() {
         r#"
         static textures: binding_array<texture_2d<f32>, 8> = ();
         static samp: sampler = ();
-        fn sample_first(uv: vec2) -> vec4 { textureSampleLevel(textures[0], samp, uv, 0.0) }
+        fn sample_first(uv: vec2) -> vec4 { textures[0].sample_level(&samp, uv, 0.0) }
         "#,
     )
     .expect("parse");
