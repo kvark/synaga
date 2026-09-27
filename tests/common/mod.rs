@@ -28,6 +28,13 @@ pub fn validate_only(src: &str) {
     validate(&module).unwrap_or_else(|e| panic!("validate: {e}\n{src}"));
 }
 
+/// Like `validate_only`, for a module whose `@group`/`@binding` the host
+/// assigns.
+pub fn validate_only_unbound(src: &str) {
+    let module = parse_str(src).unwrap_or_else(|e| panic!("parse: {e}\n{src}"));
+    validate_unbound(&module).unwrap_or_else(|e| panic!("validate: {e}\n{src}"));
+}
+
 /// The message `src` is rejected with. Panics if it is accepted instead.
 pub fn reject(src: &str) -> String {
     match parse_str(src) {

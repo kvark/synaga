@@ -238,13 +238,13 @@ fn ray_queries_stay_in_the_module() {
         #[entry_point(compute, threads(8, 8))]
         fn cs(#[builtin(global_invocation_id)] gid: vec3<u32>) {
             let rq: ray_query;
-            rayQueryInitialize(rq, acc, RayDesc {
+            rq.initialize(&acc, RayDesc {
                 flags: RAY_FLAG_NONE, cull_mask: 0xFF,
                 tmin: 0.0, tmax: 100.0, origin: vec3(0.0), dir: vec3(0.0, 0.0, 1.0),
             });
-            rayQueryProceed(rq);
-            let hit = rayQueryGetCommittedIntersection(rq);
-            textureStore(output, gid.xy as vec2<i32>, vec4(hit.t));
+            rq.proceed();
+            let hit = rq.committed_intersection();
+            output.store(gid.xy as vec2<i32>, vec4(hit.t));
         }
         "#,
     );

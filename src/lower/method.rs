@@ -18,12 +18,13 @@ use super::place::swizzle_components;
 use super::{parse_vec_ident, Context, Shape, Typed};
 use crate::Error;
 
-/// A method call. What the receiver is decides what the method means.
+/// A method call. What the receiver is decides what the method means: an
+/// atomic's `load` is not a texture's.
 ///
-/// An atomic is storage rather than a value, since the operation changes it
-/// in place, so the receiver is found as a place first and its type says
-/// whether it is one. Anything else is loaded, as it would be in any other
-/// expression.
+/// Some receivers are storage rather than a value. An atomic changes in place
+/// and a ray query advances, so for those the receiver is found as a place
+/// first, and its type says which it is. Anything else is loaded, as it would
+/// be in any other expression.
 pub(super) fn lower_method_call(
     ctx: &mut Context,
     function: &mut Function,
@@ -31,22 +32,57 @@ pub(super) fn lower_method_call(
     call: &syn::ExprMethodCall,
     env: &mut Env,
 ) -> Result<Typed, Error> {
+    lower_method_any(ctx, function, body, call, env)?
+        .ok_or_else(|| Error::ValueFromStatement(call.method.to_string()))
+}
+
+/// A method call anywhere: what it produces, or `None` for one that only
+/// acts, like a texture's `store`, which is fine in statement or tail
+/// position.
+pub(super) fn lower_method_any(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    call: &syn::ExprMethodCall,
+    env: &mut Env,
+) -> Result<Option<Typed>, Error> {
     let name = call.method.to_string();
     let args: Vec<&Expr> = call.args.iter().collect();
 
     let receiver = match super::place::lower_place(ctx, function, body, &call.receiver, env)? {
         Some(place) => {
-            if let naga::TypeInner::Atomic(scalar) = ctx.module.types[place.ty].inner {
-                return super::atomic::lower_atomic_method(
-                    ctx, function, body, place, scalar, &name, &args, env,
-                );
+            match ctx.module.types[place.ty].inner {
+                naga::TypeInner::Atomic(scalar) => {
+                    return super::atomic::lower_atomic_method(
+                        ctx, function, body, place, scalar, &name, &args, env,
+                    );
+                }
+                naga::TypeInner::RayQuery { .. } => {
+                    return super::ray::lower_ray_method(
+                        ctx, function, body, place, &name, &args, env,
+                    );
+                }
+                // A runtime-sized array has a length only where it lives.
+                naga::TypeInner::Array {
+                    size: naga::ArraySize::Dynamic,
+                    ..
+                } if name == "len" && args.is_empty() => {
+                    let handle = emit(function, body, Expression::ArrayLength(place.pointer))?;
+                    return Ok(Some((handle, ctx.intern_scalar(Scalar::U32))));
+                }
+                _ => {}
             }
             let ty = place.ty;
             (super::place::load(function, body, &place)?, ty)
         }
         None => lower_expr(ctx, function, body, &call.receiver, env)?,
     };
-    lower_value_method(ctx, function, body, receiver, &name, &args, env)
+    if super::texture::is_image(ctx, receiver.1) {
+        return super::texture::lower_texture_method(
+            ctx, function, body, receiver, &name, &args, env,
+        );
+    }
+    lower_value_method(ctx, function, body, receiver, &name, &args, env).map(Some)
 }
 
 /// `v.xyz()`, `v.extend(w)`, `a.cmple(b)` and the rest, on a value.
@@ -69,6 +105,17 @@ fn lower_value_method(
     }
 
     match (name.as_str(), args) {
+        // A fixed array's length is part of its type; `usize` is `u32` here.
+        ("len", []) if ctx.as_array(base_ty).is_some() => {
+            let Some((_, naga::ArraySize::Constant(len))) = ctx.as_array(base_ty) else {
+                return Err(Error::UnsupportedMethod(name));
+            };
+            let handle = function.expressions.append(
+                Expression::Literal(naga::Literal::U32(len.get())),
+                naga::Span::UNDEFINED,
+            );
+            Ok((handle, ctx.intern_scalar(Scalar::U32)))
+        }
         ("extend", [value]) => {
             let Shape::Vector(size, scalar) = ctx.shape(base_ty) else {
                 return Err(Error::UnsupportedMethod(name));

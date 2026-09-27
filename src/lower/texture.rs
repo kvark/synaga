@@ -1,8 +1,9 @@
-//! Texture and sampler types, and the builtins that work on them.
+//! Texture and sampler types, and the methods that work on them.
 //!
-//! Spelled as WGSL spells them — `texture_2d<f32>`, `texture_storage_2d<Rgba8Unorm, Write>`,
-//! `sampler` — so a WGSL shader ports across without renaming. The builtins take
-//! either their WGSL name or a snake_case one (`textureLoad` / `texture_load`).
+//! The types are spelled as WGSL spells them — `texture_2d<f32>`,
+//! `texture_storage_2d<Rgba8Unorm, Write>`, `sampler`. The operations are
+//! methods, named after WGSL's builtins in snake case without the `texture`
+//! prefix: `t.sample_level(&s, uv, 0.0)` is `textureSampleLevel(t, s, uv, 0.0)`.
 
 use naga::{
     Block, Expression, Function, Handle, ImageClass, ImageDimension, ImageQuery, SampleLevel,
@@ -197,6 +198,11 @@ fn parse_format(ty: &syn::Type) -> Option<StorageFormat> {
     })
 }
 
+/// Is `ty` an image, which is what the texture methods act on?
+pub(super) fn is_image(ctx: &Context, ty: Handle<Type>) -> bool {
+    matches!(ctx.module.types[ty].inner, TypeInner::Image { .. })
+}
+
 /// Images, samplers and acceleration structures live in the handle address
 /// space: they name a resource rather than memory, so there is no space to
 /// choose and nothing to load through a pointer.
@@ -214,50 +220,42 @@ pub(super) fn is_handle(ctx: &Context, ty: Handle<Type>) -> bool {
     )
 }
 
-/// Which texture builtin `name` is, under either spelling.
-pub(super) fn texture_builtin(name: &str) -> Option<TextureOp> {
+/// Which texture operation a method is. The names are WGSL's builtins in
+/// snake case without the `texture` prefix.
+fn texture_method(name: &str) -> Option<TextureOp> {
     Some(match name {
-        "textureSample" | "texture_sample" => TextureOp::Sample,
-        "textureSampleLevel" | "texture_sample_level" => TextureOp::SampleLevel,
-        "textureSampleCompare" | "texture_sample_compare" => TextureOp::SampleCompare,
-        "textureSampleCompareLevel" | "texture_sample_compare_level" => {
-            TextureOp::SampleCompareLevel
-        }
-        "textureLoad" | "texture_load" => TextureOp::Load,
-        // The storage form is the same operation; Rust just cannot give one
-        // name two arities, so a checkable shader spells it apart.
-        "textureLoadStorage" | "texture_load_storage" => TextureOp::Load,
-        "textureStore" | "texture_store" => TextureOp::Store,
-        "textureDimensions"
-        | "texture_dimensions"
-        | "textureDimensionsLevel"
-        | "texture_dimensions_level" => TextureOp::Dimensions,
-        "textureNumLevels" | "texture_num_levels" => TextureOp::NumLevels,
-        "textureNumLayers" | "texture_num_layers" => TextureOp::NumLayers,
-        "textureNumSamples" | "texture_num_samples" => TextureOp::NumSamples,
+        "sample" => TextureOp::Sample,
+        "sample_level" => TextureOp::SampleLevel,
+        "sample_bias" => TextureOp::SampleBias,
+        "sample_grad" => TextureOp::SampleGrad,
+        "sample_compare" => TextureOp::SampleCompare,
+        "sample_compare_level" => TextureOp::SampleCompareLevel,
+        "load" => TextureOp::Load,
+        "store" => TextureOp::Store,
+        "dimensions" => TextureOp::Dimensions,
+        "level_dimensions" => TextureOp::LevelDimensions,
+        "num_levels" => TextureOp::NumLevels,
+        "num_layers" => TextureOp::NumLayers,
+        "num_samples" => TextureOp::NumSamples,
         _ => return None,
     })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum TextureOp {
+enum TextureOp {
     Sample,
     SampleLevel,
+    SampleBias,
+    SampleGrad,
     SampleCompare,
     SampleCompareLevel,
     Load,
     Store,
     Dimensions,
+    LevelDimensions,
     NumLevels,
     NumLayers,
     NumSamples,
-}
-
-impl TextureOp {
-    /// `textureStore` writes rather than produces; it is a statement.
-    pub(super) fn is_statement(self) -> bool {
-        self == TextureOp::Store
-    }
 }
 
 struct ImageInfo {
@@ -290,46 +288,47 @@ fn coord_size(dim: ImageDimension) -> Option<VectorSize> {
     }
 }
 
-pub(super) fn lower_texture_call(
+/// `t.sample_level(&s, uv, 0.0)` and the rest, on the image `image`.
+///
+/// The arguments come in WGSL's order with the texture itself taken out:
+/// sampler, coordinate, array layer if the texture has layers, then whatever
+/// the operation adds.
+pub(super) fn lower_texture_method(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
-    call: &syn::ExprCall,
-    env: &mut Env,
+    (image, image_ty): Typed,
     name: &str,
-    op: TextureOp,
-) -> Result<Typed, Error> {
-    let mut args = call.args.iter();
-    let image_arg = args
-        .next()
-        .ok_or_else(|| Error::WrongArgCount(name.into()))?;
-    let (image, image_ty) = lower_expr(ctx, function, body, image_arg, env)?;
+    args: &[&Expr],
+    env: &mut Env,
+) -> Result<Option<Typed>, Error> {
+    let op = texture_method(name)
+        .ok_or_else(|| Error::UnsupportedMethod(format!("{name} on a texture")))?;
     let info = image_info(ctx, image_ty, name)?;
+    let mut args = args.iter().copied();
 
     match op {
         TextureOp::Dimensions
+        | TextureOp::LevelDimensions
         | TextureOp::NumLevels
         | TextureOp::NumLayers
         | TextureOp::NumSamples => {
             let query = match op {
-                TextureOp::Dimensions => {
-                    let level = match args.next() {
-                        Some(level) => Some(lower_expr(ctx, function, body, level, env)?.0),
-                        None => None,
-                    };
-                    ImageQuery::Size { level }
-                }
+                TextureOp::Dimensions => ImageQuery::Size { level: None },
+                TextureOp::LevelDimensions => ImageQuery::Size {
+                    level: Some(next_arg(ctx, function, body, &mut args, env, name)?),
+                },
                 TextureOp::NumLevels => ImageQuery::NumLevels,
                 TextureOp::NumLayers => ImageQuery::NumLayers,
                 _ => ImageQuery::NumSamples,
             };
             expect_end(&mut args, name)?;
-            let ty = match (op, coord_size(info.dim)) {
-                (TextureOp::Dimensions, Some(size)) => ctx.intern_vector(size, Scalar::U32),
+            let ty = match (query, coord_size(info.dim)) {
+                (ImageQuery::Size { .. }, Some(size)) => ctx.intern_vector(size, Scalar::U32),
                 _ => ctx.intern_scalar(Scalar::U32),
             };
             let handle = emit(function, body, Expression::ImageQuery { image, query })?;
-            Ok((handle, ty))
+            Ok(Some((handle, ty)))
         }
         TextureOp::Load => {
             let coordinate = next_arg(ctx, function, body, &mut args, env, name)?;
@@ -364,7 +363,7 @@ pub(super) fn lower_texture_call(
                     level,
                 },
             )?;
-            Ok((handle, ty))
+            Ok(Some((handle, ty)))
         }
         TextureOp::Store => {
             let coordinate = next_arg(ctx, function, body, &mut args, env, name)?;
@@ -384,11 +383,9 @@ pub(super) fn lower_texture_call(
                 },
                 Span::UNDEFINED,
             );
-            // Nothing to hand back; `lower_stmt_expr` keeps this out of value
-            // position, and the caller here only uses the type on that path.
-            Ok((value, ctx.intern_scalar(Scalar::U32)))
+            Ok(None)
         }
-        _ => lower_sample(ctx, function, body, &mut args, env, name, op, image, &info),
+        _ => lower_sample(ctx, function, body, &mut args, env, name, op, image, &info).map(Some),
     }
 }
 
@@ -422,6 +419,11 @@ fn lower_sample<'a>(
         TextureOp::SampleLevel => {
             SampleLevel::Exact(next_arg(ctx, function, body, args, env, name)?)
         }
+        TextureOp::SampleBias => SampleLevel::Bias(next_arg(ctx, function, body, args, env, name)?),
+        TextureOp::SampleGrad => SampleLevel::Gradient {
+            x: next_arg(ctx, function, body, args, env, name)?,
+            y: next_arg(ctx, function, body, args, env, name)?,
+        },
         // A comparison sample is always at the base level; `textureSampleCompare`
         // picks its own in hardware.
         TextureOp::SampleCompare => SampleLevel::Auto,

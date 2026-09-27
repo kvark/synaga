@@ -44,5 +44,5 @@ pub fn vs_main(vertex: Vertex) -> VertexOutput {
 #[entry_point(fragment)]
 #[output(location(0))]
 pub fn fs_main(vertex: VertexOutput) -> vec4 {
-    vertex.color * textureSampleLevel(&sprite_texture, &sprite_sampler, vertex.tex_coords, 0.0)
+    vertex.color * sprite_texture.sample_level(&sprite_sampler, vertex.tex_coords, 0.0)
 }

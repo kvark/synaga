@@ -359,10 +359,11 @@ pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> R
     let tail = super::stmt::lower_block(ctx, &mut function, &mut body, &item.block, &mut env)?;
     env.pop_scope();
     match tail {
-        Some((value, _)) => body.push(
+        Some((value, _)) if function.result.is_some() => body.push(
             naga::Statement::Return { value: Some(value) },
             naga::Span::UNDEFINED,
         ),
+        Some(_) => {}
         None if function.result.is_some() && !super::stmt::always_jumps(&body) => {
             return Err(Error::MissingReturn(function.name.unwrap_or_default()))
         }

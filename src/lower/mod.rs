@@ -628,9 +628,12 @@ impl Context {
         let tail = lower_block(self, &mut function, &mut body, &item.block, &mut env)?;
         env.pop_scope();
         match tail {
-            Some((value, _)) => {
+            // A function returning nothing may still end in an expression with
+            // a value; `rustc` has checked that it is `()`.
+            Some((value, _)) if function.result.is_some() => {
                 body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED)
             }
+            Some(_) => {}
             None if function.result.is_some() && !always_jumps(&body) => {
                 return Err(Error::MissingReturn(function.name.unwrap_or_default()))
             }

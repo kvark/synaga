@@ -4,14 +4,14 @@
 //! and `RayIntersection` for what was found — so they are generated on demand
 //! rather than declared here, and their field names come from Naga.
 //!
-//! A query is a variable the operations act on, and as with the atomics it is
-//! passed directly rather than by reference: nothing else could be meant.
+//! A query is a local the operations act on, as methods: `rq.proceed()`.
 
 use naga::{Block, Expression, Function, Handle, RayQueryFunction, Scalar, Span, Statement, Type};
 use syn::Expr;
 
 use super::emit::emit;
 use super::env::Env;
+use super::place::Place;
 use super::{Context, Typed};
 use crate::Error;
 
@@ -64,103 +64,43 @@ pub(super) fn predeclared_const(name: &str) -> Option<u32> {
     Some(value)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum RayOp {
-    Initialize,
-    Proceed,
-    GenerateIntersection,
-    ConfirmIntersection,
-    Terminate,
-    GetCommitted,
-    GetCandidate,
-}
-
-impl RayOp {
-    /// Which of these hand a value back: `rayQueryProceed` and the two
-    /// intersection getters. The rest only act on the query.
-    pub(super) fn is_statement(self) -> bool {
-        !matches!(
-            self,
-            RayOp::Proceed | RayOp::GetCommitted | RayOp::GetCandidate
-        )
-    }
-}
-
-pub(super) fn ray_builtin(name: &str) -> Option<RayOp> {
-    Some(match name {
-        "rayQueryInitialize" | "ray_query_initialize" => RayOp::Initialize,
-        "rayQueryProceed" | "ray_query_proceed" => RayOp::Proceed,
-        "rayQueryGenerateIntersection" | "ray_query_generate_intersection" => {
-            RayOp::GenerateIntersection
-        }
-        "rayQueryConfirmIntersection" | "ray_query_confirm_intersection" => {
-            RayOp::ConfirmIntersection
-        }
-        "rayQueryTerminate" | "ray_query_terminate" => RayOp::Terminate,
-        "rayQueryGetCommittedIntersection" | "ray_query_get_committed_intersection" => {
-            RayOp::GetCommitted
-        }
-        "rayQueryGetCandidateIntersection" | "ray_query_get_candidate_intersection" => {
-            RayOp::GetCandidate
-        }
-        _ => return None,
-    })
-}
-
-pub(super) fn lower_ray_call(
+/// `rq.proceed()` and the rest, on the ray query `place` names.
+///
+/// A query is storage the operations change, so the receiver is a place: the
+/// local it was declared as.
+pub(super) fn lower_ray_method(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
-    call: &syn::ExprCall,
-    env: &mut Env,
+    place: Place,
     name: &str,
-    op: RayOp,
-) -> Result<Typed, Error> {
-    let args: Vec<&Expr> = call.args.iter().collect();
-    let want = match op {
-        RayOp::Initialize => 3,
-        RayOp::GenerateIntersection => 2,
-        _ => 1,
-    };
-    if args.len() != want {
-        return Err(Error::WrongArgCount(name.into()));
-    }
-
-    // The query is storage the operation mutates, so it comes through the place
-    // walk rather than as a loaded value.
-    let place = super::place::lower_place(ctx, function, body, args[0], env)?
-        .ok_or_else(|| Error::NotAPlace(name.into()))?;
-    if !matches!(
-        ctx.module.types[place.ty].inner,
-        naga::TypeInner::RayQuery { .. }
-    ) {
-        return Err(Error::NotARayQuery(name.into()));
-    }
+    args: &[&Expr],
+    env: &mut Env,
+) -> Result<Option<Typed>, Error> {
     let query = place.pointer;
-
-    let fun = match op {
-        RayOp::Initialize => {
+    let fun = match (name, args) {
+        ("initialize", [scene, desc]) => {
             let (acceleration_structure, acc_ty) =
-                super::expr::lower_expr(ctx, function, body, args[1], env)?;
+                super::expr::lower_expr(ctx, function, body, scene, env)?;
             if !matches!(
                 ctx.module.types[acc_ty].inner,
                 naga::TypeInner::AccelerationStructure { .. }
             ) {
                 return Err(Error::NotAnAccelerationStructure(name.into()));
             }
-            let (descriptor, _) = super::expr::lower_expr(ctx, function, body, args[2], env)?;
+            let (descriptor, _) = super::expr::lower_expr(ctx, function, body, desc, env)?;
             RayQueryFunction::Initialize {
                 acceleration_structure,
                 descriptor,
             }
         }
-        RayOp::GenerateIntersection => {
-            let (hit_t, _) = super::expr::lower_expr(ctx, function, body, args[1], env)?;
+        ("generate_intersection", [hit_t]) => {
+            let (hit_t, _) = super::expr::lower_expr(ctx, function, body, hit_t, env)?;
             RayQueryFunction::GenerateIntersection { hit_t }
         }
-        RayOp::ConfirmIntersection => RayQueryFunction::ConfirmIntersection,
-        RayOp::Terminate => RayQueryFunction::Terminate,
-        RayOp::Proceed => {
+        ("confirm_intersection", []) => RayQueryFunction::ConfirmIntersection,
+        ("terminate", []) => RayQueryFunction::Terminate,
+        ("proceed", []) => {
             // The result is its own expression kind, not an emitted one.
             let result = function
                 .expressions
@@ -172,23 +112,48 @@ pub(super) fn lower_ray_call(
                 },
                 Span::UNDEFINED,
             );
-            return Ok((result, ctx.intern_scalar(Scalar::BOOL)));
+            return Ok(Some((result, ctx.intern_scalar(Scalar::BOOL))));
         }
-        RayOp::GetCommitted | RayOp::GetCandidate => {
+        ("committed_intersection" | "candidate_intersection", []) => {
             let ty = ctx.module.generate_ray_intersection_type();
             let handle = emit(
                 function,
                 body,
                 Expression::RayQueryGetIntersection {
                     query,
-                    committed: op == RayOp::GetCommitted,
+                    committed: name == "committed_intersection",
                 },
             )?;
-            return Ok((handle, ty));
+            return Ok(Some((handle, ty)));
         }
+        (
+            "initialize"
+            | "generate_intersection"
+            | "confirm_intersection"
+            | "terminate"
+            | "proceed"
+            | "committed_intersection"
+            | "candidate_intersection",
+            _,
+        ) => return Err(Error::WrongArgCount(name.into())),
+        _ => return Err(Error::UnsupportedMethod(format!("{name} on a ray query"))),
     };
 
     body.push(Statement::RayQuery { query, fun }, Span::UNDEFINED);
-    // Nothing to hand back; the statement path ignores this.
-    Ok((query, ctx.intern_scalar(Scalar::U32)))
+    Ok(None)
+}
+
+/// Does a method with this name drive a ray query? A query it is called on has
+/// to live in a local, since the operation changes it.
+pub(super) fn is_ray_method(name: &str) -> bool {
+    matches!(
+        name,
+        "initialize"
+            | "proceed"
+            | "generate_intersection"
+            | "confirm_intersection"
+            | "terminate"
+            | "committed_intersection"
+            | "candidate_intersection"
+    )
 }

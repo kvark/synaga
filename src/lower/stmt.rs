@@ -66,7 +66,7 @@ pub(super) fn lower_block(
             }
             Stmt::Expr(expr, semi) => {
                 if last && semi.is_none() && yields_value(expr) {
-                    tail = Some(lower_expr(ctx, function, body, expr, env)?);
+                    tail = lower_tail(ctx, function, body, expr, env)?;
                 } else {
                     lower_stmt_expr(ctx, function, body, expr, env)?;
                     tail = None;
@@ -105,6 +105,34 @@ fn has_break(block: &Block) -> bool {
     })
 }
 
+/// The last expression of a block, which is its value if it has one.
+///
+/// Whether it has one is not always visible in the syntax: `f()` is `()` when
+/// `f` returns nothing, and so is `t.store(c, v)`. So a call, and an `if` or a
+/// block ending in one, may turn out to have no value, which is fine here.
+pub(super) fn lower_tail(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    expr: &Expr,
+    env: &mut Env,
+) -> Result<Option<Typed>, Error> {
+    match expr {
+        Expr::Call(call) => super::call::lower_call_any(ctx, function, body, call, env),
+        Expr::MethodCall(call) => super::method::lower_method_any(ctx, function, body, call, env),
+        Expr::If(if_expr) => lower_if_any(ctx, function, body, if_expr, env),
+        Expr::Block(syn::ExprBlock { block, .. }) | Expr::Unsafe(syn::ExprUnsafe { block, .. }) => {
+            env.push_scope();
+            let tail = lower_block(ctx, function, body, block, env)?;
+            env.pop_scope();
+            Ok(tail)
+        }
+        Expr::Paren(inner) => lower_tail(ctx, function, body, &inner.expr, env),
+        Expr::Group(inner) => lower_tail(ctx, function, body, &inner.expr, env),
+        other => lower_expr(ctx, function, body, other, env).map(Some),
+    }
+}
+
 fn lower_stmt_expr(
     ctx: &mut Context,
     function: &mut Function,
@@ -120,9 +148,12 @@ fn lower_stmt_expr(
         Expr::ForLoop(for_expr) => lower_for(ctx, function, body, for_expr, env),
         // Some builtins write rather than produce, so they only make sense here.
         Expr::Call(call) => super::call::lower_call_stmt(ctx, function, body, call, env),
+        Expr::MethodCall(call) => {
+            super::method::lower_method_any(ctx, function, body, call, env).map(|_| ())
+        }
         Expr::Continue(cont) => lower_continue(body, cont),
-        // `unsafe` is for `rustc`, which wants it around a `static mut`. The
-        // shader has nothing to say about it.
+        // `unsafe` is for `rustc`, which wants it around `get_mut`. The shader
+        // has nothing to say about it.
         Expr::Block(syn::ExprBlock { block, .. }) | Expr::Unsafe(syn::ExprUnsafe { block, .. }) => {
             env.push_scope();
             let _ = lower_block(ctx, function, body, block, env)?;
@@ -474,10 +505,9 @@ impl<'ast> Visit<'ast> for Addressed {
                 note_root(&bin.left, &mut self.names);
             }
             Expr::Reference(reference) => note_root(&reference.expr, &mut self.names),
-            Expr::Call(call) if callee_takes_place(call) => {
-                if let Some(arg) = call.args.first() {
-                    note_root(arg, &mut self.names);
-                }
+            // A ray query's operations change it, so it has to be storage.
+            Expr::MethodCall(call) if super::ray::is_ray_method(&call.method.to_string()) => {
+                note_root(&call.receiver, &mut self.names);
             }
             _ => {}
         }
@@ -501,21 +531,6 @@ fn is_compound_assign(op: &BinOp) -> bool {
     )
 }
 
-/// Ray queries and `arrayLength` take storage rather than a value.
-fn callee_takes_place(call: &syn::ExprCall) -> bool {
-    let Expr::Path(path) = call.func.as_ref() else {
-        return false;
-    };
-    let Some(name) = path.path.get_ident() else {
-        return false;
-    };
-    let name = name.to_string();
-    name.starts_with("rayQuery")
-        || name.starts_with("ray_query_")
-        || name == "arrayLength"
-        || name == "array_length"
-}
-
 fn note_root(expr: &Expr, names: &mut HashSet<String>) {
     match expr {
         Expr::Path(path) => {
@@ -529,6 +544,14 @@ fn note_root(expr: &Expr, names: &mut HashSet<String>) {
         Expr::Group(inner) => note_root(&inner.expr, names),
         Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
             note_root(&unary.expr, names);
+        }
+        Expr::MethodCall(call) if super::place::is_get_mut(call) => {
+            note_root(&call.receiver, names);
+        }
+        Expr::Unsafe(block) => {
+            if let Some(inner) = super::place::single_expr(&block.block) {
+                note_root(inner, names);
+            }
         }
         _ => {}
     }
@@ -613,6 +636,18 @@ pub(super) fn lower_if_expr(
     if_expr: &syn::ExprIf,
     env: &mut Env,
 ) -> Result<Typed, Error> {
+    lower_if_any(ctx, function, body, if_expr, env)?.ok_or(Error::MissingBlockValue)
+}
+
+/// An `if` with an `else`, whose value is its branches' if they have one: an
+/// `if` whose branches both end in a call that returns nothing is a statement.
+fn lower_if_any(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    if_expr: &syn::ExprIf,
+    env: &mut Env,
+) -> Result<Option<Typed>, Error> {
     let else_expr = if_expr
         .else_branch
         .as_ref()
@@ -621,18 +656,27 @@ pub(super) fn lower_if_expr(
     let (condition, _) = lower_expr(ctx, function, body, &if_expr.cond, env)?;
     let mut accept = Block::new();
     env.push_scope();
-    let (then_val, then_ty) = lower_block(ctx, function, &mut accept, &if_expr.then_branch, env)?
-        .ok_or(Error::MissingBlockValue)?;
+    let then_tail = lower_block(ctx, function, &mut accept, &if_expr.then_branch, env)?;
     env.pop_scope();
     let mut reject = Block::new();
     env.push_scope();
-    let (else_val, else_ty) = match else_expr {
-        Expr::Block(b) => lower_block(ctx, function, &mut reject, &b.block, env)?
-            .ok_or(Error::MissingBlockValue)?,
-        Expr::If(inner) => lower_if_expr(ctx, function, &mut reject, inner, env)?,
-        other => lower_expr(ctx, function, &mut reject, other, env)?,
-    };
+    let else_tail = lower_tail(ctx, function, &mut reject, else_expr, env)?;
     env.pop_scope();
+    let ((then_val, then_ty), (else_val, else_ty)) = match (then_tail, else_tail) {
+        (Some(then), Some(other)) => (then, other),
+        (None, None) => {
+            body.push(
+                Statement::If {
+                    condition,
+                    accept,
+                    reject,
+                },
+                Span::UNDEFINED,
+            );
+            return Ok(None);
+        }
+        _ => return Err(Error::MissingBlockValue),
+    };
     if then_ty != else_ty {
         return Err(Error::TypeMismatch);
     }
@@ -671,5 +715,5 @@ pub(super) fn lower_if_expr(
         Span::UNDEFINED,
     );
     let loaded = emit(function, body, Expression::Load { pointer })?;
-    Ok((loaded, ty))
+    Ok(Some((loaded, ty)))
 }

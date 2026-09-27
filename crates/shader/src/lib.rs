@@ -39,8 +39,9 @@
 //!   one per lane in a shader, so the lane-wise forms are `cmplt`, `cmple` and
 //!   the rest, as glam spells them.
 //!
-//! And what it expresses better: atomics are the standard ones without an
-//! `Ordering`.
+//! And what it expresses better: texture and ray-query operations are methods
+//! on the types they apply to, atomics are the standard ones without an
+//! `Ordering`, and a write to shared memory says `unsafe`.
 //!
 //! [synaga]: https://github.com/kvark/synaga
 
