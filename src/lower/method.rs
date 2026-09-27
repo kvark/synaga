@@ -18,7 +18,12 @@ use super::place::swizzle_components;
 use super::{parse_vec_ident, Context, Shape, Typed};
 use crate::Error;
 
-/// `v.xyz()`, `v.extend(w)`, `a.cmple(b)` and the rest.
+/// A method call. What the receiver is decides what the method means.
+///
+/// An atomic is storage rather than a value, since the operation changes it
+/// in place, so the receiver is found as a place first and its type says
+/// whether it is one. Anything else is loaded, as it would be in any other
+/// expression.
 pub(super) fn lower_method_call(
     ctx: &mut Context,
     function: &mut Function,
@@ -29,17 +34,42 @@ pub(super) fn lower_method_call(
     let name = call.method.to_string();
     let args: Vec<&Expr> = call.args.iter().collect();
 
+    let receiver = match super::place::lower_place(ctx, function, body, &call.receiver, env)? {
+        Some(place) => {
+            if let naga::TypeInner::Atomic(scalar) = ctx.module.types[place.ty].inner {
+                return super::atomic::lower_atomic_method(
+                    ctx, function, body, place, scalar, &name, &args, env,
+                );
+            }
+            let ty = place.ty;
+            (super::place::load(function, body, &place)?, ty)
+        }
+        None => lower_expr(ctx, function, body, &call.receiver, env)?,
+    };
+    lower_value_method(ctx, function, body, receiver, &name, &args, env)
+}
+
+/// `v.xyz()`, `v.extend(w)`, `a.cmple(b)` and the rest, on a value.
+fn lower_value_method(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    (base, base_ty): Typed,
+    name: &str,
+    args: &[&Expr],
+    env: &mut Env,
+) -> Result<Typed, Error> {
+    let name = name.to_string();
+
     // A swizzle takes no arguments and is named only by its components.
     if args.is_empty() {
         if let Some(components) = swizzle_components(&name) {
-            let (base, base_ty) = lower_expr(ctx, function, body, &call.receiver, env)?;
             return super::vector::swizzle(ctx, function, body, base, base_ty, &components, &name);
         }
     }
 
-    match (name.as_str(), args.as_slice()) {
+    match (name.as_str(), args) {
         ("extend", [value]) => {
-            let (base, base_ty) = lower_expr(ctx, function, body, &call.receiver, env)?;
             let Shape::Vector(size, scalar) = ctx.shape(base_ty) else {
                 return Err(Error::UnsupportedMethod(name));
             };
@@ -65,7 +95,6 @@ pub(super) fn lower_method_call(
             Ok((handle, ty))
         }
         ("truncate", []) => {
-            let (base, base_ty) = lower_expr(ctx, function, body, &call.receiver, env)?;
             let Shape::Vector(size, _) = ctx.shape(base_ty) else {
                 return Err(Error::UnsupportedMethod(name));
             };
@@ -78,7 +107,7 @@ pub(super) fn lower_method_call(
         }
         (cmp, [rhs]) if compare_op(cmp).is_some() => {
             let op = compare_op(cmp).expect("checked above");
-            let (left, left_ty) = lower_expr(ctx, function, body, &call.receiver, env)?;
+            let (left, left_ty) = (base, base_ty);
             let hint = ctx.shape(left_ty).int_hint();
             let (right, right_ty) = lower_expr_hinted(ctx, function, body, rhs, env, hint)?;
             let ty = bin_result_ty(ctx, op, left_ty, right_ty)?;

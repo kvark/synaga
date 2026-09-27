@@ -11,7 +11,7 @@ fn runtime_sized_storage_buffer() {
         r#"
         struct Particle { pos: vec3, life: f32 }
         #[group(0)] #[binding(0)] #[storage(read_write)] static particles: [Particle] = ();
-        #[compute] #[workgroup_size(64)]
+        #[entry_point(compute, threads(64))]
         fn cs(#[builtin(global_invocation_id)] id: vec3<u32>) {
             particles[id.x].life = 0.0;
         }

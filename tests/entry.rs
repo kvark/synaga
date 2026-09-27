@@ -8,8 +8,7 @@ use synaga::parse_str;
 fn compute_global_id() {
     let wgsl = roundtrip(
         r#"
-        #[compute]
-        #[workgroup_size(8, 8, 1)]
+        #[entry_point(compute, threads(8, 8, 1))]
         fn cs_main(#[builtin(global_invocation_id)] id: vec3<u32>) {
             let x = id.x;
         }
@@ -29,7 +28,7 @@ fn compute_global_id() {
 fn vertex_position() {
     let wgsl = roundtrip(
         r#"
-        #[vertex]
+        #[entry_point(vertex)]
         #[output(builtin(position))]
         fn vs_main(#[location(0)] pos: vec3) -> vec4 {
             vec4(pos.x, pos.y, pos.z, 1.0)
@@ -47,7 +46,7 @@ fn vertex_position() {
 fn fragment_color() {
     validate_only(
         r#"
-        #[fragment]
+        #[entry_point(fragment)]
         #[output(location(0))]
         fn fs_main(#[location(0)] color: vec4) -> vec4 {
             color
@@ -60,7 +59,7 @@ fn fragment_color() {
 fn vertex_with_index() {
     validate_only(
         r#"
-        #[vertex]
+        #[entry_point(vertex)]
         #[output(builtin(position))]
         fn vs_main(#[builtin(vertex_index)] vid: u32) -> vec4 {
             vec4(0.0, 0.0, 0.0, 1.0)
@@ -80,8 +79,7 @@ fn regular_fn_still_in_functions() {
 fn entry_not_in_functions() {
     let module = parse_str(
         r#"
-        #[compute]
-        #[workgroup_size(1)]
+        #[entry_point(compute, threads(1))]
         fn cs_main(#[builtin(local_invocation_index)] i: u32) {}
         "#,
     )
@@ -94,34 +92,42 @@ fn entry_not_in_functions() {
 fn rejects_compute_without_workgroup() {
     let msg = reject(
         r#"
-        #[compute]
+        #[entry_point(compute)]
         fn cs_main(#[builtin(local_invocation_index)] i: u32) {}
         "#,
     );
-    assert!(msg.contains("workgroup"), "{msg}");
+    assert!(msg.contains("threads"), "{msg}");
 }
 
 #[test]
 fn rejects_workgroup_on_vertex() {
     let msg = reject(
         r#"
-        #[vertex]
-        #[workgroup_size(8)]
+        #[entry_point(vertex, threads(8))]
         #[output(builtin(position))]
         fn vs_main() -> vec4 { vec4(0.0, 0.0, 0.0, 1.0) }
         "#,
     );
-    assert!(
-        msg.contains("workgroup") || msg.contains("compute"),
-        "{msg}"
+    assert!(msg.contains("compute"), "{msg}");
+}
+
+#[test]
+fn an_old_stage_attribute_is_named_not_ignored() {
+    let msg = reject(
+        r#"
+        #[vertex]
+        #[output(builtin(position))]
+        fn vs_main() -> vec4 { vec4(0.0, 0.0, 0.0, 1.0) }
+        "#,
     );
+    assert!(msg.contains("#[entry_point(vertex)]"), "{msg}");
 }
 
 #[test]
 fn fragment_may_return_nothing() {
     let wgsl = roundtrip(
         r#"
-        #[fragment]
+        #[entry_point(fragment)]
         fn fs_main() {}
         "#,
     );
@@ -133,7 +139,7 @@ fn fragment_may_return_nothing() {
 fn rejects_vertex_without_return() {
     let msg = reject(
         r#"
-        #[vertex]
+        #[entry_point(vertex)]
         fn vs_main() {}
         "#,
     );
@@ -144,8 +150,7 @@ fn rejects_vertex_without_return() {
 fn rejects_missing_arg_binding() {
     let msg = reject(
         r#"
-        #[compute]
-        #[workgroup_size(1)]
+        #[entry_point(compute, threads(1))]
         fn cs_main(id: vec3<u32>) {}
         "#,
     );

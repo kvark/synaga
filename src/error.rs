@@ -66,17 +66,19 @@ pub enum Error {
     UnsupportedSwizzle(String),
     #[error("vector component index out of range")]
     VecIndexRange,
-    #[error("conflicting shader stage attributes")]
-    ConflictingStage,
+    #[error("`#[entry_point]` needs a stage first: `vertex`, `fragment` or `compute`")]
+    UnknownStage,
+    #[error("`#[{0}]` is spelled `#[entry_point(..)]` now: `#[entry_point(vertex)]`, `#[entry_point(compute, threads(8, 8))]`")]
+    OldStageAttribute(String),
     #[error("duplicate `#[{0}]` attribute")]
     DuplicateAttribute(String),
     #[error("unsupported binding `{0}`")]
     UnsupportedBinding(String),
     #[error("entry point argument `{0}` needs #[location] or #[builtin]")]
     MissingArgBinding(String),
-    #[error("compute entry point needs #[workgroup_size]")]
+    #[error("a compute entry point needs `threads(x, y, z)`")]
     MissingWorkgroupSize,
-    #[error("#[workgroup_size] is only valid on compute")]
+    #[error("`threads` is only for a compute entry point")]
     UnexpectedWorkgroupSize,
     #[error("entry point `{0}` is missing #[output(...)]")]
     MissingReturnBinding(String),
@@ -90,8 +92,6 @@ pub enum Error {
     NotARayQuery(String),
     #[error("`{0}` needs an `acceleration_structure`")]
     NotAnAccelerationStructure(String),
-    #[error("`{0}` needs an `atomic<T>` as its first argument")]
-    NotAnAtomic(String),
     #[error("`{0}` is workgroup or private memory, so it takes no binding")]
     UnexpectedBinding(String),
     #[error("`{0}` needs a texture as its first argument")]

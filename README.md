@@ -23,7 +23,8 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
   global, a field `s.a`, a component `v.x` / `v[i]`, a matrix column `m[0]`
 - `loop` / `while` / `for x in a..b` / `a..=b` / `break` / `continue`
 - implicit tail expressions and `return`
-- entry points: `#[vertex]` / `#[fragment]` / `#[compute]` + `#[workgroup_size(x,y,z)]`
+- entry points: `#[entry_point(vertex)]` / `#[entry_point(fragment)]` /
+  `#[entry_point(compute, threads(x, y, z))]`
 - bindings: `#[location(N)]`, `#[builtin(name)]` on args; `#[output(builtin(..))]` / `#[output(location(N))]` on the fn
 - `select(reject, accept, condition)`, in WGSL's argument order
 - calls to free functions defined anywhere, including ones that return nothing,
@@ -42,8 +43,9 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
   both attributes may be dropped for a host that assigns bindings itself — see [`validate_unbound`](#host-assigned-bindings)
 - address spaces: uniform (default / `#[uniform]`), `#[storage]` (read),
   `#[storage(read_write)]`, `#[workgroup]`, `#[private]`
-- atomics: `atomic<u32>` / `atomic<i32>`, `atomicAdd` / `atomicStore` / `atomicLoad` /
-  `atomicMax` / … taking the variable directly rather than a reference
+- atomics: `AtomicU32` / `AtomicI32` from `synaga-shader`, with the standard
+  methods minus the `Ordering`: `load` / `store` / `fetch_add` / `fetch_max` / … /
+  `swap` / `compare_exchange_weak`, which hands back `{ old_value, exchanged }`
 - ray queries: `acceleration_structure`, `ray_query`, `RayDesc`, `RayIntersection`,
   `rayQueryInitialize` / `Proceed` / `GetCommittedIntersection` / …, and the
   predeclared `RAY_FLAG_*` and `RAY_QUERY_INTERSECTION_*` names
@@ -225,21 +227,22 @@ use synaga_shader::*;
 
 pub static camera: Uniform<Camera> = binding();
 
-#[io]
+#[derive(Io)]
 pub struct VsOut {
     #[builtin(position)] pub clip: vec4,
     #[location(0)] pub uv: vec2,
 }
 
-#[vertex]
+#[entry_point(vertex)]
 pub fn vs(#[location(0)] pos: vec3, #[location(1)] uv: vec2) -> VsOut {
     VsOut { clip: camera.view_proj * pos.extend(1.0), uv }
 }
 ```
 
-Nothing in `synaga-shader` computes anything — every body panics. The types
-are there to be *checked*; the shader runs on a GPU. Real implementations can
-be filled in later without a signature changing.
+Very little in `synaga-shader` runs on the CPU yet: its atomics are real
+atomics, and every other body panics. The types are there to be *checked*; the
+shader runs on a GPU. Real implementations can be filled in later without a
+signature changing.
 
 #### Three things Rust spells differently
 
@@ -264,19 +267,21 @@ The address space moves into the type, so a global needs no attribute:
 initialised `= binding()`.
 
 Writable resources are `static mut`: assigning through a shared `static` is not
-something Rust allows however the type is arranged. The stage attributes wrap
-function bodies in `unsafe` so the shader source does not have to say it.
+something Rust allows however the type is arranged. Using one takes `unsafe`,
+which the shader says itself: other invocations run at the same time, and
+nothing but the shader keeps them apart.
 
-One line of boilerplate per shader tree, in `src/shaders/mod.rs`, turns off the
-lints that would otherwise fire on every lowercase type and global, and on the
-parameters WGSL is happy to leave unread:
+Atomics are `AtomicU32` and `AtomicI32`, with the standard methods but no
+`Ordering`, since WGSL's atomics are relaxed and nothing stronger. They take
+`&self`, as the standard ones do, and on the CPU they are real atomics.
 
-```rust,ignore
-#![allow(
-    non_camel_case_types, non_snake_case, non_upper_case_globals,
-    dead_code, unused_imports, unused_variables
-)]
-```
+Nothing silences `rustc`: an unused variable, a needless `mut`, a helper
+nothing calls are all reported. `#[entry_point]` allows `dead_code` on the
+function it marks, whose caller is the GPU, and `#[derive(Io)]` counts a
+struct's fields as read, since the reader is often the rasterizer or another
+stage. The one lint a shader tree usually wants off is
+`non_upper_case_globals`, because resources keep the lowercase names a host
+binds them by.
 
 ### A prelude in place of `#include`
 

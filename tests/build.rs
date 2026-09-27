@@ -23,7 +23,7 @@ fn write(dir: &Path, name: &str, source: &str) {
 }
 
 const TRIANGLE: &str = r#"
-    #[vertex]
+    #[entry_point(vertex)]
     #[output(builtin(position))]
     fn vs(#[location(0)] pos: vec3) -> vec4 {
         vec4(pos, 1.0)
@@ -31,7 +31,7 @@ const TRIANGLE: &str = r#"
 "#;
 
 const SOLID: &str = r#"
-    #[fragment]
+    #[entry_point(fragment)]
     #[output(location(0))]
     fn fs() -> vec4 { vec4(1.0, 0.0, 0.0, 1.0) }
 "#;
@@ -74,7 +74,7 @@ fn a_prelude_is_shared_and_not_compiled_alone() {
         &dir,
         "grey.rs",
         r#"
-        #[fragment]
+        #[entry_point(fragment)]
         #[output(location(0))]
         fn fs(#[location(0)] c: vec4) -> vec4 { vec4(vec3(luminance(c.xyz)), 1.0) }
         "#,
@@ -143,7 +143,7 @@ fn host_bindings_accept_globals_with_none() {
         "tint.rs",
         r#"
         static tint: vec4 = ();
-        #[fragment]
+        #[entry_point(fragment)]
         #[output(location(0))]
         fn fs() -> vec4 { tint }
         "#,
@@ -235,8 +235,7 @@ fn ray_queries_stay_in_the_module() {
         r#"
         static acc: acceleration_structure = ();
         static output: texture_storage_2d<Rgba8Unorm, Write> = ();
-        #[compute]
-        #[workgroup_size(8, 8)]
+        #[entry_point(compute, threads(8, 8))]
         fn cs(#[builtin(global_invocation_id)] gid: vec3<u32>) {
             let rq: ray_query;
             rayQueryInitialize(rq, acc, RayDesc {
@@ -272,12 +271,10 @@ fn entry_point_names_are_the_source_names() {
         &dir,
         "blur.rs",
         r#"
-        #[compute]
-        #[workgroup_size(8, 8)]
+        #[entry_point(compute, threads(8, 8))]
         fn blur3x3() {}
 
-        #[compute]
-        #[workgroup_size(8, 8)]
+        #[entry_point(compute, threads(8, 8))]
         fn blur() {}
         "#,
     );

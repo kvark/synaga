@@ -85,9 +85,9 @@ pub(super) fn lower_expr_hinted(
         Expr::Cast(cast) => lower_cast(ctx, function, body, cast, env),
         Expr::Assign(assign) => lower_assign(ctx, function, body, &assign.left, &assign.right, env),
         Expr::If(if_expr) => lower_if_expr(ctx, function, body, if_expr, env),
-        Expr::Block(b) => {
+        Expr::Block(syn::ExprBlock { block, .. }) | Expr::Unsafe(syn::ExprUnsafe { block, .. }) => {
             env.push_scope();
-            let tail = lower_block(ctx, function, body, &b.block, env)?;
+            let tail = lower_block(ctx, function, body, block, env)?;
             env.pop_scope();
             tail.ok_or(Error::MissingBlockValue)
         }

@@ -1,20 +1,11 @@
 //! Shader modules.
 //!
 //! These are compiled twice: `rustc` checks them as ordinary Rust, and the
-//! build script reads the same files and transpiles them to WGSL.
+//! build script reads the same files and serializes a Naga module.
 //!
-//! A shader keeps WGSL's naming — lowercase types, lowercase globals, and
-//! resources nothing on the CPU ever reads — and WGSL has no opinion on a
-//! parameter a function does not read, so the lints that would otherwise fire
-//! on every one of them are turned off here for the whole subtree.
-#![allow(
-    non_camel_case_types,
-    non_snake_case,
-    non_upper_case_globals,
-    dead_code,
-    unused_imports,
-    unused_variables
-)]
+//! Resources keep the lowercase names the host binds them by, which is the
+//! one Rust convention a shader breaks on purpose.
+#![allow(non_upper_case_globals)]
 
 pub mod common;
 pub mod sprite;

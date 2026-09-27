@@ -5,7 +5,7 @@
 //! ```ignore
 //! use synaga_shader::*;
 //!
-//! #[io]
+//! #[derive(Clone, Copy, Io)]
 //! struct VsOut {
 //!     #[builtin(position)] clip: vec4,
 //!     #[location(0)] uv: vec2,
@@ -13,22 +13,21 @@
 //!
 //! static camera: Uniform<mat4> = binding();
 //!
-//! #[vertex]
+//! #[entry_point(vertex)]
 //! fn vs(#[location(0)] pos: vec3, #[location(1)] uv: vec2) -> VsOut {
 //!     VsOut { clip: *camera * pos.extend(1.0), uv }
 //! }
 //! ```
 //!
-//! # Nothing here computes anything
+//! # What runs on the CPU
 //!
-//! Every operation panics. These types exist to be *checked*, not run: the
-//! shader is compiled to WGSL by a build script and executed on a GPU, and
-//! nothing ever calls these bodies. Real implementations can be filled in
-//! later without any signature changing.
+//! Very little, yet. The atomics are real atomics; everything else panics.
+//! The types are here to be *checked*, and the shader runs on a GPU.
+//! Implementations can be filled in later without a signature changing.
 //!
-//! # Where this differs from the shader dialect
+//! # Where this differs from WGSL
 //!
-//! Three things Rust cannot express the way WGSL does:
+//! What Rust cannot express the way WGSL does:
 //!
 //! - **Swizzles are methods.** `v.x` is a field, but `v.xyz` would need a
 //!   hundred overlapping names for one piece of memory, so it is `v.xyz()`.
@@ -40,6 +39,9 @@
 //!   one per lane in a shader, so the lane-wise forms are `cmplt`, `cmple` and
 //!   the rest, as glam spells them.
 //!
+//! And what it expresses better: atomics are the standard ones without an
+//! `Ordering`.
+//!
 //! [synaga]: https://github.com/kvark/synaga
 
 // Bodies never run, so every parameter is unused by construction.
@@ -48,18 +50,28 @@
 #![allow(non_snake_case)]
 #![allow(clippy::too_many_arguments, clippy::needless_lifetimes)]
 
+pub mod atomic;
 pub mod builtins;
 pub mod matrix;
 pub mod resource;
 pub mod texture;
 pub mod vector;
 
+pub use atomic::*;
 pub use builtins::*;
 pub use matrix::*;
 pub use resource::*;
-pub use synaga_macros::{compute, fragment, io, shader, vertex};
+pub use synaga_macros::{entry_point, Io};
 pub use texture::*;
 pub use vector::*;
+
+/// A struct of bound shader inputs or outputs. `#[derive(Io)]` implements it.
+pub trait Io {
+    /// Touches every field. Nothing calls it: its body is how `rustc` learns
+    /// that the fields are read, by a stage or the rasterizer it cannot see.
+    #[doc(hidden)]
+    fn read_every_field(&self);
+}
 
 /// The body of everything in this crate.
 ///

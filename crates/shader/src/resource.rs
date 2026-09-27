@@ -12,9 +12,9 @@
 //! Each derefs to what it holds, so `camera.view` reads through it.
 //!
 //! A writable resource is a `static mut`, because assigning through a shared
-//! `static` is not something Rust allows however the type is arranged. The
-//! stage attributes wrap function bodies in `unsafe` so the shader source does
-//! not have to say it.
+//! `static` is not something Rust allows however the type is arranged. Using
+//! one takes `unsafe`, which the shader author writes: other invocations run
+//! at the same time, and nothing but the shader keeps them apart.
 
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut, Index, IndexMut};
@@ -98,18 +98,6 @@ writable!(StorageMut);
 writable!(Workgroup);
 writable!(Private);
 
-/// An atomic in a storage or workgroup buffer.
-#[derive(Clone, Copy, Debug, Default)]
-#[allow(non_camel_case_types)]
-pub struct atomic<T>(PhantomData<T>);
-
-impl<T> Resource for atomic<T> {
-    const BINDING: Self = atomic(PhantomData);
-}
-
-unsafe impl<T> Sync for atomic<T> {}
-unsafe impl<T> Send for atomic<T> {}
-
 /// An array of resources bound as one, indexed in the shader.
 #[allow(non_camel_case_types)]
 pub struct binding_array<T: ?Sized, const N: usize = 0>(PhantomData<T>);
@@ -154,32 +142,5 @@ pub fn arrayLength<T>(_array: &[T]) -> u32 {
 /// Number of elements in a runtime-sized array.
 #[inline]
 pub fn array_length<T>(_array: &[T]) -> u32 {
-    unimplemented_on_cpu()
-}
-
-/// Read an atomic. The argument is the atomic itself: the operation can only
-/// mean that storage, so the `&` WGSL writes is left off.
-#[inline]
-#[allow(non_snake_case)]
-pub fn atomicLoad<T>(_atomic: atomic<T>) -> T {
-    unimplemented_on_cpu()
-}
-
-/// Store `value` into an atomic.
-#[inline]
-#[allow(non_snake_case)]
-pub fn atomicStore<T>(_atomic: atomic<T>, _value: T) {}
-
-/// Add `value` and return what was there.
-#[inline]
-#[allow(non_snake_case)]
-pub fn atomicAdd<T>(_atomic: atomic<T>, _value: T) -> T {
-    unimplemented_on_cpu()
-}
-
-/// Subtract `value` and return what was there.
-#[inline]
-#[allow(non_snake_case)]
-pub fn atomicSub<T>(_atomic: atomic<T>, _value: T) -> T {
     unimplemented_on_cpu()
 }

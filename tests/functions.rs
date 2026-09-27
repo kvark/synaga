@@ -14,7 +14,7 @@ fn void_function() {
         fn write_at(i: u32, v: vec4) {
             out[i] = v;
         }
-        #[compute] #[workgroup_size(1)]
+        #[entry_point(compute, threads(1))]
         fn cs(#[builtin(global_invocation_id)] id: vec3<u32>) {
             write_at(id.x, vec4(1.0));
         }

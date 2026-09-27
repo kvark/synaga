@@ -18,43 +18,65 @@ pub(super) struct StageInfo {
 pub(super) fn parse_fn_attrs(attrs: &[Attribute]) -> Result<StageInfo, Error> {
     let mut info = StageInfo::default();
     for attr in attrs {
-        if attr.path().is_ident("vertex") {
-            set_stage(&mut info.stage, ShaderStage::Vertex)?;
-        } else if attr.path().is_ident("fragment") {
-            set_stage(&mut info.stage, ShaderStage::Fragment)?;
-        } else if attr.path().is_ident("compute") {
-            set_stage(&mut info.stage, ShaderStage::Compute)?;
-        } else if attr.path().is_ident("workgroup_size") {
-            info.workgroup_size = Some(parse_workgroup_size(attr)?);
-        } else if attr.path().is_ident("output") || attr.path().is_ident("return") {
+        if attr.path().is_ident("entry_point") {
+            if info.stage.is_some() {
+                return Err(Error::DuplicateAttribute("entry_point".into()));
+            }
+            parse_entry_point(attr, &mut info)?;
+        } else if attr.path().is_ident("output") {
             info.return_binding = Some(parse_binding_meta(attr)?);
+        } else if let Some(old) = ["vertex", "fragment", "compute", "workgroup_size"]
+            .into_iter()
+            .find(|old| attr.path().is_ident(old))
+        {
+            // Left alone, this would quietly turn the entry point into a helper.
+            return Err(Error::OldStageAttribute(old.into()));
         }
     }
     Ok(info)
 }
 
-fn set_stage(slot: &mut Option<ShaderStage>, stage: ShaderStage) -> Result<(), Error> {
-    if slot.is_some() {
-        return Err(Error::ConflictingStage);
+/// `#[entry_point(vertex)]`, `#[entry_point(fragment)]`, or
+/// `#[entry_point(compute, threads(x, y, z))]`.
+fn parse_entry_point(attr: &Attribute, info: &mut StageInfo) -> Result<(), Error> {
+    let args = attr
+        .parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+        .map_err(|e| Error::UnsupportedBinding(e.to_string()))?;
+    let mut args = args.iter();
+    info.stage = Some(match args.next() {
+        Some(Meta::Path(path)) if path.is_ident("vertex") => ShaderStage::Vertex,
+        Some(Meta::Path(path)) if path.is_ident("fragment") => ShaderStage::Fragment,
+        Some(Meta::Path(path)) if path.is_ident("compute") => ShaderStage::Compute,
+        _ => return Err(Error::UnknownStage),
+    });
+    for arg in args {
+        match arg {
+            Meta::List(list) if list.path.is_ident("threads") => {
+                if info.workgroup_size.is_some() {
+                    return Err(Error::DuplicateAttribute("threads".into()));
+                }
+                info.workgroup_size = Some(parse_threads(list)?);
+            }
+            _ => return Err(Error::UnsupportedBinding("entry_point argument".into())),
+        }
     }
-    *slot = Some(stage);
     Ok(())
 }
 
-fn parse_workgroup_size(attr: &Attribute) -> Result<[u32; 3], Error> {
-    let lits = attr
+fn parse_threads(list: &syn::MetaList) -> Result<[u32; 3], Error> {
+    let lits = list
         .parse_args_with(syn::punctuated::Punctuated::<LitInt, syn::Token![,]>::parse_terminated)
         .map_err(|e| Error::UnsupportedBinding(e.to_string()))?;
     if lits.is_empty() || lits.len() > 3 {
-        return Err(Error::UnsupportedBinding("workgroup_size".into()));
+        return Err(Error::UnsupportedBinding("threads".into()));
     }
     let mut size = [1u32, 1, 1];
     for (i, lit) in lits.iter().enumerate() {
         size[i] = lit
             .base10_parse()
-            .map_err(|_| Error::UnsupportedBinding("workgroup_size".into()))?;
+            .map_err(|_| Error::UnsupportedBinding("threads".into()))?;
         if size[i] == 0 {
-            return Err(Error::UnsupportedBinding("workgroup_size 0".into()));
+            return Err(Error::UnsupportedBinding("threads(0)".into()));
         }
     }
     Ok(size)

@@ -11,7 +11,7 @@ fn sample_a_texture() {
         r#"
         static sprite_texture: texture_2d<f32> = ();
         static sprite_sampler: sampler = ();
-        #[fragment]
+        #[entry_point(fragment)]
         #[output(location(0))]
         fn fs(#[location(0)] uv: vec2) -> vec4 {
             textureSampleLevel(sprite_texture, sprite_sampler, uv, 0.0)
@@ -32,7 +32,7 @@ fn plain_sample_picks_its_own_level() {
         r#"
         static t: texture_2d<f32> = ();
         static s: sampler = ();
-        #[fragment] #[output(location(0))]
+        #[entry_point(fragment)] #[output(location(0))]
         fn fs(#[location(0)] uv: vec2) -> vec4 { textureSample(t, s, uv) }
         "#,
     );
@@ -44,7 +44,7 @@ fn load_and_store() {
         r#"
         static input: texture_2d<f32> = ();
         static output: texture_storage_2d<Rgba8Unorm, Write> = ();
-        #[compute] #[workgroup_size(8, 8)]
+        #[entry_point(compute, threads(8, 8))]
         fn cs(#[builtin(global_invocation_id)] id: vec3<u32>) {
             let c = textureLoad(input, id.xy as vec2<i32>, 0);
             textureStore(output, id.xy as vec2<i32>, c);
@@ -65,7 +65,7 @@ fn storage_load_takes_no_level() {
     let _ = roundtrip_unbound(
         r#"
         static acc: texture_storage_2d<Rgba32Float, ReadWrite> = ();
-        #[compute] #[workgroup_size(1)]
+        #[entry_point(compute, threads(1))]
         fn cs(#[builtin(global_invocation_id)] id: vec3<u32>) {
             let prev = textureLoad(acc, id.xy as vec2<i32>);
             textureStore(acc, id.xy as vec2<i32>, prev + vec4(1.0));
@@ -172,7 +172,7 @@ fn names_that_end_in_a_digit_keep_it() {
         static t_specular_f0: texture_2d<f32> = ();
         static samp: sampler = ();
         fn w4(w: f32) -> vec4 { vec4(w, w, w, w) }
-        #[fragment]
+        #[entry_point(fragment)]
         #[output(location(0))]
         fn fs(#[location(0)] uv: vec2) -> vec4 {
             textureSampleLevel(t_specular_f0, samp, uv, 0.0) + w4(uv.x)

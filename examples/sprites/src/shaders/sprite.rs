@@ -6,6 +6,8 @@ use super::common::{globals, unpack_color};
 
 pub struct Locals {
     pub position: vec2,
+    // The host uploads the whole sprite, velocity included; only it reads this.
+    #[allow(dead_code)]
     pub velocity: vec2,
     pub color: u32,
 }
@@ -18,7 +20,7 @@ pub struct Vertex {
     pub pos: vec2,
 }
 
-#[io]
+#[derive(Io)]
 pub struct VertexOutput {
     #[builtin(position)]
     pub position: vec4,
@@ -28,7 +30,7 @@ pub struct VertexOutput {
     pub color: vec4,
 }
 
-#[vertex]
+#[entry_point(vertex)]
 pub fn vs_main(vertex: Vertex) -> VertexOutput {
     let tc = vertex.pos;
     let offset = tc * globals.sprite_size;
@@ -39,7 +41,7 @@ pub fn vs_main(vertex: Vertex) -> VertexOutput {
     }
 }
 
-#[fragment]
+#[entry_point(fragment)]
 #[output(location(0))]
 pub fn fs_main(vertex: VertexOutput) -> vec4 {
     vertex.color * textureSampleLevel(&sprite_texture, &sprite_sampler, vertex.tex_coords, 0.0)

@@ -9,6 +9,7 @@ use syn::{FnArg, Item, ItemFn, ReturnType, Signature};
 
 use crate::Error;
 
+mod atomic;
 mod call;
 mod constant;
 mod emit;
@@ -413,14 +414,29 @@ impl Context {
             return Ok(ty);
         }
 
-        // `binding_array<T>` is a bound array of resources: a texture array in
-        // a descriptor set, not memory.
-        if name == "atomic" {
+        // `synaga_shader::AtomicU32` and its sibling, which are the standard
+        // atomics without an `Ordering`.
+        let atomic = match name.as_str() {
+            "AtomicU32" => Some(Scalar::U32),
+            "AtomicI32" => Some(Scalar::I32),
+            _ => None,
+        };
+        if let Some(scalar) = atomic {
+            if type_arg.is_some() {
+                return Err(Error::UnsupportedType(name));
+            }
+            return Ok(self.intern_handle_type(TypeInner::Atomic(scalar)));
+        }
+        // What `compare_exchange_weak` hands back: Naga's own struct, so its
+        // fields are the ones the backends know.
+        if name == "CompareExchange" {
             let scalar = match type_arg {
                 Some(inner) => lower_scalar_ident(inner)?,
-                None => return Err(Error::UnsupportedType("atomic".into())),
+                None => return Err(Error::UnsupportedType(name)),
             };
-            return Ok(self.intern_handle_type(TypeInner::Atomic(scalar)));
+            return Ok(self.module.generate_predeclared_type(
+                naga::PredeclaredType::AtomicCompareExchangeWeakResult(scalar),
+            ));
         }
 
         if let Some((size, shorthand)) = parse_vec_ident(&name) {

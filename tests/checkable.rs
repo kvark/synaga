@@ -166,3 +166,25 @@ fn usize_indexes_what_rust_insists_on_indexing_by_usize() {
         "{aliased}"
     );
 }
+
+#[test]
+fn unsafe_is_for_rustc_and_lowers_as_a_block() {
+    // A `static mut` needs `unsafe` in Rust; the shader has nothing to say
+    // about it, so the block is lowered like any other.
+    let wgsl = roundtrip_unbound(
+        r#"
+        static mut counts: StorageMut<[u32]> = binding();
+        #[entry_point(compute, threads(64))]
+        fn tally(#[builtin(global_invocation_id)] id: vec3u) {
+            unsafe {
+                counts[id.x as usize] += 1;
+            }
+            let doubled = unsafe { counts[0] * 2 };
+            unsafe { counts[1] = doubled };
+        }
+        "#,
+    );
+    assert!(wgsl.contains("counts[id.x] = ("), "{wgsl}");
+    assert!(wgsl.contains("counts[1] = ("), "{wgsl}");
+    assert!(wgsl.contains(" * 2u)"), "{wgsl}");
+}

@@ -11,7 +11,7 @@ fn uniform_mat4_in_vertex() {
         #[binding(0)]
         static mvp: mat4 = ();
 
-        #[vertex]
+        #[entry_point(vertex)]
         #[output(builtin(position))]
         fn vs_main(#[location(0)] pos: vec3) -> vec4 {
             mvp * vec4(pos, 1.0)
@@ -39,7 +39,7 @@ fn extern_static_uniform_vec() {
             static color: vec4;
         }
 
-        #[fragment]
+        #[entry_point(fragment)]
         #[output(location(0))]
         fn fs_main() -> vec4 {
             color
@@ -59,7 +59,7 @@ fn uniform_in_helper() {
 
         fn apply(p: vec3) -> vec3 { p * scale }
 
-        #[vertex]
+        #[entry_point(vertex)]
         #[output(builtin(position))]
         fn vs_main(#[location(0)] pos: vec3) -> vec4 {
             let q = apply(pos);

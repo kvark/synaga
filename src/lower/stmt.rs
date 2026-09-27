@@ -26,6 +26,7 @@ fn yields_value(expr: &Expr) -> bool {
         Expr::Paren(inner) => yields_value(&inner.expr),
         Expr::Group(inner) => yields_value(&inner.expr),
         Expr::Block(b) => block_yields_value(&b.block),
+        Expr::Unsafe(u) => block_yields_value(&u.block),
         Expr::If(if_expr) => match &if_expr.else_branch {
             Some((_, else_expr)) => {
                 block_yields_value(&if_expr.then_branch) && yields_value(else_expr)
@@ -120,9 +121,11 @@ fn lower_stmt_expr(
         // Some builtins write rather than produce, so they only make sense here.
         Expr::Call(call) => super::call::lower_call_stmt(ctx, function, body, call, env),
         Expr::Continue(cont) => lower_continue(body, cont),
-        Expr::Block(b) => {
+        // `unsafe` is for `rustc`, which wants it around a `static mut`. The
+        // shader has nothing to say about it.
+        Expr::Block(syn::ExprBlock { block, .. }) | Expr::Unsafe(syn::ExprUnsafe { block, .. }) => {
             env.push_scope();
-            let _ = lower_block(ctx, function, body, &b.block, env)?;
+            let _ = lower_block(ctx, function, body, block, env)?;
             env.pop_scope();
             Ok(())
         }
@@ -498,7 +501,7 @@ fn is_compound_assign(op: &BinOp) -> bool {
     )
 }
 
-/// Ray queries, atomics, and `arrayLength` take storage rather than a value.
+/// Ray queries and `arrayLength` take storage rather than a value.
 fn callee_takes_place(call: &syn::ExprCall) -> bool {
     let Expr::Path(path) = call.func.as_ref() else {
         return false;
@@ -509,7 +512,6 @@ fn callee_takes_place(call: &syn::ExprCall) -> bool {
     let name = name.to_string();
     name.starts_with("rayQuery")
         || name.starts_with("ray_query_")
-        || name.starts_with("atomic")
         || name == "arrayLength"
         || name == "array_length"
 }

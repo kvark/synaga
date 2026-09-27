@@ -34,7 +34,7 @@ const SHADER: &str = r#"
         if phase > 0.0 { sin(phase) } else { -sin(-phase) }
     }
 
-    #[vertex]
+    #[entry_point(vertex)]
     fn vs(
         #[location(0)] pos: vec3,
         #[location(1)] uv: vec2,
@@ -50,7 +50,7 @@ const SHADER: &str = r#"
         }
     }
 
-    #[fragment]
+    #[entry_point(fragment)]
     #[output(location(0))]
     fn fs(v: VsOut) -> vec4 {
         let to_eye = normalize(camera.eye - v.world);
@@ -61,8 +61,7 @@ const SHADER: &str = r#"
         vec4(tint * (shade + bias), 1.0)
     }
 
-    #[compute]
-    #[workgroup_size(64)]
+    #[entry_point(compute, threads(64))]
     fn accumulate(#[builtin(global_invocation_id)] id: vec3<u32>) {
         let total = 0u32;
         let n = 0u32;
