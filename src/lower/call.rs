@@ -38,31 +38,68 @@ fn pointer_arg(
 }
 
 /// The type `T()` names, for a zero value: a vector, matrix, scalar, or struct.
-pub(super) fn zero_value_type(ctx: &mut Context, name: &str) -> Option<Handle<naga::Type>> {
-    if let Some((size, shorthand)) = parse_vec_ident(name) {
-        return Some(ctx.intern_vector(size, shorthand.unwrap_or(naga::Scalar::F32)));
+pub(super) fn zero_value_type(
+    ctx: &mut Context,
+    path: &[String],
+) -> Result<Option<Handle<naga::Type>>, Error> {
+    let name = super::last(path);
+    if let Some((size, shorthand)) = parse_vec_ident(&name) {
+        return Ok(Some(
+            ctx.intern_vector(size, shorthand.unwrap_or(naga::Scalar::F32)),
+        ));
     }
-    if let Some((columns, rows, shorthand)) = parse_mat_ident(name) {
-        return Some(ctx.intern_matrix(columns, rows, shorthand.unwrap_or(naga::Scalar::F32)));
+    if let Some((columns, rows, shorthand)) = parse_mat_ident(&name) {
+        return Ok(Some(ctx.intern_matrix(
+            columns,
+            rows,
+            shorthand.unwrap_or(naga::Scalar::F32),
+        )));
     }
-    let scalar = match name {
+    let scalar = match name.as_str() {
         "f32" => naga::Scalar::F32,
         "u32" | "usize" => naga::Scalar::U32,
         "i32" | "isize" => naga::Scalar::I32,
         "bool" => naga::Scalar::BOOL,
-        _ => return ctx.struct_by_name(name),
+        _ => return ctx.named_type(path),
     };
-    Some(ctx.intern_scalar(scalar))
+    Ok(Some(ctx.intern_scalar(scalar)))
 }
 
-fn callee_name(call: &syn::ExprCall) -> Option<String> {
-    let Expr::Path(path) = call.func.as_ref() else {
-        return None;
-    };
-    if path.qself.is_some() || path.path.segments.len() != 1 {
-        return None;
+/// How a call's path reads.
+pub(super) enum Callee {
+    /// `f(..)`, `brdf::f(..)`, `synaga_shader::dot(..)`: a function, by the
+    /// whole path, whose own name is the last segment.
+    Function(Vec<String>),
+    /// `vec3::splat(..)`, `lighting::Sun::default()`: something a type
+    /// provides. `ty` is the path to the type.
+    Associated { ty: Vec<String>, item: String },
+}
+
+/// Is `path` a function reached through modules, or something on a type?
+/// A sibling source or a `crate`/`self`/`super` start says module; so does a
+/// head that names no type, which is how `synaga_shader::dot` reads.
+pub(super) fn classify_path(ctx: &mut Context, path: &[String]) -> Result<Callee, Error> {
+    if let [ty @ .., item] = path {
+        if !ty.is_empty() && !ctx.is_module_path(path) && names_type(ctx, ty)? {
+            return Ok(Callee::Associated {
+                ty: ty.to_vec(),
+                item: item.clone(),
+            });
+        }
     }
-    Some(path.path.segments[0].ident.to_string())
+    Ok(Callee::Function(path.to_vec()))
+}
+
+/// Does `path` name a type: a builtin one, or one the sources declare?
+fn names_type(ctx: &mut Context, path: &[String]) -> Result<bool, Error> {
+    let name = super::last(path);
+    Ok(parse_vec_ident(&name).is_some()
+        || parse_mat_ident(&name).is_some()
+        || matches!(
+            name.as_str(),
+            "f32" | "u32" | "i32" | "usize" | "isize" | "bool" | "ray_query"
+        )
+        || ctx.named_type(path)?.is_some())
 }
 
 /// A call in statement position, where builtins that write rather than produce
@@ -74,7 +111,7 @@ pub(super) fn lower_call_stmt(
     call: &syn::ExprCall,
     env: &mut Env,
 ) -> Result<(), Error> {
-    if let Some(name) = callee_name(call) {
+    if let Some(name) = builtin_name(ctx, call)? {
         if let Some(op) = texture::texture_builtin(&name) {
             if op.is_statement() {
                 texture::lower_texture_call(ctx, function, body, call, env, &name, op)?;
@@ -312,6 +349,21 @@ fn lower_bitcast(
     Ok((handle, target))
 }
 
+/// The builtin a call names, if it is not a function the sources declare.
+fn builtin_name(ctx: &mut Context, call: &syn::ExprCall) -> Result<Option<String>, Error> {
+    let Expr::Path(path) = call.func.as_ref() else {
+        return Ok(None);
+    };
+    if path.qself.is_some() {
+        return Ok(None);
+    }
+    let segments = super::path_segments(&path.path);
+    match classify_path(ctx, &segments)? {
+        Callee::Function(path) if ctx.function(&path)?.is_none() => Ok(Some(super::last(&path))),
+        _ => Ok(None),
+    }
+}
+
 pub(super) fn lower_call(
     ctx: &mut Context,
     function: &mut Function,
@@ -322,24 +374,29 @@ pub(super) fn lower_call(
     if let Some(ty) = bitcast_target(call) {
         return lower_bitcast(ctx, function, body, call, env, ty);
     }
-    let name = match call.func.as_ref() {
-        Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
-            path.path.segments[0].ident.to_string()
-        }
-        // `vec3::splat(x)` and `vec4::from(v)` name the type they build.
-        Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 2 => {
-            let ty = path.path.segments[0].ident.to_string();
-            let method = path.path.segments[1].ident.to_string();
-            let args: Vec<&Expr> = call.args.iter().collect();
-            return super::method::lower_qualified_call(
-                ctx, function, body, &ty, &method, &args, env,
-            );
-        }
+    let path = match call.func.as_ref() {
+        Expr::Path(path) if path.qself.is_none() => super::path_segments(&path.path),
         _ => return Err(Error::UnsupportedExpr("call".into())),
     };
+    let path = match classify_path(ctx, &path)? {
+        // `vec3::splat(x)` and `vec4::from(v)` name the type they build.
+        Callee::Associated { ty, item } => {
+            let args: Vec<&Expr> = call.args.iter().collect();
+            return super::method::lower_qualified_call(
+                ctx, function, body, &ty, &item, &args, env,
+            );
+        }
+        Callee::Function(path) => path,
+    };
+    // A function the sources declare wins over a builtin of the same name,
+    // as a local item shadows a glob import in Rust.
+    if let Some(callee) = ctx.function(&path)? {
+        return lower_fn_call(ctx, function, body, call, env, callee);
+    }
+    let name = super::last(&path);
     // `T()` is WGSL's zero value, and the natural spelling for one here too.
     if call.args.is_empty() {
-        if let Some(ty) = zero_value_type(ctx, &name) {
+        if let Some(ty) = zero_value_type(ctx, &path)? {
             let handle = function
                 .expressions
                 .append(Expression::ZeroValue(ty), Span::UNDEFINED);
@@ -352,15 +409,7 @@ pub(super) fn lower_call(
     if parse_mat_ident(&name).is_some() {
         return lower_mat_ctor(ctx, function, body, call, env);
     }
-    // A function the user declared wins over a builtin of the same name.
-    // Resolving the other way round would silently call the builtin while
-    // Naga renamed the user's function out of the way.
-    let declared = ctx
-        .module
-        .functions
-        .iter()
-        .any(|(_, f)| f.name.as_deref() == Some(name.as_str()));
-    if !declared {
+    {
         if name == "select" {
             return lower_select(ctx, function, body, call, env);
         }
@@ -392,7 +441,7 @@ pub(super) fn lower_call(
             return lower_math(ctx, function, body, call, env, &name, spec);
         }
     }
-    lower_fn_call(ctx, function, body, call, env, &name)
+    Err(Error::UnknownFunction(name))
 }
 
 /// `select(reject, accept, condition)`, in WGSL's argument order: the value
@@ -639,18 +688,18 @@ fn lower_fn_call(
     body: &mut Block,
     call: &syn::ExprCall,
     env: &mut Env,
-    name: &str,
+    callee: Handle<Function>,
 ) -> Result<Typed, Error> {
-    let (callee, expected, ret_ty): (_, Vec<_>, Option<_>) = {
-        let found = ctx
-            .module
-            .functions
-            .iter()
-            .find(|(_, f)| f.name.as_deref() == Some(name));
-        let (handle, func) = found.ok_or_else(|| Error::UnknownFunction(name.into()))?;
-        let expected: Vec<_> = func.arguments.iter().map(|a| a.ty).collect();
-        (handle, expected, func.result.as_ref().map(|r| r.ty))
+    let (name, expected, ret_ty): (String, Vec<_>, Option<_>) = {
+        let func = &ctx.module.functions[callee];
+        let expected = func.arguments.iter().map(|a| a.ty).collect();
+        (
+            func.name.clone().unwrap_or_default(),
+            expected,
+            func.result.as_ref().map(|r| r.ty),
+        )
     };
+    let name = name.as_str();
 
     if expected.len() != call.args.len() {
         return Err(Error::WrongArgCount(name.into()));

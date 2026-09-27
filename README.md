@@ -26,7 +26,9 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - entry points: `#[vertex]` / `#[fragment]` / `#[compute]` + `#[workgroup_size(x,y,z)]`
 - bindings: `#[location(N)]`, `#[builtin(name)]` on args; `#[output(builtin(..))]` / `#[output(location(N))]` on the fn
 - `select(reject, accept, condition)`, in WGSL's argument order
-- calls to earlier free functions, including ones that return nothing
+- calls to free functions defined anywhere, including ones that return nothing,
+  and across modules: `use super::brdf::*`, `brdf::sample(..)`, renames, `type` aliases
+- `#[cfg(..)]` on items and `cfg!(..)` in expressions, from a `Cfg`
 - out-parameters: `&mut T` is WGSL's `ptr<function, T>`; `&T` is the same pointer
   with writes refused
 - `const NAME: T = …` at module level (literals and vector/matrix constructors)
@@ -57,7 +59,7 @@ builds a `naga::Module` by hand. No `rustc_private`, no nightly.
 - I/O structs: `#[location]` / `#[builtin]` on struct fields, for vertex outputs,
   fragment inputs, and multiple render targets
 
-Not yet: labeled loops, `break` values, `switch`, forward calls, methods, generics,
+Not yet: labeled loops, `break` values, `switch`, methods, generics,
 cooperative matrices, `f16`, `const` arithmetic (Naga wants constants already
 folded). Swizzles are values, so `v.xy = a` is rejected — as it is in WGSL.
 Assignment to function arguments is rejected. Vector compare yields a `vecN<bool>`.

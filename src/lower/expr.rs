@@ -40,19 +40,23 @@ pub(super) fn lower_expr_hinted(
         Expr::Paren(inner) => lower_expr_hinted(ctx, function, body, &inner.expr, env, hint),
         Expr::Group(inner) => lower_expr_hinted(ctx, function, body, &inner.expr, env, hint),
         Expr::Path(path) => {
+            let segments = super::path_segments(&path.path);
+            let module_path = ctx.is_module_path(&segments);
             // `vec4::ZERO` names a value on a type rather than a binding.
-            if path.path.segments.len() == 2 {
-                let ty = path.path.segments[0].ident.to_string();
-                let item = path.path.segments[1].ident.to_string();
-                return super::method::lower_qualified_const(ctx, function, &ty, &item);
+            if let [.., ty, item] = &segments[..] {
+                if !module_path {
+                    return super::method::lower_qualified_const(ctx, function, ty, item);
+                }
             }
-            let ident = path
-                .path
-                .get_ident()
-                .ok_or_else(|| Error::UnsupportedExpr("path".into()))?;
-            let name = ident.to_string();
-            let Some(binding) = env.lookup(&name) else {
-                return lower_const_ref(ctx, function, &name);
+            // A local shadows a module item. A path through a module cannot
+            // name a local, so it goes straight to the items.
+            let name = super::last(&segments);
+            let binding = match module_path {
+                false => env.lookup(&name),
+                true => None,
+            };
+            let Some(binding) = binding else {
+                return lower_item_ref(ctx, function, body, &segments, env);
             };
             let ty = binding.ty;
             let expr = match binding.slot {
@@ -60,6 +64,14 @@ pub(super) fn lower_expr_hinted(
                 Slot::Ptr(pointer) => emit(function, body, Expression::Load { pointer })?,
             };
             Ok((expr, ty))
+        }
+        // `cfg!(debug_assertions)`, settled by what the build was told.
+        Expr::Macro(mac) if mac.mac.path.is_ident("cfg") => {
+            let value = eval_cfg(ctx, &mac.mac)?;
+            let handle = function
+                .expressions
+                .append(Expression::Literal(Literal::Bool(value)), Span::UNDEFINED);
+            Ok((handle, ctx.intern_scalar(Scalar::BOOL)))
         }
         Expr::Lit(lit) => lower_lit(ctx, function, lit, hint),
         Expr::Binary(bin) => {
@@ -100,26 +112,52 @@ pub(super) fn lower_expr_hinted(
     }
 }
 
-/// A module-level `const` referenced from a function body.
-fn lower_const_ref(ctx: &mut Context, function: &mut Function, name: &str) -> Result<Typed, Error> {
+/// A module-level `const` or `static` referenced from a function body.
+fn lower_item_ref(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    path: &[String],
+    env: &mut Env,
+) -> Result<Typed, Error> {
+    let name = super::last(path);
+    if let Some(index) = ctx.constant(path)? {
+        let info = &ctx.consts[index];
+        // `Constant` is already a constant expression; emitting it would be wrong.
+        let handle = function
+            .expressions
+            .append(Expression::Constant(info.handle), Span::UNDEFINED);
+        return Ok((handle, info.ty));
+    }
     // WGSL predeclares the ray flags and intersection kinds as bare names.
-    if let Some(value) = super::ray::predeclared_const(name) {
+    if let Some(value) = super::ray::predeclared_const(&name) {
         let handle = function.expressions.append(
             Expression::Literal(naga::Literal::U32(value)),
             Span::UNDEFINED,
         );
         return Ok((handle, ctx.intern_scalar(Scalar::U32)));
     }
-    let info = ctx
-        .consts
-        .iter()
-        .find(|c| c.name == name)
-        .ok_or_else(|| Error::UnknownIdent(name.into()))?;
-    // `Constant` is already a constant expression; emitting it would be wrong.
-    let handle = function
-        .expressions
-        .append(Expression::Constant(info.handle), Span::UNDEFINED);
-    Ok((handle, info.ty))
+    // A global reached through its module, `lighting::sun`, is bound by name
+    // like any other.
+    if path.len() > 1 {
+        if let Some(binding) = env.lookup(&name) {
+            let ty = binding.ty;
+            let expr = match binding.slot {
+                Slot::Value(handle) => handle,
+                Slot::Ptr(pointer) => emit(function, body, Expression::Load { pointer })?,
+            };
+            return Ok((expr, ty));
+        }
+    }
+    Err(Error::UnknownIdent(name))
+}
+
+/// Does the predicate in `cfg!(...)` hold for this build?
+pub(super) fn eval_cfg(ctx: &Context, mac: &syn::Macro) -> Result<bool, Error> {
+    let meta: syn::Meta = mac
+        .parse_body()
+        .map_err(|_| Error::UnsupportedCfg(mac.tokens.to_string()))?;
+    ctx.cfg.eval(&meta)
 }
 
 fn lower_unary(

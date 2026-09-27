@@ -61,17 +61,6 @@ fn rejects_unknown_fn() {
 }
 
 #[test]
-fn rejects_forward_ref() {
-    let msg = reject(
-        r#"
-        fn a(x: f32) -> f32 { b(x) }
-        fn b(x: f32) -> f32 { x }
-        "#,
-    );
-    assert!(msg.contains("b") || msg.contains("unknown"), "{msg}");
-}
-
-#[test]
 fn user_function_shadows_a_builtin() {
     // Resolving `length` to the builtin here would silently call something
     // other than what the source says.

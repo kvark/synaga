@@ -241,7 +241,7 @@ fn check_io_struct(
 pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> Result<(), Error> {
     let stage = info.stage.expect("stage present");
     let name = item.sig.ident.to_string();
-    ctx.claim_fn_name(&name)?;
+    ctx.claim_entry_point_name(&name)?;
 
     if stage != ShaderStage::Compute && info.workgroup_size.is_some() {
         return Err(Error::UnexpectedWorkgroupSize);

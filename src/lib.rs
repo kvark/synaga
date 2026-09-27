@@ -1,51 +1,81 @@
-//! Native Rust → [`naga::Module`] frontend.
+//! Rust → [`naga::Module`].
 //!
-//! v0 dialect: free functions, scalars (`f32` / `u32` / `i32` / `bool`),
-//! vectors (`vec2`/`vec3`/`vec4` and `vecN<T>`),
-//! matrices (`mat2`/`mat3`/`mat4` and `matCxR`), literals, unary/binary operators,
-//! `as` casts, `let`, assignment, `if`/`else`, `loop`/`while`, `return`, and
-//! `#[vertex]`/`#[fragment]`/`#[compute]` entry points,
-//! `#[group]`/`#[binding]` globals, and named structs — including structs that
-//! carry `#[location]` / `#[builtin]` bindings on their fields, as vertex
-//! outputs and fragment inputs do.
-//! No references, methods, or generics yet.
+//! Shader modules are ordinary Rust, type-checked by `rustc` against
+//! `synaga-shader`; this crate reads the same files and builds the Naga module
+//! they describe. [`build::Shaders`] does that from a build script; [`parse`]
+//! does it for sources in hand.
 //!
-//! Operand typing mirrors Naga's own rules, so anything [`parse_str`] accepts
-//! is a module [`validate`] accepts; untyped integer literals take their type
-//! from context, as Rust's inference would.
+//! Items are what Rust has: in any order, across sibling modules reached by
+//! `use` or by path, kept or dropped by `#[cfg]`. Operand typing mirrors
+//! Naga's own rules, so anything [`parse_str`] accepts is a module [`validate`]
+//! accepts; untyped integer literals take their type from context, as Rust's
+//! inference would.
 
 pub mod build;
+mod cfg;
 mod error;
 mod lower;
 #[cfg(feature = "wgsl")]
 mod ray_wgsl;
 
+pub use cfg::Cfg;
 pub use error::Error;
 pub use naga;
 
 use lower::Context;
+
+/// One file of shader source.
+#[derive(Clone, Copy, Debug)]
+pub struct Source<'a> {
+    /// The module name the other sources reach this one by: the file stem,
+    /// `brdf` for `brdf.rs`. `None` for a source nothing names in a path.
+    pub name: Option<&'a str>,
+    pub text: &'a str,
+}
 
 /// Parse a Rust source string into a Naga module.
 pub fn parse_str(source: &str) -> Result<naga::Module, Error> {
     parse_all([source]).map_err(|err| err.error)
 }
 
-/// Parse several sources into one module, in order, as if concatenated.
+/// Parse several unnamed sources into one module, with no `cfg` set.
 ///
-/// This is how a shared prelude is combined with the module that uses it.
-/// Concatenating the text first would work too, but then every line number in
-/// an error from the second file is off by the length of the first; parsed
-/// separately, each keeps its own, and [`SourceError::index`] says which one
-/// went wrong.
+/// See [`parse`], which this is with every [`Source::name`] left out: a name
+/// one source declares is still found from another, as long as exactly one
+/// declares it, but a path through a module name has nothing to go by.
 pub fn parse_all<'a>(
     sources: impl IntoIterator<Item = &'a str>,
 ) -> Result<naga::Module, SourceError> {
-    let mut ctx = Context::new();
-    for (index, source) in sources.into_iter().enumerate() {
-        let at = |error: Error| SourceError { index, error };
-        let file: syn::File = syn::parse_str(source).map_err(|e| at(Error::from(e)))?;
-        ctx.lower_file(file).map_err(at)?;
+    let sources: Vec<Source> = sources
+        .into_iter()
+        .map(|text| Source { name: None, text })
+        .collect();
+    parse(&sources, &Cfg::new())
+}
+
+/// Parse the files of a module tree into one Naga module.
+///
+/// The files are sibling modules, so `use super::brdf::*` and `brdf::sample()`
+/// in one reach the items of the one named `brdf`. Order does not matter, in
+/// the files or in the list: every item is known before any is lowered, as in
+/// Rust. `cfg` says which `#[cfg(...)]` and `cfg!(...)` hold.
+///
+/// Parsed separately rather than concatenated, each file keeps its own line
+/// numbers, and [`SourceError::index`] says which one went wrong.
+pub fn parse(sources: &[Source<'_>], cfg: &Cfg) -> Result<naga::Module, SourceError> {
+    let mut files = Vec::with_capacity(sources.len());
+    for (index, source) in sources.iter().enumerate() {
+        let file: syn::File = syn::parse_str(source.text).map_err(|e| SourceError {
+            index,
+            error: Error::from(e),
+        })?;
+        files.push((source.name.map(str::to_string), file));
     }
+    let mut ctx = Context::new(cfg.clone());
+    ctx.lower_sources(files).map_err(|error| SourceError {
+        index: ctx.failed_source.unwrap_or(0),
+        error,
+    })?;
     Ok(ctx.module)
 }
 
