@@ -105,6 +105,9 @@ pub struct Context {
     /// The size and alignment `rustc` gives each of those a buffer holds,
     /// once checked against the GPU's: a struct holding one needs it.
     pub(super) host_layouts: HashMap<Handle<Type>, structure::HostLayout>,
+    /// The structs that derive `Default`. Any other `Default` is written by
+    /// hand, where the shader cannot see it.
+    pub(super) derived_defaults: HashSet<Handle<Type>>,
 }
 
 impl Context {
@@ -122,6 +125,7 @@ impl Context {
             bindings,
             host_reprs: HashMap::new(),
             host_layouts: HashMap::new(),
+            derived_defaults: HashSet::new(),
         }
     }
 

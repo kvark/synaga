@@ -304,6 +304,9 @@ pub(super) fn lower_qualified_call(
     // same thing. Any type may have one, so this comes before the vector names.
     if method == "default" && args.is_empty() {
         if let Some(ty) = super::call::zero_value_type(ctx, on.path, on.turbofish, on.hint)? {
+            if let Some(unseen) = super::structure::unseen_default(ctx, ty) {
+                return Err(Error::UnseenDefault(ty_name.clone(), unseen));
+            }
             let handle = function
                 .expressions
                 .append(Expression::ZeroValue(ty), naga::Span::UNDEFINED);
