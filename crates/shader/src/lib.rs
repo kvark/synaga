@@ -21,10 +21,34 @@
 //!
 //! # What runs on the CPU
 //!
-//! Very little, yet. The atomics are real atomics, and the [`ir`] module
-//! decodes what the build step wrote. Everything else panics: the types are
-//! here to be *checked*, and the shader runs on a GPU. Implementations can be
+//! Very little, yet. The atomics are real atomics, the [`ir`] module decodes
+//! what the build step wrote, and a host can build the vectors and matrices
+//! it shares with a shader, below. Everything else panics: the types are here
+//! to be *checked*, and the shader runs on a GPU. Implementations can be
 //! filled in later without a signature changing.
+//!
+//! # Sharing a struct with the host
+//!
+//! A struct that says `#[repr(C)]` is one the host shares: it fills one in and
+//! uploads its bytes. So the host uses the shader's definition rather than a
+//! copy that has to be kept the same by hand. The build step checks that the
+//! GPU reads every field where Rust puts it, which is the one thing that can
+//! go silently wrong, and says how much padding lines up a field that is not.
+//!
+//! ```ignore
+//! #[repr(C)]
+//! #[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
+//! pub struct Globals {
+//!     pub view_proj: Mat4,
+//!     pub sprite_size: Vec2,
+//!     pub _pad: Vec2,
+//! }
+//! ```
+//!
+//! With the `bytemuck` feature the vectors and matrices are `Pod`, so a shared
+//! struct can derive it. They convert from arrays, a matrix column by column,
+//! and with the `mint` feature from mint's types, which most math crates
+//! convert to. `vec3(x, y, z)` and the other constructors work on the CPU too.
 //!
 //! # Where this differs from WGSL
 //!

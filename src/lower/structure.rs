@@ -20,6 +20,7 @@ pub(super) fn lower_struct_item(
         )));
     }
     let name = item.ident.to_string();
+    let repr = host_repr(&item.attrs, &name)?;
     let named = match item.fields {
         Fields::Named(fields) => fields,
         Fields::Unnamed(_) => return Err(Error::UnsupportedItem("tuple struct".into())),
@@ -85,13 +86,214 @@ pub(super) fn lower_struct_item(
     }
     let span = struct_align.round_up(offset);
 
-    Ok(ctx.module.types.insert(
+    let handle = ctx.module.types.insert(
         Type {
             name: Some(name),
             inner: TypeInner::Struct { members, span },
         },
         Span::UNDEFINED,
-    ))
+    );
+    // An interface struct's fields are bindings, so it has no bytes to share.
+    if let Some(repr) = repr.filter(|_| bound == 0) {
+        ctx.host_reprs.insert(handle, repr);
+    }
+    Ok(handle)
+}
+
+/// Check every `#[repr(C)]` struct in `ty`, the type of a buffer: the GPU
+/// reads what the host wrote there, so the two have to agree on where each
+/// field is. That is the only place they meet. A struct that only reaches
+/// the GPU as a vertex's attributes is laid out by the vertex buffer's
+/// format, which the host gives.
+pub(super) fn check_shared(ctx: &mut Context, ty: Handle<Type>) -> Result<(), Error> {
+    match ctx.module.types[ty].inner {
+        TypeInner::Array { base, .. } | TypeInner::BindingArray { base, .. } => {
+            check_shared(ctx, base)
+        }
+        TypeInner::Struct { ref members, span } => {
+            let members = members.clone();
+            // A field's own layout is settled before the struct's.
+            for member in &members {
+                check_shared(ctx, member.ty)?;
+            }
+            if let Some(&repr) = ctx.host_reprs.get(&ty) {
+                if !ctx.host_layouts.contains_key(&ty) {
+                    let name = ctx.module.types[ty].name.clone().unwrap_or_default();
+                    let layout = check_host_layout(ctx, &name, &members, span, repr)?;
+                    ctx.host_layouts.insert(ty, layout);
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// How `rustc` lays out a type, in bytes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HostLayout {
+    size: u32,
+    align: u32,
+}
+
+/// What a struct's `#[repr]` says, when it says `C`: the host shares the
+/// struct, so its layout has to be the GPU's. `align(N)` raises the
+/// alignment, which also pads the size.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HostRepr {
+    align: u32,
+}
+
+fn host_repr(attrs: &[syn::Attribute], name: &str) -> Result<Option<HostRepr>, Error> {
+    let mut c = false;
+    let mut align = 1;
+    for attr in attrs.iter().filter(|a| a.path().is_ident("repr")) {
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("C") {
+                c = true;
+            } else if meta.path.is_ident("align") {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let n: syn::LitInt = content.parse()?;
+                align = align.max(n.base10_parse()?);
+            } else if meta.path.is_ident("packed") {
+                return Err(meta.error("the GPU has no packed layout"));
+            }
+            Ok(())
+        })
+        .map_err(|e| Error::HostLayout(name.into(), e.to_string()))?;
+    }
+    Ok(c.then_some(HostRepr { align }))
+}
+
+/// `members`, laid out the way `rustc` lays out a `#[repr(C)]` struct, have
+/// to land where the GPU puts them. A difference would have the host write
+/// a field where the shader reads another, which nothing else would catch.
+fn check_host_layout(
+    ctx: &Context,
+    name: &str,
+    members: &[StructMember],
+    span: u32,
+    repr: HostRepr,
+) -> Result<HostLayout, Error> {
+    let fail = |detail: String| Error::HostLayout(name.into(), detail);
+    let mut offset = 0u32;
+    let mut align = repr.align;
+    let mut sized = true;
+    for member in members {
+        let field = member.name.as_deref().unwrap_or_default();
+        let layout = match &ctx.module.types[member.ty].inner {
+            // `[T]` ends a struct, in Rust as on the GPU, and has no size.
+            TypeInner::Array {
+                base,
+                size: naga::ArraySize::Dynamic,
+                ..
+            } => {
+                sized = false;
+                let element = host_layout(ctx, *base)
+                    .map_err(|why| fail(format!("the elements of `{field}` are {why}")))?;
+                HostLayout {
+                    size: 0,
+                    align: element.align,
+                }
+            }
+            _ => host_layout(ctx, member.ty).map_err(|why| fail(format!("`{field}` is {why}")))?,
+        };
+        offset = offset.next_multiple_of(layout.align);
+        if offset != member.offset {
+            let pad = match member.offset.checked_sub(offset) {
+                Some(bytes) => format!("; {bytes} bytes of padding before it line them up"),
+                None => String::new(),
+            };
+            return Err(fail(format!(
+                "`{field}` is at byte {offset} in Rust and {} on the GPU{pad}",
+                member.offset
+            )));
+        }
+        offset += layout.size;
+        align = align.max(layout.align);
+    }
+    let size = offset.next_multiple_of(align);
+    if sized && size != span {
+        let pad = match span.checked_sub(size) {
+            Some(bytes) => format!("; {bytes} bytes of padding at the end line them up"),
+            None => String::new(),
+        };
+        return Err(fail(format!(
+            "it is {size} bytes in Rust and {span} on the GPU{pad}"
+        )));
+    }
+    Ok(HostLayout { size, align })
+}
+
+/// The layout `rustc` gives the `synaga-shader` type that stands for `ty`,
+/// when it is the GPU's too, so that only where a field goes can differ.
+/// `Err` says what about the type differs.
+fn host_layout(ctx: &Context, ty: Handle<Type>) -> Result<HostLayout, String> {
+    use naga::{ArraySize, ScalarKind, VectorSize};
+    let named = || match &ctx.module.types[ty].name {
+        Some(name) => format!("`{name}`"),
+        None => "this type".into(),
+    };
+    let scalar = |scalar: naga::Scalar| match scalar.kind {
+        ScalarKind::Bool => Err("a `bool`, which the GPU has no layout for".to_string()),
+        _ => Ok(u32::from(scalar.width)),
+    };
+    Ok(match ctx.module.types[ty].inner {
+        TypeInner::Scalar(s) | TypeInner::Atomic(s) => {
+            let width = scalar(s)?;
+            HostLayout {
+                size: width,
+                align: width,
+            }
+        }
+        TypeInner::Vector { size, scalar: s } => {
+            let width = scalar(s)?;
+            HostLayout {
+                size: size as u32 * width,
+                align: width,
+            }
+        }
+        // Column after column. A 3-lane column takes four lanes, on the GPU
+        // and in `synaga-shader`'s matrices alike.
+        TypeInner::Matrix {
+            columns,
+            rows,
+            scalar: s,
+        } => {
+            let width = scalar(s)?;
+            let lanes = match rows {
+                VectorSize::Tri => 4,
+                other => other as u32,
+            };
+            HostLayout {
+                size: columns as u32 * lanes * width,
+                align: width,
+            }
+        }
+        TypeInner::Array {
+            base,
+            size: ArraySize::Constant(len),
+            stride,
+        } => {
+            let element = host_layout(ctx, base)?;
+            if element.size != stride {
+                return Err(format!(
+                    "an array whose elements are {} bytes apart in Rust and {stride} on the GPU",
+                    element.size
+                ));
+            }
+            HostLayout {
+                size: element.size * len.get(),
+                align: element.align,
+            }
+        }
+        TypeInner::Struct { .. } => match ctx.host_layouts.get(&ty) {
+            Some(&layout) => layout,
+            None => return Err(format!("{}, which is not `#[repr(C)]`", named())),
+        },
+        _ => return Err(format!("{}, which the host cannot share", named())),
+    })
 }
 
 pub(super) fn lower_struct_lit(

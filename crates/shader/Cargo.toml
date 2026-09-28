@@ -12,8 +12,18 @@ default = ["ir"]
 # Decoding the modules the build step writes. A crate that only type-checks
 # shaders can go without.
 ir = ["dep:serde", "dep:bincode"]
+# For a `#[repr(C)]` struct the host shares with a shader: `bytemuck` makes
+# the vectors and matrices `Pod`, so the struct can derive it and upload
+# itself, and `mint` converts from the host's own math types.
+bytemuck = ["dep:bytemuck"]
+mint = ["dep:mint"]
 
 [dependencies]
 synaga-macros = { path = "../macros", version = "0.1.0" }
 serde = { version = "1", optional = true }
 bincode = { version = "2", default-features = false, features = ["std", "serde"], optional = true }
+bytemuck = { version = "1", optional = true }
+mint = { version = "0.5", optional = true }
+
+[dev-dependencies]
+bytemuck = { version = "1", features = ["derive"] }
