@@ -137,3 +137,30 @@ fn let_annotation_types_an_untyped_literal() {
     let wgsl = roundtrip("fn f() -> u32 { let x: u32 = 1; x }");
     assert!(wgsl.contains("1u"), "{wgsl}");
 }
+
+/// Lower both and require the same module.
+fn same_module(a: &str, b: &str) {
+    let lower = |src: &str| {
+        let module = synaga::parse_str(src).unwrap_or_else(|e| panic!("parse: {e}\n{src}"));
+        synaga::validate(&module).unwrap_or_else(|e| panic!("validate: {e}\n{src}"));
+        format!("{module:#?}")
+    };
+    assert_eq!(lower(a), lower(b), "\n{a}\n{b}");
+}
+
+#[test]
+fn a_tail_if_returns_from_each_branch() {
+    // Idiomatic Rust leaves the `return`s out; the module is the same as if
+    // they were written, rather than a local both branches store to.
+    same_module(
+        "fn f(c: bool, d: bool) -> u32 { let n: u32 = 7; if c { n } else if d { 2 } else { { 3 } } }",
+        "fn f(c: bool, d: bool) -> u32 { let n: u32 = 7; if c { return n; } else if d { return 2; } else { return 3; } }",
+    );
+    // A branch may still leave by its own `return`.
+    same_module(
+        "fn f(c: bool) -> f32 { if c { return 1.0; } else { 2.0 } }",
+        "fn f(c: bool) -> f32 { if c { return 1.0; } else { return 2.0; } }",
+    );
+    let wgsl = roundtrip("fn f(c: bool) -> u32 { if c { 1 } else { 2 } }");
+    assert!(!wgsl.contains("var"), "{wgsl}");
+}

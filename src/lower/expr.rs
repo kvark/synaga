@@ -5,6 +5,7 @@ use naga::{
 use syn::{BinOp, Expr};
 
 use super::call::lower_call;
+use super::constant;
 use super::emit::{emit, expr_kind};
 use super::env::{Env, Slot};
 use super::place::{self, lower_place};
@@ -42,6 +43,10 @@ pub(super) fn lower_expr_hinted(
         Expr::Path(path) => {
             let segments = super::path_segments(&path.path);
             let module_path = ctx.is_module_path(&segments);
+            // `core::f32::consts::PI` is a literal to the shader.
+            if let Some(value) = constant::std_float(&segments) {
+                return Ok(float_literal(ctx, function, value));
+            }
             // `Vec4::ZERO` names a value on a type rather than a binding, and
             // `Vec4::<u32>::ZERO` says the scalar as well.
             if let [ty @ .., item] = &segments[..] {
@@ -114,9 +119,18 @@ pub(super) fn lower_expr_hinted(
         Expr::Struct(lit) => super::structure::lower_struct_lit(ctx, function, body, lit, env),
         Expr::Array(array) => lower_array_lit(ctx, function, body, array, env),
         Expr::Reference(reference) => lower_reference(ctx, function, body, reference, env),
-        Expr::MethodCall(call) => super::method::lower_method_call(ctx, function, body, call, env),
+        Expr::MethodCall(call) => {
+            super::method::lower_method_call(ctx, function, body, call, env, hint)
+        }
         _ => Err(Error::UnsupportedExpr(expr_kind(expr))),
     }
+}
+
+fn float_literal(ctx: &mut Context, function: &mut Function, value: f32) -> Typed {
+    let handle = function
+        .expressions
+        .append(Expression::Literal(Literal::F32(value)), Span::UNDEFINED);
+    (handle, ctx.intern_scalar(Scalar::F32))
 }
 
 /// A module-level `const` or `static` referenced from a function body.
@@ -135,6 +149,10 @@ fn lower_item_ref(
             .expressions
             .append(Expression::Constant(info.handle), Span::UNDEFINED);
         return Ok((handle, info.ty));
+    }
+    // `PI`, after `use core::f32::consts::PI`.
+    if let Some(value) = ctx.float_const(path) {
+        return Ok(float_literal(ctx, function, value));
     }
     // WGSL predeclares the ray flags and intersection kinds as bare names.
     if let Some(value) = super::ray::predeclared_const(&name) {

@@ -156,6 +156,57 @@ fn builtins_are_snake_case() {
 }
 
 #[test]
+fn a_primitives_own_constants_are_literals() {
+    let (u32_max, i32_max, eps) = (u32::MAX, i32::MAX, f32::EPSILON);
+    same_module(
+        "fn f() -> u32 { u32::MAX - u32::BITS }",
+        &format!("fn f() -> u32 {{ {u32_max}u32 - 32u32 }}"),
+    );
+    same_module(
+        "fn f() -> i32 { i32::MAX }",
+        &format!("fn f() -> i32 {{ {i32_max}i32 }}"),
+    );
+    same_module(
+        "const E: f32 = f32::EPSILON; fn f() -> f32 { E }",
+        &format!("const E: f32 = {eps:?}; fn f() -> f32 {{ E }}"),
+    );
+    // WGSL writes no infinity, so `rustc`'s is not taken for one.
+    let msg = reject("fn f() -> f32 { f32::INFINITY }");
+    assert!(msg.contains("INFINITY"), "{msg}");
+}
+
+#[test]
+fn f32_constants_are_cores() {
+    use core::f32::consts::{PI, TAU};
+    let literal = format!("fn f() -> f32 {{ {PI:?} + {TAU:?} }}");
+    same_module(
+        "fn f() -> f32 { core::f32::consts::PI + std::f32::consts::TAU }",
+        &literal,
+    );
+    same_module(
+        "use core::f32::consts::{PI, TAU}; fn f() -> f32 { PI + TAU }",
+        &literal,
+    );
+    same_module(
+        "use core::f32::consts::*; fn f() -> f32 { PI + TAU }",
+        &literal,
+    );
+    // A constant can be one, and a module can hand one on.
+    let brdf = synaga::Source {
+        name: Some("brdf"),
+        text:
+            "pub use core::f32::consts::PI; pub const HALF_PI: f32 = core::f32::consts::FRAC_PI_2;",
+    };
+    let shader = synaga::Source {
+        name: Some("shader"),
+        text: "use super::brdf::{PI, HALF_PI}; fn f() -> f32 { PI - HALF_PI }",
+    };
+    let module = synaga::parse(&[brdf, shader], &synaga::Cfg::new())
+        .unwrap_or_else(|e| panic!("parse: {}", e.error));
+    synaga::validate(&module).unwrap_or_else(|e| panic!("validate: {e}"));
+}
+
+#[test]
 fn a_ray_query_is_named_as_a_type_is() {
     same_module(
         r#"

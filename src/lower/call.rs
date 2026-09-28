@@ -475,9 +475,77 @@ fn math_spec(name: &str) -> Option<MathSpec> {
     Some(MathSpec { fun, argc, result })
 }
 
-/// `y.sin()`, `y.atan2(x)`, `v.dot(w)`: a math builtin with the receiver as
-/// its first argument. `None` when `name` is not one, or the arity does not
-/// match, so some other method can still claim it.
+/// What a math method means, where Rust names it differently from WGSL or
+/// means something else by the same name.
+enum RustMath {
+    /// The builtin, with the receiver as its first argument.
+    Builtin(MathSpec),
+    /// `x.fract()`, which Rust takes toward zero: `x - x.trunc()`. The GPU's
+    /// `fract` is `x - floor(x)`, which differs for a negative `x`.
+    Fract,
+    /// `v.length_squared()`: `dot(v, v)`.
+    LengthSquared,
+    /// `x.recip()`: `1 / x`.
+    Recip,
+    /// `n.unsigned_abs()`: an `i32`'s magnitude as a `u32`, which is right
+    /// even for `i32::MIN`.
+    UnsignedAbs,
+    /// `x.rotate_left(n)` is `(x << n) | (x >> (32 - n))`, and the other way
+    /// round for `rotate_right`. WGSL takes a shift's amount modulo 32, which
+    /// makes that right for every `n`.
+    Rotate { left: bool },
+}
+
+fn rust_math(name: &str) -> Option<RustMath> {
+    use MathFunction as Mf;
+    use MathResult::*;
+    let (fun, argc, result) = match name {
+        "ln" => (Mf::Log, 1, SameAsFirst),
+        "powf" => (Mf::Pow, 2, SameAsFirst),
+        "mul_add" => (Mf::Fma, 3, SameAsFirst),
+        "to_degrees" => (Mf::Degrees, 1, SameAsFirst),
+        "to_radians" => (Mf::Radians, 1, SameAsFirst),
+        // The GPU's `round` takes a half to the even neighbour, which is what
+        // Rust calls this one.
+        "round_ties_even" => (Mf::Round, 1, SameAsFirst),
+        "lerp" => (Mf::Mix, 3, SameAsFirst),
+        "signum" => (Mf::Sign, 1, SameAsFirst),
+        "fract" => return Some(RustMath::Fract),
+        "length_squared" => return Some(RustMath::LengthSquared),
+        "recip" => return Some(RustMath::Recip),
+        "unsigned_abs" => return Some(RustMath::UnsignedAbs),
+        "rotate_left" => return Some(RustMath::Rotate { left: true }),
+        "rotate_right" => return Some(RustMath::Rotate { left: false }),
+        _ => return None,
+    };
+    Some(RustMath::Builtin(MathSpec { fun, argc, result }))
+}
+
+/// Why a method Rust has cannot be the GPU builtin of the same name, for the
+/// two where the difference is more than a line to make up.
+fn differs_on_gpu(name: &str, receiver: Shape) -> Option<&'static str> {
+    let float = receiver.elem_kind() == Some(naga::ScalarKind::Float);
+    match name {
+        "round" if float => Some(
+            "Rust rounds a half away from zero and the GPU to the even neighbour; \
+             `round_ties_even()` is the GPU's",
+        ),
+        "signum" if float => Some(
+            "Rust's `0.0.signum()` is 1 and the GPU's `sign(0.0)` is 0; `sign(x)` is the GPU's",
+        ),
+        _ => None,
+    }
+}
+
+/// `x.sqrt()`, `y.atan2(x)`, `v.dot(w)`, `a.lerp(b, t)`: a math builtin with
+/// the receiver as its first argument. `None` when `name` is not one, or the
+/// arity does not match, so some other method can still claim it.
+///
+/// The names are Rust's: `f32`'s own methods, and glam's for what only a
+/// vector has. Where Rust means something else by a name WGSL also has, the
+/// method means what Rust says, since that is what `rustc` checked. WGSL's
+/// other names work as methods too, `x.saturate()`, for a shader `rustc`
+/// never sees.
 pub(super) fn lower_math_method(
     ctx: &mut Context,
     function: &mut Function,
@@ -487,22 +555,181 @@ pub(super) fn lower_math_method(
     args: &[&syn::Expr],
     env: &mut Env,
 ) -> Result<Option<Typed>, Error> {
-    let Some(spec) = math_spec(name) else {
-        return Ok(None);
+    let shape = ctx.shape(receiver.1);
+    if let Some(why) = differs_on_gpu(name, shape) {
+        return Err(Error::DiffersOnGpu(name.into(), why));
+    }
+    let spec = match rust_math(name) {
+        Some(RustMath::Builtin(spec)) => spec,
+        Some(special) => {
+            return lower_special_math(ctx, function, body, receiver, special, args, env);
+        }
+        None => match math_spec(name) {
+            Some(spec) => spec,
+            None => return Ok(None),
+        },
     };
     if args.len() + 1 != spec.argc {
         return Ok(None);
     }
-    let mut hint = ctx.shape(receiver.1).int_hint();
+    let mut hint = shape.int_hint();
     let mut handles = vec![receiver.0];
     let mut tys = vec![receiver.1];
     for arg in args {
-        let (handle, ty) = super::expr::lower_expr_hinted(ctx, function, body, arg, env, hint)?;
+        let (mut handle, mut ty) =
+            super::expr::lower_expr_hinted(ctx, function, body, arg, env, hint)?;
+        // `v.powf(2.0)` raises every lane to one power, which the GPU's `pow`
+        // wants as a vector.
+        if let (MathFunction::Pow, Shape::Vector(size, _), Shape::Scalar(_)) =
+            (spec.fun, shape, ctx.shape(ty))
+        {
+            handle = emit(
+                function,
+                body,
+                Expression::Splat {
+                    size,
+                    value: handle,
+                },
+            )?;
+            ty = receiver.1;
+        }
         hint = hint.or_else(|| ctx.shape(ty).int_hint());
         handles.push(handle);
         tys.push(ty);
     }
     finish_math(ctx, function, body, spec, &handles, &tys).map(Some)
+}
+
+/// The methods that are a few operations rather than one builtin. `None` for
+/// the wrong number of arguments, as for a builtin.
+fn lower_special_math(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    (value, ty): Typed,
+    special: RustMath,
+    args: &[&syn::Expr],
+    env: &mut Env,
+) -> Result<Option<Typed>, Error> {
+    use naga::ScalarKind as Kind;
+    let shape = ctx.shape(ty);
+    let kind = shape.elem_kind();
+    let fits = match (&special, args) {
+        (RustMath::Fract | RustMath::LengthSquared | RustMath::Recip, []) => {
+            kind == Some(Kind::Float)
+        }
+        (RustMath::UnsignedAbs, []) => kind == Some(Kind::Sint),
+        (RustMath::Rotate { .. }, [_]) => {
+            matches!(shape, Shape::Scalar(s) if s == naga::Scalar::U32 || s == naga::Scalar::I32)
+        }
+        _ => return Ok(None),
+    };
+    if !fits {
+        return Err(Error::TypeMismatch);
+    }
+    let math = |fun, arg1| Expression::Math {
+        fun,
+        arg: value,
+        arg1,
+        arg2: None,
+        arg3: None,
+    };
+    let binary = |function: &mut Function, body: &mut Block, op, left, right| {
+        emit(function, body, Expression::Binary { op, left, right })
+    };
+    let typed = match special {
+        RustMath::UnsignedAbs => {
+            let magnitude = emit(function, body, math(MathFunction::Abs, None))?;
+            let expr = Expression::As {
+                expr: magnitude,
+                kind: naga::ScalarKind::Uint,
+                convert: Some(4),
+            };
+            let uint = match shape {
+                Shape::Vector(size, _) => ctx.intern_vector(size, naga::Scalar::U32),
+                _ => ctx.intern_scalar(naga::Scalar::U32),
+            };
+            (emit(function, body, expr)?, uint)
+        }
+        RustMath::Rotate { left } => {
+            use naga::BinaryOperator as Op;
+            let u32_ = naga::Scalar::U32;
+            let (amount, amount_ty) =
+                lower_expr_hinted(ctx, function, body, args[0], env, Some(u32_))?;
+            if ctx.shape(amount_ty) != Shape::Scalar(u32_) {
+                return Err(Error::BadShiftType);
+            }
+            let reinterpret = |function: &mut Function, body: &mut Block, expr, kind| {
+                let convert = None;
+                emit(
+                    function,
+                    body,
+                    Expression::As {
+                        expr,
+                        kind,
+                        convert,
+                    },
+                )
+            };
+            let literal = |function: &mut Function, n| {
+                let literal = Expression::Literal(naga::Literal::U32(n));
+                function.expressions.append(literal, Span::UNDEFINED)
+            };
+            // An `i32` rotates its bits, which `>>` on it would not keep: it
+            // drags the sign in.
+            let signed = kind == Some(Kind::Sint);
+            let bits = match signed {
+                true => reinterpret(function, body, value, Kind::Uint)?,
+                false => value,
+            };
+            // Rust takes the amount modulo 32. WGSL's shifts do too, but Naga
+            // writes some backends' shifts as ones that are undefined from 32
+            // up, so each amount is kept below it here.
+            let (first, second) = if left {
+                (Op::ShiftLeft, Op::ShiftRight)
+            } else {
+                (Op::ShiftRight, Op::ShiftLeft)
+            };
+            let mask = literal(function, 31);
+            let near_amount = binary(function, body, Op::And, amount, mask)?;
+            let near = binary(function, body, first, bits, near_amount)?;
+            let width = literal(function, 32);
+            let rest = binary(function, body, Op::Subtract, width, amount)?;
+            let mask = literal(function, 31);
+            let far_amount = binary(function, body, Op::And, rest, mask)?;
+            let far = binary(function, body, second, bits, far_amount)?;
+            let rotated = binary(function, body, Op::InclusiveOr, near, far)?;
+            match signed {
+                true => (reinterpret(function, body, rotated, Kind::Sint)?, ty),
+                false => (rotated, ty),
+            }
+        }
+        RustMath::Fract => {
+            let whole = emit(function, body, math(MathFunction::Trunc, None))?;
+            let op = naga::BinaryOperator::Subtract;
+            (binary(function, body, op, value, whole)?, ty)
+        }
+        RustMath::LengthSquared => {
+            let Shape::Vector(_, scalar) = shape else {
+                return Err(Error::TypeMismatch);
+            };
+            let handle = emit(function, body, math(MathFunction::Dot, Some(value)))?;
+            (handle, ctx.intern_scalar(scalar))
+        }
+        RustMath::Recip => {
+            let mut one = function.expressions.append(
+                Expression::Literal(naga::Literal::F32(1.0)),
+                Span::UNDEFINED,
+            );
+            if let Shape::Vector(size, _) = shape {
+                one = emit(function, body, Expression::Splat { size, value: one })?;
+            }
+            let op = naga::BinaryOperator::Divide;
+            (binary(function, body, op, one, value)?, ty)
+        }
+        RustMath::Builtin(_) => unreachable!("a builtin is not special"),
+    };
+    Ok(Some(typed))
 }
 
 fn lower_math(

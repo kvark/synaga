@@ -169,17 +169,15 @@ fn usize_indexes_what_rust_insists_on_indexing_by_usize() {
 
 #[test]
 fn a_write_goes_through_get_mut() {
-    // A writable resource is a plain `static`: reads need nothing, and a
-    // write says `unsafe`, since the shader keeps its invocations apart. The
-    // block and the accessor are for `rustc`; the storage is the same.
+    // A writable resource is a plain `static`: a read derefs it, and a write
+    // goes through `get_mut`. The accessor is for `rustc`; the storage is the
+    // same. `unsafe`, which an older `get_mut` wanted, is still read through.
     let wgsl = roundtrip_unbound(
         r#"
         static counts: StorageMut<[u32]> = binding();
         #[entry_point(compute, threads(64))]
         fn tally(#[builtin(global_invocation_id)] id: Vec3<u32>) {
-            unsafe {
-                counts.get_mut()[id.x as usize] += 1;
-            }
+            counts.get_mut()[id.x as usize] += 1;
             let doubled = counts[0] * 2;
             unsafe { counts.get_mut()[1] = doubled };
         }

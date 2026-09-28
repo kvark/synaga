@@ -31,20 +31,23 @@ pub(super) fn lower_method_call(
     body: &mut Block,
     call: &syn::ExprMethodCall,
     env: &mut Env,
+    hint: Option<Scalar>,
 ) -> Result<Typed, Error> {
-    lower_method_any(ctx, function, body, call, env)?
+    lower_method_any(ctx, function, body, call, env, hint)?
         .ok_or_else(|| Error::ValueFromStatement(call.method.to_string()))
 }
 
 /// A method call anywhere: what it produces, or `None` for one that only
 /// acts, like a texture's `store`, which is fine in statement or tail
-/// position.
+/// position. `hint` is where the value goes, which is all `v.cast()` has to
+/// say what it casts to.
 pub(super) fn lower_method_any(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
     call: &syn::ExprMethodCall,
     env: &mut Env,
+    hint: Option<Scalar>,
 ) -> Result<Option<Typed>, Error> {
     let name = call.method.to_string();
     let args: Vec<&Expr> = call.args.iter().collect();
@@ -82,7 +85,44 @@ pub(super) fn lower_method_any(
             ctx, function, body, receiver, &name, &args, env,
         );
     }
+    if name == "cast" {
+        return lower_cast(ctx, function, body, receiver, call, hint).map(Some);
+    }
     lower_value_method(ctx, function, body, receiver, &name, &args, env).map(Some)
+}
+
+/// `v.cast::<i32>()`: every lane converted, as `vec3<i32>(v)` converts them.
+/// Without a turbofish, the scalar is the one where the value goes, as `rustc`
+/// infers it; with nothing there either, it is `f32`, as a bare `Vec3` is.
+fn lower_cast(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    (value, ty): Typed,
+    call: &syn::ExprMethodCall,
+    hint: Option<Scalar>,
+) -> Result<Typed, Error> {
+    if !call.args.is_empty() {
+        return Err(Error::WrongArgCount("cast".into()));
+    }
+    let Shape::Vector(size, _) = ctx.shape(ty) else {
+        return Err(Error::UnsupportedMethod("cast".into()));
+    };
+    let turbofish = match &call.turbofish {
+        Some(args) => Some(super::angle_scalar(args, "cast")?),
+        None => None,
+    };
+    let scalar = turbofish.or(hint).unwrap_or(Scalar::F32);
+    let handle = emit(
+        function,
+        body,
+        Expression::As {
+            expr: value,
+            kind: scalar.kind,
+            convert: Some(scalar.width),
+        },
+    )?;
+    Ok((handle, ctx.intern_vector(size, scalar)))
 }
 
 /// `v.xyz()`, `v.extend(w)`, `a.cmple(b)` and the rest, on a value.
@@ -141,6 +181,10 @@ fn lower_value_method(
             )?;
             Ok((handle, ty))
         }
+        // `x.to_bits()`: a float's bits as a `u32`, `bitcast<u32>(x)` in WGSL.
+        ("to_bits", []) if ctx.shape(base_ty) == Shape::Scalar(Scalar::F32) => {
+            bitcast(ctx, function, body, base, Scalar::U32)
+        }
         ("truncate", []) => {
             let Shape::Vector(size, _) = ctx.shape(base_ty) else {
                 return Err(Error::UnsupportedMethod(name));
@@ -152,6 +196,24 @@ fn lower_value_method(
             };
             super::vector::swizzle(ctx, function, body, base, base_ty, &keep, &name)
         }
+        // `mask.all()`: a `Vec3<bool>` folded to one `bool`, as glam's `BVec3`
+        // does it.
+        ("all" | "any", []) if matches!(ctx.shape(base_ty), Shape::Vector(_, s) if s == Scalar::BOOL) =>
+        {
+            let fun = match name.as_str() {
+                "all" => naga::RelationalFunction::All,
+                _ => naga::RelationalFunction::Any,
+            };
+            let handle = emit(
+                function,
+                body,
+                Expression::Relational {
+                    fun,
+                    argument: base,
+                },
+            )?;
+            Ok((handle, ctx.intern_scalar(Scalar::BOOL)))
+        }
         (cmp, [rhs]) if compare_op(cmp).is_some() => {
             let op = compare_op(cmp).expect("checked above");
             let (left, left_ty) = (base, base_ty);
@@ -162,9 +224,9 @@ fn lower_value_method(
             Ok((handle, ty))
         }
         _ => {
-            // `y.asin()`, `y.atan2(x)`: the same builtins as the free functions,
-            // with the receiver as the first argument. `f32` already has these
-            // methods, so rustc accepts them.
+            // `y.asin()`, `v.dot(w)`: the same builtins as the free functions,
+            // with the receiver as the first argument, under the names `f32`
+            // and the vectors have them.
             if let Some(typed) = super::call::lower_math_method(
                 ctx,
                 function,
@@ -179,6 +241,22 @@ fn lower_value_method(
             Err(Error::UnsupportedMethod(name))
         }
     }
+}
+
+/// The same bits, read as another scalar of the same width.
+fn bitcast(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    value: naga::Handle<Expression>,
+    to: Scalar,
+) -> Result<Typed, Error> {
+    let expr = Expression::As {
+        expr: value,
+        kind: to.kind,
+        convert: None,
+    };
+    Ok((emit(function, body, expr)?, ctx.intern_scalar(to)))
 }
 
 /// The lane-wise comparisons, which Rust's operators cannot express.
@@ -233,6 +311,20 @@ pub(super) fn lower_qualified_call(
         }
     }
 
+    // `f32::from_bits(n)`: a `u32`'s bits read as a float, which WGSL spells
+    // `bitcast<f32>(n)`.
+    if ty_name == "f32" && method == "from_bits" {
+        let [bits] = args else {
+            return Err(Error::WrongArgCount(format!("{ty_name}::{method}")));
+        };
+        let u32_ = Some(Scalar::U32);
+        let (bits, bits_ty) = lower_expr_hinted(ctx, function, body, bits, env, u32_)?;
+        if ctx.shape(bits_ty) != Shape::Scalar(Scalar::U32) {
+            return Err(Error::TypeMismatch);
+        }
+        return bitcast(ctx, function, body, bits, Scalar::F32);
+    }
+
     let Some((size, shorthand)) = parse_vec_ident(ty_name) else {
         return Err(Error::UnsupportedMethod(format!("{ty_name}::{method}")));
     };
@@ -279,7 +371,9 @@ pub(super) fn lower_qualified_call(
     }
 }
 
-/// `Vec4::ZERO` and `Vec4::ONE`, which name a value rather than call anything.
+/// `Vec4::ZERO` and `Vec4::ONE`, which name a value rather than call anything,
+/// `Mode::Variance`, which names an enum's discriminant, and `u32::MAX`, a
+/// primitive's own.
 pub(super) fn lower_qualified_const(
     ctx: &mut Context,
     function: &mut Function,
@@ -288,12 +382,15 @@ pub(super) fn lower_qualified_const(
     constant: &str,
 ) -> Result<Typed, Error> {
     let ty_name = &super::last(on.path);
-    if let Some(value) = ctx.scope.enum_variant(ty_name, constant) {
-        let ty = ctx.intern_scalar(Scalar::U32);
-        let handle = function.expressions.append(
-            Expression::Literal(naga::Literal::U32(value)),
-            naga::Span::UNDEFINED,
-        );
+    let literal = match ctx.scope.enum_variant(ty_name, constant) {
+        Some(value) => Some(naga::Literal::U32(value)),
+        None => super::constant::scalar_const(ty_name, constant),
+    };
+    if let Some(literal) = literal {
+        let ty = ctx.intern_scalar(literal.scalar());
+        let handle = function
+            .expressions
+            .append(Expression::Literal(literal), naga::Span::UNDEFINED);
         return Ok((handle, ty));
     }
     let Some((size, shorthand)) = parse_vec_ident(ty_name) else {

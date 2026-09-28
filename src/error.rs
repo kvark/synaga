@@ -20,6 +20,8 @@ pub enum Error {
     UnsupportedType(String),
     #[error("unsupported method `{0}`")]
     UnsupportedMethod(String),
+    #[error("`{0}()` means something else on the GPU: {1}")]
+    DiffersOnGpu(String, &'static str),
     #[error("unsupported expression: {0}")]
     UnsupportedExpr(String),
     #[error("unsupported binary operator: {0}")]
@@ -74,7 +76,7 @@ pub enum Error {
     DuplicateAttribute(String),
     #[error("unsupported binding `{0}`")]
     UnsupportedBinding(String),
-    #[error("entry point argument `{0}` needs #[location] or #[builtin]")]
+    #[error("entry point argument `{0}` needs #[location] or #[builtin], or the name of a builtin its stage takes")]
     MissingArgBinding(String),
     #[error("entry point argument `{0}` is a struct with no `#[location]`s, which only a host that assigns them can fill in: derive `Io` and give each field one, or build with `Bindings::Host`")]
     UnboundStructArg(String),
@@ -82,8 +84,8 @@ pub enum Error {
     MissingWorkgroupSize,
     #[error("`threads` is only for a compute entry point")]
     UnexpectedWorkgroupSize,
-    #[error("entry point `{0}` is missing #[output(...)]")]
-    MissingReturnBinding(String),
+    #[error("entry point `{0}` returns a value, which a compute entry point cannot")]
+    ComputeReturnsValue(String),
     #[error("`{0}` returns a value that is not the type it declares")]
     ReturnMismatch(String),
     #[error("`{0}` produces no value, so it cannot be used as one")]

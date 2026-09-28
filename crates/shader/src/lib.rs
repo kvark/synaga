@@ -45,8 +45,8 @@
 //!   the rest, as glam spells them.
 //!
 //! And what it expresses better: texture and ray-query operations are methods
-//! on the types they apply to, atomics are the standard ones without an
-//! `Ordering`, and a write to shared memory says `unsafe`.
+//! on the types they apply to, math is methods named as `f32`'s are, and
+//! atomics are the standard ones without an `Ordering`.
 //!
 //! [synaga]: https://github.com/kvark/synaga
 

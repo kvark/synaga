@@ -16,17 +16,20 @@
 //!
 //! Each derefs to what it holds, so `camera.view` reads through it.
 //!
-//! None of them is a `static mut`. Other invocations run at the same time and
-//! may be writing the same memory, which Rust calls shared mutable state; a
-//! `static mut` says so too, but edition 2024 refuses even a read through one.
-//! So a writable resource is a plain `static`: reading it is safe, its atomics
-//! take `&self`, and a write goes through [`StorageMut::get_mut`], which is
-//! `unsafe` because the shader, not the compiler, keeps the invocations apart:
+//! None of them is a `static mut`: edition 2024 refuses even a read through
+//! one. A writable resource is a plain `static`, its atomics take `&self`, and
+//! a write goes through [`StorageMut::get_mut`]:
 //!
 //! ```ignore
 //! let slot = counters[0];
-//! unsafe { counters.get_mut()[1] = slot + 1 };
+//! counters.get_mut()[1] = slot + 1;
 //! ```
+//!
+//! Other invocations run at the same time and may be writing the same memory,
+//! as they may in WGSL, and the shader keeps the writes that matter apart, as
+//! it has to in WGSL. `get_mut` is not `unsafe` for it, because what `unsafe`
+//! would guard against, two `&mut` to one place on the CPU, cannot happen:
+//! the body never returns there.
 
 use core::marker::PhantomData;
 use core::ops::{Deref, Index, IndexMut};
@@ -154,18 +157,18 @@ impl<T: ?Sized> Bindable for StorageMut<T> {}
 macro_rules! writable {
     ($name:ident) => {
         impl<T: ?Sized> $name<T> {
-            /// What this holds, to write to: `unsafe { buf.get_mut().x = 1 }`.
-            ///
-            /// # Safety
+            /// What this holds, to write to: `buf.get_mut().x = 1`.
             ///
             /// Other invocations may be reading or writing the same memory at
-            /// the same time. The shader has to keep the writes that matter
-            /// apart, by giving each invocation its own part of the memory or
-            /// by a barrier between them, as it has to on a GPU. On the CPU,
-            /// two of these must not be alive at once.
+            /// the same time. The shader keeps the writes that matter apart,
+            /// by giving each invocation its own part of the memory or by a
+            /// barrier between them, as it has to in WGSL.
+            ///
+            /// `&mut` from `&self` would be unsound if it returned on the CPU,
+            /// where two of them could alias; it never does.
             #[inline]
             #[allow(clippy::mut_from_ref)]
-            pub unsafe fn get_mut(&self) -> &mut T {
+            pub fn get_mut(&self) -> &mut T {
                 unimplemented_on_cpu()
             }
         }

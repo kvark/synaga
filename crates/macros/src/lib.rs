@@ -31,9 +31,11 @@ fn strip(attrs: &mut Vec<syn::Attribute>, names: &[&str]) {
 /// A shader entry point: `#[entry_point(vertex)]`, `#[entry_point(fragment)]`,
 /// or `#[entry_point(compute, threads(8, 4))]`.
 ///
-/// Its parameters may carry `#[location(N)]` and `#[builtin(name)]`, and a
-/// fragment entry point that returns a bare value says where it goes with
-/// `#[output(location(0))]`.
+/// Its parameters may carry `#[location(N)]` and `#[builtin(name)]`, or be
+/// named after the builtin they are: `global_invocation_id: Vec3<u32>`. A
+/// bare value it returns is a vertex shader's position or a fragment shader's
+/// `location(0)`, unless `#[output(..)]` on the function says otherwise:
+/// `#[output(builtin(frag_depth))]`.
 #[proc_macro_attribute]
 pub fn entry_point(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut item = parse_macro_input!(input as ItemFn);

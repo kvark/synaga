@@ -117,6 +117,17 @@ fn compound_assign_shift() {
 }
 
 #[test]
+fn compound_assign_shift_on_a_vector() {
+    // One amount for every lane, or one per lane; either is unsigned, as
+    // WGSL wants it whatever is shifted.
+    let wgsl = roundtrip(
+        "fn f(v: Vec2<i32>) -> Vec2<i32> { let mut w = v; w >>= 1; w <<= vec2(1, 2); w }",
+    );
+    assert!(wgsl.contains(">> vec2(1u)"), "{wgsl}");
+    assert!(wgsl.contains("<< vec2<u32>(1u, 2u)"), "{wgsl}");
+}
+
+#[test]
 fn compound_assign_keeps_the_target_type() {
     // `v` is a vec3, `v += 1.0` would be a vec3, but `s += v` would not be an f32.
     let msg = reject("fn f(v: vec3) -> f32 { let s = 0.0; s += v; s }");

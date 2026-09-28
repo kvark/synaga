@@ -106,3 +106,35 @@ fn rejects_unknown_struct() {
         "{msg}"
     );
 }
+
+#[test]
+fn struct_update_takes_the_rest_from_the_base() {
+    let lower = |src: &str| {
+        let module = synaga::parse_str(src).unwrap_or_else(|e| panic!("parse: {e}\n{src}"));
+        synaga::validate(&module).unwrap_or_else(|e| panic!("validate: {e}\n{src}"));
+        format!("{module:#?}")
+    };
+    let decl = "#[derive(Clone, Copy, Default)] struct S { a: f32, b: u32, c: Vec2 }";
+    // `..Default::default()` is how Rust avoids assigning fields one by one
+    // after `S::default()`, which clippy asks for.
+    for rest in ["Default::default()", "S::default()"] {
+        assert_eq!(
+            lower(&format!(
+                "{decl} fn f(x: f32) -> S {{ S {{ a: x, ..{rest} }} }}"
+            )),
+            lower(&format!(
+                "{decl} fn f(x: f32) -> S {{ S {{ a: x, b: u32::default(), c: Vec2::default() }} }}"
+            )),
+        );
+    }
+    assert_eq!(
+        lower(&format!(
+            "{decl} fn f(s: S, x: f32) -> S {{ S {{ a: x, ..s }} }}"
+        )),
+        lower(&format!(
+            "{decl} fn f(s: S, x: f32) -> S {{ S {{ a: x, b: s.b, c: s.c }} }}"
+        )),
+    );
+    let msg = reject(&format!("{decl} fn f(x: f32) -> S {{ S {{ a: x }} }}"));
+    assert!(msg.contains("wrong number of fields"), "{msg}");
+}
