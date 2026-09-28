@@ -4,12 +4,15 @@ use synaga_shader::*;
 
 use super::common::{globals, unpack_color};
 
+/// One sprite, as the host moves it and uploads it; only the host reads
+/// `velocity`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
 pub struct Locals {
     pub position: Vec2,
-    // The host uploads the whole sprite, velocity included; only it reads this.
-    #[allow(dead_code)]
     pub velocity: Vec2,
     pub color: u32,
+    pub _pad: u32,
 }
 
 /// The bind group each batch of sprites sets.

@@ -171,6 +171,37 @@ plain `{ old_value, exchanged }`. They take `&self`, as the standard ones do, so
 a buffer changed only through its atomics needs no `get_mut`. On the CPU they
 are real atomics.
 
+### Sharing a struct with the host
+
+A struct the host fills in and uploads is the shader's own, rather than a copy
+kept the same by hand. `#[repr(C)]` says the host shares it, and the build
+checks, for each such struct a buffer holds, that the GPU reads every field
+where `rustc` puts it. That is the one thing that can go silently wrong, and the
+error says how to put it right:
+
+```text
+`Globals` is `#[repr(C)]`, which says the host shares it, but it is 72 bytes in
+Rust and 80 on the GPU; 8 bytes of padding at the end line them up
+```
+
+```rust,ignore
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
+pub struct Globals {
+    pub mvp_transform: Mat4,
+    pub sprite_size: Vec2,
+    pub _pad: Vec2,
+}
+```
+
+With `synaga-shader`'s `bytemuck` feature the vectors and matrices are `Pod`, so
+such a struct can derive it and upload itself. They convert from arrays, a
+matrix column by column, and with the `mint` feature from mint's types, which
+most math crates convert to. A matrix column of three lanes takes four, in Rust
+as on the GPU, so any matrix can be shared; an array of `Vec3`, whose elements
+the GPU spaces 16 bytes apart, cannot. `examples/sprites` shares its uniforms
+this way.
+
 ### Textures and ray queries are methods
 
 Each operation lives on the types it applies to, so `rustc` turns away what

@@ -393,14 +393,18 @@ for size in SIZES:
         w(f"    pub const fn {sw}(self) -> {ret} {{ {body} }}")
     w("}")
     w("")
+    # Real on the CPU, where a host reads a shared struct's lanes.
+    lanes = ", ".join(f"{i} => &self.{c}" for i, c in enumerate(comps))
+    lanes_mut = ", ".join(f"{i} => &mut self.{c}" for i, c in enumerate(comps))
+    oob = f'_ => panic!("lane {{index}} of a {name}")'
     w(f"impl<T: Scalar> Index<usize> for {vname(size)} {{")
     w("    type Output = T;")
     w("    #[inline]")
-    w("    fn index(&self, index: usize) -> &T { unimplemented_on_cpu() }")
+    w(f"    fn index(&self, index: usize) -> &T {{ match index {{ {lanes}, {oob} }} }}")
     w("}")
     w(f"impl<T: Scalar> IndexMut<usize> for {vname(size)} {{")
     w("    #[inline]")
-    w("    fn index_mut(&mut self, index: usize) -> &mut T { unimplemented_on_cpu() }")
+    w(f"    fn index_mut(&mut self, index: usize) -> &mut T {{ match index {{ {lanes_mut}, {oob} }} }}")
     w("}")
     # two-vector concatenation, for a shader's vec4(vec2, vec2)
     if size == 4:
@@ -447,6 +451,47 @@ for size in SIZES:
             w("    pub fn cross(self, rhs: Self) -> Self { unimplemented_on_cpu() }")
             w("}")
         w("")
+
+# What the host needs to fill a struct it shares with a shader: arrays and
+# mint's vectors, whichever it has, and bytemuck to upload the result. These
+# run on the CPU.
+for size in SIZES:
+    name = f"Vec{size}"
+    comps = XYZW[:size]
+    lanes = ", ".join(comps)
+    of = ", ".join(f"v.{c}" for c in comps)
+    w(f"impl<T: Scalar> From<[T; {size}]> for {vname(size)} {{")
+    w("    #[inline]")
+    w(f"    fn from([{lanes}]: [T; {size}]) -> Self {{ {name} {{ {lanes} }} }}")
+    w("}")
+    w(f"impl<T: Scalar> From<{vname(size)}> for [T; {size}] {{")
+    w("    #[inline]")
+    w(f"    fn from(v: {vname(size)}) -> Self {{ [{of}] }}")
+    w("}")
+    w('#[cfg(feature = "mint")]')
+    w(f"impl<T: Scalar> From<mint::Vector{size}<T>> for {vname(size)} {{")
+    w("    #[inline]")
+    w(f"    fn from(v: mint::Vector{size}<T>) -> Self {{ {name} {{ {', '.join(f'{c}: v.{c}' for c in comps)} }} }}")
+    w("}")
+    if size == 4:
+        w('#[cfg(feature = "mint")]')
+        w(f"impl<T: Scalar> From<mint::Quaternion<T>> for {vname(size)} {{")
+        w("    /// `xyz` is the vector part and `w` the scalar, as a shader keeps one.")
+        w("    #[inline]")
+        w(f"    fn from(q: mint::Quaternion<T>) -> Self {{ {name} {{ x: q.v.x, y: q.v.y, z: q.v.z, w: q.s }} }}")
+        w("}")
+    w('#[cfg(feature = "mint")]')
+    w(f"impl<T: Scalar> From<{vname(size)}> for mint::Vector{size}<T> {{")
+    w("    #[inline]")
+    w(f"    fn from(v: {vname(size)}) -> Self {{ mint::Vector{size} {{ {', '.join(f'{c}: v.{c}' for c in comps)} }} }}")
+    w("}")
+    w(f"// SAFETY: `#[repr(C)]` lanes of one type, so there is no padding, and")
+    w(f"// all zeroes, like any bytes of a `Pod` lane type, are valid lanes.")
+    w('#[cfg(feature = "bytemuck")]')
+    w(f"unsafe impl<T: Scalar + bytemuck::Zeroable> bytemuck::Zeroable for {vname(size)} {{}}")
+    w('#[cfg(feature = "bytemuck")]')
+    w(f"unsafe impl<T: Scalar + bytemuck::Pod> bytemuck::Pod for {vname(size)} {{}}")
+w("")
 
 # component-type conversions, for a shader's `vec3<f32>(v)`
 for size in SIZES:

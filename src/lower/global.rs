@@ -232,6 +232,9 @@ fn finish_global(
         _ => {}
     }
 
+    if matches!(space, AddressSpace::Uniform | AddressSpace::Storage { .. }) {
+        super::structure::check_shared(ctx, ty)?;
+    }
     let handle = ctx.module.global_variables.append(
         GlobalVariable {
             name: Some(name.clone()),

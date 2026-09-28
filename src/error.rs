@@ -146,6 +146,8 @@ pub enum Error {
     StructFieldCount(String),
     #[error("struct `{0}` mixes bound and unbound fields")]
     MixedStructBindings(String),
+    #[error("`{0}` is `#[repr(C)]`, which says the host shares it, but {1}")]
+    HostLayout(String, String),
     #[error("entry point `{0}` returns a struct with field bindings; drop `#[output(...)]`")]
     RedundantReturnBinding(String),
     #[error("`#[location]` field `{0}` is an integer, so it needs `#[flat]`")]

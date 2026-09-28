@@ -373,13 +373,21 @@ impl<T: Scalar> Index<usize> for Vec2<T> {
     type Output = T;
     #[inline]
     fn index(&self, index: usize) -> &T {
-        unimplemented_on_cpu()
+        match index {
+            0 => &self.x,
+            1 => &self.y,
+            _ => panic!("lane {index} of a Vec2"),
+        }
     }
 }
 impl<T: Scalar> IndexMut<usize> for Vec2<T> {
     #[inline]
     fn index_mut(&mut self, index: usize) -> &mut T {
-        unimplemented_on_cpu()
+        match index {
+            0 => &mut self.x,
+            1 => &mut self.y,
+            _ => panic!("lane {index} of a Vec2"),
+        }
     }
 }
 
@@ -622,13 +630,23 @@ impl<T: Scalar> Index<usize> for Vec3<T> {
     type Output = T;
     #[inline]
     fn index(&self, index: usize) -> &T {
-        unimplemented_on_cpu()
+        match index {
+            0 => &self.x,
+            1 => &self.y,
+            2 => &self.z,
+            _ => panic!("lane {index} of a Vec3"),
+        }
     }
 }
 impl<T: Scalar> IndexMut<usize> for Vec3<T> {
     #[inline]
     fn index_mut(&mut self, index: usize) -> &mut T {
-        unimplemented_on_cpu()
+        match index {
+            0 => &mut self.x,
+            1 => &mut self.y,
+            2 => &mut self.z,
+            _ => panic!("lane {index} of a Vec3"),
+        }
     }
 }
 
@@ -1127,13 +1145,25 @@ impl<T: Scalar> Index<usize> for Vec4<T> {
     type Output = T;
     #[inline]
     fn index(&self, index: usize) -> &T {
-        unimplemented_on_cpu()
+        match index {
+            0 => &self.x,
+            1 => &self.y,
+            2 => &self.z,
+            3 => &self.w,
+            _ => panic!("lane {index} of a Vec4"),
+        }
     }
 }
 impl<T: Scalar> IndexMut<usize> for Vec4<T> {
     #[inline]
     fn index_mut(&mut self, index: usize) -> &mut T {
-        unimplemented_on_cpu()
+        match index {
+            0 => &mut self.x,
+            1 => &mut self.y,
+            2 => &mut self.z,
+            3 => &mut self.w,
+            _ => panic!("lane {index} of a Vec4"),
+        }
     }
 }
 impl<T: Scalar> From<(Vec2<T>, Vec2<T>)> for Vec4<T> {
@@ -1229,6 +1259,134 @@ vector_math!(Vec4<u32>, u32, ord);
 
 vector_ops!(Vec4<bool>, bool, Vec4<u32>, bitwise, not);
 vector_math!(Vec4<bool>, bool, bool);
+
+impl<T: Scalar> From<[T; 2]> for Vec2<T> {
+    #[inline]
+    fn from([x, y]: [T; 2]) -> Self {
+        Vec2 { x, y }
+    }
+}
+impl<T: Scalar> From<Vec2<T>> for [T; 2] {
+    #[inline]
+    fn from(v: Vec2<T>) -> Self {
+        [v.x, v.y]
+    }
+}
+#[cfg(feature = "mint")]
+impl<T: Scalar> From<mint::Vector2<T>> for Vec2<T> {
+    #[inline]
+    fn from(v: mint::Vector2<T>) -> Self {
+        Vec2 { x: v.x, y: v.y }
+    }
+}
+#[cfg(feature = "mint")]
+impl<T: Scalar> From<Vec2<T>> for mint::Vector2<T> {
+    #[inline]
+    fn from(v: Vec2<T>) -> Self {
+        mint::Vector2 { x: v.x, y: v.y }
+    }
+}
+// SAFETY: `#[repr(C)]` lanes of one type, so there is no padding, and
+// all zeroes, like any bytes of a `Pod` lane type, are valid lanes.
+#[cfg(feature = "bytemuck")]
+unsafe impl<T: Scalar + bytemuck::Zeroable> bytemuck::Zeroable for Vec2<T> {}
+#[cfg(feature = "bytemuck")]
+unsafe impl<T: Scalar + bytemuck::Pod> bytemuck::Pod for Vec2<T> {}
+impl<T: Scalar> From<[T; 3]> for Vec3<T> {
+    #[inline]
+    fn from([x, y, z]: [T; 3]) -> Self {
+        Vec3 { x, y, z }
+    }
+}
+impl<T: Scalar> From<Vec3<T>> for [T; 3] {
+    #[inline]
+    fn from(v: Vec3<T>) -> Self {
+        [v.x, v.y, v.z]
+    }
+}
+#[cfg(feature = "mint")]
+impl<T: Scalar> From<mint::Vector3<T>> for Vec3<T> {
+    #[inline]
+    fn from(v: mint::Vector3<T>) -> Self {
+        Vec3 {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+        }
+    }
+}
+#[cfg(feature = "mint")]
+impl<T: Scalar> From<Vec3<T>> for mint::Vector3<T> {
+    #[inline]
+    fn from(v: Vec3<T>) -> Self {
+        mint::Vector3 {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+        }
+    }
+}
+// SAFETY: `#[repr(C)]` lanes of one type, so there is no padding, and
+// all zeroes, like any bytes of a `Pod` lane type, are valid lanes.
+#[cfg(feature = "bytemuck")]
+unsafe impl<T: Scalar + bytemuck::Zeroable> bytemuck::Zeroable for Vec3<T> {}
+#[cfg(feature = "bytemuck")]
+unsafe impl<T: Scalar + bytemuck::Pod> bytemuck::Pod for Vec3<T> {}
+impl<T: Scalar> From<[T; 4]> for Vec4<T> {
+    #[inline]
+    fn from([x, y, z, w]: [T; 4]) -> Self {
+        Vec4 { x, y, z, w }
+    }
+}
+impl<T: Scalar> From<Vec4<T>> for [T; 4] {
+    #[inline]
+    fn from(v: Vec4<T>) -> Self {
+        [v.x, v.y, v.z, v.w]
+    }
+}
+#[cfg(feature = "mint")]
+impl<T: Scalar> From<mint::Vector4<T>> for Vec4<T> {
+    #[inline]
+    fn from(v: mint::Vector4<T>) -> Self {
+        Vec4 {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+            w: v.w,
+        }
+    }
+}
+#[cfg(feature = "mint")]
+impl<T: Scalar> From<mint::Quaternion<T>> for Vec4<T> {
+    /// `xyz` is the vector part and `w` the scalar, as a shader keeps one.
+    #[inline]
+    fn from(q: mint::Quaternion<T>) -> Self {
+        Vec4 {
+            x: q.v.x,
+            y: q.v.y,
+            z: q.v.z,
+            w: q.s,
+        }
+    }
+}
+#[cfg(feature = "mint")]
+impl<T: Scalar> From<Vec4<T>> for mint::Vector4<T> {
+    #[inline]
+    fn from(v: Vec4<T>) -> Self {
+        mint::Vector4 {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+            w: v.w,
+        }
+    }
+}
+// SAFETY: `#[repr(C)]` lanes of one type, so there is no padding, and
+// all zeroes, like any bytes of a `Pod` lane type, are valid lanes.
+#[cfg(feature = "bytemuck")]
+unsafe impl<T: Scalar + bytemuck::Zeroable> bytemuck::Zeroable for Vec4<T> {}
+#[cfg(feature = "bytemuck")]
+unsafe impl<T: Scalar + bytemuck::Pod> bytemuck::Pod for Vec4<T> {}
 
 impl From<Vec2<f32>> for Vec2<i32> {
     #[inline]

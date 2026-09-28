@@ -1,5 +1,5 @@
 use core::num::NonZeroU32;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use naga::{
     AddressSpace, ArraySize, Block, Expression, Function, FunctionArgument, FunctionResult, Handle,
@@ -100,6 +100,11 @@ pub struct Context {
     /// Who the build says assigns bindings, if it said. Without it, a missing
     /// binding is left for Naga's validation to find.
     pub(super) bindings: Option<Bindings>,
+    /// The structs that say `#[repr(C)]`, which the host may share.
+    pub(super) host_reprs: HashMap<Handle<Type>, structure::HostRepr>,
+    /// The size and alignment `rustc` gives each of those a buffer holds,
+    /// once checked against the GPU's: a struct holding one needs it.
+    pub(super) host_layouts: HashMap<Handle<Type>, structure::HostLayout>,
 }
 
 impl Context {
@@ -115,6 +120,8 @@ impl Context {
             pending_space: None,
             addressed: HashSet::new(),
             bindings,
+            host_reprs: HashMap::new(),
+            host_layouts: HashMap::new(),
         }
     }
 
