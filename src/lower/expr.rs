@@ -42,10 +42,15 @@ pub(super) fn lower_expr_hinted(
         Expr::Path(path) => {
             let segments = super::path_segments(&path.path);
             let module_path = ctx.is_module_path(&segments);
-            // `vec4::ZERO` names a value on a type rather than a binding.
+            // `Vec4::ZERO` names a value on a type rather than a binding, and
+            // `Vec4::<u32>::ZERO` says the scalar as well.
             if let [.., ty, item] = &segments[..] {
                 if !module_path {
-                    return super::method::lower_qualified_const(ctx, function, ty, item);
+                    let ty_segment = &path.path.segments[path.path.segments.len() - 2];
+                    let ty_scalar = super::turbofish_scalar(ty_segment)?;
+                    return super::method::lower_qualified_const(
+                        ctx, function, body, ty, ty_scalar, item,
+                    );
                 }
             }
             // A local shadows a module item. A path through a module cannot

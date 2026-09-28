@@ -41,7 +41,7 @@ fn function_names(module: &naga::Module) -> Vec<String> {
 const TRIANGLE: &str = r#"
     #[entry_point(vertex)]
     #[output(builtin(position))]
-    fn vs(#[location(0)] pos: vec3) -> vec4 {
+    fn vs(#[location(0)] pos: Vec3) -> Vec4 {
         vec4(pos, 1.0)
     }
 "#;
@@ -49,7 +49,7 @@ const TRIANGLE: &str = r#"
 const SOLID: &str = r#"
     #[entry_point(fragment)]
     #[output(location(0))]
-    fn fs() -> vec4 { vec4(1.0, 0.0, 0.0, 1.0) }
+    fn fs() -> Vec4 { vec4(1.0, 0.0, 0.0, 1.0) }
 "#;
 
 #[test]
@@ -107,7 +107,7 @@ fn a_helper_file_comes_along_through_use() {
     write(
         &dir,
         "common.rs",
-        "pub fn luminance(c: vec3) -> f32 { dot(c, vec3(0.2126, 0.7152, 0.0722)) }",
+        "pub fn luminance(c: Vec3) -> f32 { dot(c, vec3(0.2126, 0.7152, 0.0722)) }",
     );
     write(
         &dir,
@@ -116,7 +116,7 @@ fn a_helper_file_comes_along_through_use() {
         use super::common::luminance;
         #[entry_point(fragment)]
         #[output(location(0))]
-        fn fs(#[location(0)] c: vec4) -> vec4 { vec4(vec3(luminance(c.xyz)), 1.0) }
+        fn fs(#[location(0)] c: Vec4) -> Vec4 { vec4(vec3(luminance(c.xyz)), 1.0) }
         "#,
     );
     write(
@@ -125,7 +125,7 @@ fn a_helper_file_comes_along_through_use() {
         r#"
         #[entry_point(fragment)]
         #[output(location(0))]
-        fn fs(#[location(0)] c: vec4) -> vec4 { vec4(vec3(super::common::luminance(c.xyz)), 1.0) }
+        fn fs(#[location(0)] c: Vec4) -> Vec4 { vec4(vec3(super::common::luminance(c.xyz)), 1.0) }
         "#,
     );
 
@@ -179,8 +179,8 @@ fn cfg_follows_the_build() {
         fn level() -> f32 { 0.0 }
         #[entry_point(fragment)]
         #[output(location(0))]
-        fn fs() -> vec4 {
-            if cfg!(feature = "red") { vec4(level(), 0.0, 0.0, 1.0) } else { vec4::splat(level()) }
+        fn fs() -> Vec4 {
+            if cfg!(feature = "red") { vec4(level(), 0.0, 0.0, 1.0) } else { Vec4::splat(level()) }
         }
         "#,
     );
@@ -217,7 +217,7 @@ fn what_a_module_does_not_use_is_pruned() {
         &dir,
         "common.rs",
         r#"
-        pub struct Camera { view: mat4 }
+        pub struct Camera { view: Mat4 }
         pub static camera: Camera = ();
         pub fn unused_helper(x: f32) -> f32 { x * 2.0 }
         "#,
@@ -257,10 +257,10 @@ fn host_bindings_accept_globals_with_none() {
         &dir,
         "tint.rs",
         r#"
-        static tint: vec4 = ();
+        static tint: Vec4 = ();
         #[entry_point(fragment)]
         #[output(location(0))]
-        fn fs() -> vec4 { tint }
+        fn fs() -> Vec4 { tint }
         "#,
     );
 
@@ -294,7 +294,7 @@ fn explicit_bindings_are_written_where_the_resource_is() {
         r#"
         use synaga_shader::*;
         pub const GLOBALS: u32 = 0;
-        pub static globals: Uniform<vec4> = group(GLOBALS).binding(0);
+        pub static globals: Uniform<Vec4> = group(GLOBALS).binding(0);
         "#,
     );
     write(
@@ -304,11 +304,11 @@ fn explicit_bindings_are_written_where_the_resource_is() {
         use synaga_shader::*;
         use super::common::*;
         const MATERIAL: u32 = 1;
-        pub static albedo: texture_2d<f32> = group(MATERIAL).binding(0);
-        pub static linear: sampler = synaga_shader::group(MATERIAL).binding(1);
+        pub static albedo: Texture2D<f32> = group(MATERIAL).binding(0);
+        pub static linear: Sampler = synaga_shader::group(MATERIAL).binding(1);
         #[entry_point(fragment)]
         #[output(location(0))]
-        pub fn fs(#[location(0)] uv: vec2) -> vec4 {
+        pub fn fs(#[location(0)] uv: Vec2) -> Vec4 {
             *globals * albedo.sample(&linear, uv)
         }
         "#,
@@ -348,10 +348,10 @@ fn a_vertex_struct_without_locations_needs_host_bindings() {
         "quad.rs",
         r#"
         use synaga_shader::*;
-        pub struct Vertex { pub pos: vec2 }
+        pub struct Vertex { pub pos: Vec2 }
         #[entry_point(vertex)]
         #[output(builtin(position))]
-        pub fn vs(vertex: Vertex) -> vec4 { vertex.pos.extend(0.0).extend(1.0) }
+        pub fn vs(vertex: Vertex) -> Vec4 { vertex.pos.extend(0.0).extend(1.0) }
         "#,
     );
 
@@ -380,10 +380,10 @@ fn host_bindings_refuse_a_resource_that_says_where() {
         "tint.rs",
         r#"
         use synaga_shader::*;
-        pub static tint: Uniform<vec4> = group(0).binding(0);
+        pub static tint: Uniform<Vec4> = group(0).binding(0);
         #[entry_point(fragment)]
         #[output(location(0))]
-        pub fn fs() -> vec4 { *tint }
+        pub fn fs() -> Vec4 { *tint }
         "#,
     );
 
@@ -474,18 +474,18 @@ fn ray_queries_stay_in_the_module() {
         &dir,
         "trace.rs",
         r#"
-        static acc: acceleration_structure = ();
-        static output: texture_storage_2d<Rgba8Unorm, Write> = ();
+        static acc: AccelerationStructure = ();
+        static output: TextureStorage2D<Rgba8Unorm, Write> = ();
         #[entry_point(compute, threads(8, 8))]
-        fn cs(#[builtin(global_invocation_id)] gid: vec3<u32>) {
-            let rq: ray_query;
+        fn cs(#[builtin(global_invocation_id)] gid: Vec3<u32>) {
+            let rq: RayQuery;
             rq.initialize(&acc, RayDesc {
                 flags: RAY_FLAG_NONE, cull_mask: 0xFF,
                 tmin: 0.0, tmax: 100.0, origin: vec3(0.0), dir: vec3(0.0, 0.0, 1.0),
             });
             rq.proceed();
             let hit = rq.committed_intersection();
-            output.store(gid.xy as vec2<i32>, vec4(hit.t));
+            output.store(gid.xy as Vec2<i32>, vec4(hit.t));
         }
         "#,
     );

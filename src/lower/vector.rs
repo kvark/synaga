@@ -74,20 +74,23 @@ pub(super) fn lower_vec_ctor(
     call: &syn::ExprCall,
     env: &mut Env,
 ) -> Result<Typed, Error> {
-    let name = match call.func.as_ref() {
+    let (name, turbofish) = match call.func.as_ref() {
         Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
-            path.path.segments[0].ident.to_string()
+            let segment = &path.path.segments[0];
+            (segment.ident.to_string(), super::turbofish_scalar(segment)?)
         }
         _ => return Err(Error::UnsupportedExpr("call".into())),
     };
     let (size, shorthand) =
         parse_vec_ident(&name).ok_or_else(|| Error::BadVecCtor(name.clone()))?;
+    let shorthand = super::vec_scalar(&name, shorthand, turbofish)?;
 
     if call.args.is_empty() {
         return Err(Error::VecCtorArgs);
     }
-    // `vec3u(1, 2, 3)` fixes the component type up front; plain `vec3(..)`
-    // takes it from the first argument and the rest follow.
+    // `vec3::<u32>(1, 2, 3)`, or WGSL's `vec3u(1, 2, 3)`, fixes the component
+    // type up front; plain `vec3(..)` takes it from the first argument and
+    // the rest follow.
     let mut hint = shorthand.and_then(|s| Shape::Scalar(s).int_hint());
     let mut components = Vec::new();
     let mut component_tys = Vec::new();

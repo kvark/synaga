@@ -3,8 +3,8 @@
 use synaga_shader::*;
 
 pub struct Globals {
-    pub mvp_transform: mat4,
-    pub sprite_size: vec2,
+    pub mvp_transform: Mat4,
+    pub sprite_size: Vec2,
 }
 
 /// The bind group every sprite shader shares, set once a frame. The host can
@@ -13,7 +13,7 @@ pub const FRAME: u32 = 0;
 
 pub static globals: Uniform<Globals> = group(FRAME).binding(0);
 
-pub fn unpack_color(raw: u32) -> vec4 {
-    let bytes = (vec4u::splat(raw) >> vec4u(0, 8, 16, 24)) & vec4u::splat(0xFF);
-    vec4::from(bytes) / 255.0
+pub fn unpack_color(raw: u32) -> Vec4 {
+    let bytes = (Vec4::<u32>::splat(raw) >> vec4::<u32>(0, 8, 16, 24)) & Vec4::<u32>::splat(0xFF);
+    Vec4::from(bytes) / 255.0
 }

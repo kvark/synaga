@@ -194,7 +194,7 @@ fn rejects_initialize_without_an_acceleration_structure() {
         }
         "#,
     );
-    assert!(msg.contains("acceleration_structure"), "{msg}");
+    assert!(msg.contains("AccelerationStructure"), "{msg}");
 }
 
 #[test]

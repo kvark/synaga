@@ -1,7 +1,7 @@
 //! The math and relational builtins, over scalars and vectors alike.
 //!
 //! Each is generic over the operand type: WGSL's `abs` works on `f32` and on
-//! `vec3<f32>`, and so does this one.
+//! `vec3<f32>`, and this one on `f32` and `Vec3`.
 
 use crate::unimplemented_on_cpu;
 use crate::vector::*;
@@ -20,9 +20,9 @@ macro_rules! mark {
 }
 
 mark!(Numeric: f32, i32, u32,
-      vec2, vec3, vec4, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u);
-mark!(Floating: f32, vec2, vec3, vec4);
-mark!(Integral: i32, u32, vec2i, vec3i, vec4i, vec2u, vec3u, vec4u);
+      Vec2, Vec3, Vec4, Vec2<i32>, Vec3<i32>, Vec4<i32>, Vec2<u32>, Vec3<u32>, Vec4<u32>);
+mark!(Floating: f32, Vec2, Vec3, Vec4);
+mark!(Integral: i32, u32, Vec2<i32>, Vec3<i32>, Vec4<i32>, Vec2<u32>, Vec3<u32>, Vec4<u32>);
 
 macro_rules! builtins {
     ($($(#[$doc:meta])* $bound:ident $name:ident ($($arg:ident),*);)*) => {
@@ -73,14 +73,12 @@ builtins! {
     Floating reflect(i, n);
     Floating refract(i, n, eta);
     Floating faceforward(n, i, nref);
-    Integral countOneBits(x);
     Integral count_one_bits(x);
-    Integral reverseBits(x);
     Integral reverse_bits(x);
-    Integral firstLeadingBit(x);
-    Integral firstTrailingBit(x);
-    Integral countLeadingZeros(x);
-    Integral countTrailingZeros(x);
+    Integral first_leading_bit(x);
+    Integral first_trailing_bit(x);
+    Integral count_leading_zeros(x);
+    Integral count_trailing_zeros(x);
 }
 
 /// `mix(a, b, t)`. The factor may be a scalar while `a` and `b` are vectors.
@@ -95,13 +93,7 @@ pub fn smoothstep<T: Floating>(_low: T, _high: T, _x: T) -> T {
     unimplemented_on_cpu()
 }
 
-/// The inverse square root, under both spellings WGSL and Rust would use.
-#[inline]
-#[allow(non_snake_case)]
-pub fn inverseSqrt<T: Floating>(_x: T) -> T {
-    unimplemented_on_cpu()
-}
-
+/// The inverse square root: WGSL's `inverseSqrt`.
 #[inline]
 pub fn inverse_sqrt<T: Floating>(_x: T) -> T {
     unimplemented_on_cpu()
@@ -117,7 +109,7 @@ pub fn select<T, C>(_reject: T, _accept: T, _condition: C) -> T {
 
 /// A vector whose lanes reduce to one `bool`.
 pub trait BoolVector: Copy {}
-mark!(BoolVector: bool, vec2b, vec3b, vec4b);
+mark!(BoolVector: bool, Vec2<bool>, Vec3<bool>, Vec4<bool>);
 
 /// True when every lane is.
 #[inline]
@@ -143,9 +135,9 @@ macro_rules! reducible {
     };
 }
 reducible!(
-    f32 => f32, vec2 => f32, vec3 => f32, vec4 => f32,
-    i32 => i32, vec2i => i32, vec3i => i32, vec4i => i32,
-    u32 => u32, vec2u => u32, vec3u => u32, vec4u => u32,
+    f32 => f32, Vec2 => f32, Vec3 => f32, Vec4 => f32,
+    i32 => i32, Vec2<i32> => i32, Vec3<i32> => i32, Vec4<i32> => i32,
+    u32 => u32, Vec2<u32> => u32, Vec3<u32> => u32, Vec4<u32> => u32,
 );
 
 /// Dot product.
@@ -168,7 +160,7 @@ pub fn distance<T: Reducible>(_a: T, _b: T) -> T::Scalar {
 
 /// Cross product, which only three-lane vectors have.
 #[inline]
-pub fn cross(_a: vec3, _b: vec3) -> vec3 {
+pub fn cross(_a: Vec3, _b: Vec3) -> Vec3 {
     unimplemented_on_cpu()
 }
 
@@ -191,10 +183,10 @@ macro_rules! transposable {
 }
 use crate::matrix::*;
 transposable!(
-    mat2x2 => mat2x2, mat3x3 => mat3x3, mat4x4 => mat4x4,
-    mat2x3 => mat3x2, mat3x2 => mat2x3,
-    mat2x4 => mat4x2, mat4x2 => mat2x4,
-    mat3x4 => mat4x3, mat4x3 => mat3x4,
+    Mat2 => Mat2, Mat3 => Mat3, Mat4 => Mat4,
+    Mat2x3 => Mat3x2, Mat3x2 => Mat2x3,
+    Mat2x4 => Mat4x2, Mat4x2 => Mat2x4,
+    Mat3x4 => Mat4x3, Mat4x3 => Mat3x4,
 );
 
 #[inline]
@@ -207,23 +199,22 @@ macro_rules! packing {
     ($($name:ident($arg:ty) -> $ret:ty;)*) => {
         $(
             #[inline]
-            #[allow(non_snake_case)]
             pub fn $name(_v: $arg) -> $ret { unimplemented_on_cpu() }
         )*
     };
 }
 
 packing! {
-    pack4x8snorm(vec4) -> u32;
-    pack4x8unorm(vec4) -> u32;
-    pack2x16snorm(vec2) -> u32;
-    pack2x16unorm(vec2) -> u32;
-    pack2x16float(vec2) -> u32;
-    unpack4x8snorm(u32) -> vec4;
-    unpack4x8unorm(u32) -> vec4;
-    unpack2x16snorm(u32) -> vec2;
-    unpack2x16unorm(u32) -> vec2;
-    unpack2x16float(u32) -> vec2;
+    pack4x8snorm(Vec4) -> u32;
+    pack4x8unorm(Vec4) -> u32;
+    pack2x16snorm(Vec2) -> u32;
+    pack2x16unorm(Vec2) -> u32;
+    pack2x16float(Vec2) -> u32;
+    unpack4x8snorm(u32) -> Vec4;
+    unpack4x8unorm(u32) -> Vec4;
+    unpack2x16snorm(u32) -> Vec2;
+    unpack2x16unorm(u32) -> Vec2;
+    unpack2x16float(u32) -> Vec2;
 }
 
 /// Reinterpret the bits of `x` as `T`. `bitcast::<u32>(1.0)` is WGSL's
@@ -240,20 +231,14 @@ pub fn discard() -> ! {
     panic!("shader functions describe GPU work and cannot run on the CPU")
 }
 
-/// Wait for every invocation in the workgroup.
-#[inline]
-#[allow(non_snake_case)]
-pub fn workgroupBarrier() {
-    unimplemented_on_cpu()
-}
-
+/// Wait for every invocation in the workgroup: WGSL's `workgroupBarrier`.
 #[inline]
 pub fn workgroup_barrier() {
     unimplemented_on_cpu()
 }
 
+/// Make storage writes visible across the workgroup: WGSL's `storageBarrier`.
 #[inline]
-#[allow(non_snake_case)]
-pub fn storageBarrier() {
+pub fn storage_barrier() {
     unimplemented_on_cpu()
 }

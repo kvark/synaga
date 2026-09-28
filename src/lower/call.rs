@@ -37,14 +37,17 @@ fn pointer_arg(
 }
 
 /// The type `T()` names, for a zero value: a vector, matrix, scalar, or struct.
+/// `turbofish` is a vector's scalar, when the path says it: `Vec3::<u32>`.
 pub(super) fn zero_value_type(
     ctx: &mut Context,
     path: &[String],
+    turbofish: Option<naga::Scalar>,
 ) -> Result<Option<Handle<naga::Type>>, Error> {
     let name = super::last(path);
     if let Some((size, shorthand)) = parse_vec_ident(&name) {
+        let scalar = super::vec_scalar(&name, shorthand, turbofish)?;
         return Ok(Some(
-            ctx.intern_vector(size, shorthand.unwrap_or(naga::Scalar::F32)),
+            ctx.intern_vector(size, scalar.unwrap_or(naga::Scalar::F32)),
         ));
     }
     if let Some((columns, rows, shorthand)) = parse_mat_ident(&name) {
@@ -96,7 +99,7 @@ fn names_type(ctx: &mut Context, path: &[String]) -> Result<bool, Error> {
         || parse_mat_ident(&name).is_some()
         || matches!(
             name.as_str(),
-            "f32" | "u32" | "i32" | "usize" | "isize" | "bool" | "ray_query"
+            "f32" | "u32" | "i32" | "usize" | "isize" | "bool" | "ray_query" | "RayQuery"
         )
         || ctx.named_type(path)?.is_some())
 }
@@ -214,16 +217,26 @@ pub(super) fn lower_call_any(
     if let Some(ty) = bitcast_target(call) {
         return lower_bitcast(ctx, function, body, call, env, ty).map(Some);
     }
-    let path = match call.func.as_ref() {
-        Expr::Path(path) if path.qself.is_none() => super::path_segments(&path.path),
+    let syn_path = match call.func.as_ref() {
+        Expr::Path(path) if path.qself.is_none() => &path.path,
         _ => return Err(Error::UnsupportedExpr("call".into())),
     };
+    let path = super::path_segments(syn_path);
     let path = match classify_path(ctx, &path)? {
-        // `vec3::splat(x)` and `vec4::from(v)` name the type they build.
+        // `Vec3::splat(x)` and `Vec4::<i32>::from(v)` name the type they
+        // build, a vector's scalar included.
         Callee::Associated { ty, item } => {
+            let ty_segment = &syn_path.segments[syn_path.segments.len() - 2];
+            let ty_scalar = super::turbofish_scalar(ty_segment)?;
             let args: Vec<&Expr> = call.args.iter().collect();
             return super::method::lower_qualified_call(
-                ctx, function, body, &ty, &item, &args, env,
+                ctx,
+                function,
+                body,
+                (&ty, ty_scalar),
+                &item,
+                &args,
+                env,
             )
             .map(Some);
         }
@@ -237,7 +250,9 @@ pub(super) fn lower_call_any(
     let name = super::last(&path);
     // `T()` is WGSL's zero value, and the natural spelling for one here too.
     if call.args.is_empty() {
-        if let Some(ty) = zero_value_type(ctx, &path)? {
+        let last = syn_path.segments.last().expect("a path has a segment");
+        let turbofish = super::turbofish_scalar(last)?;
+        if let Some(ty) = zero_value_type(ctx, &path, turbofish)? {
             let handle = function
                 .expressions
                 .append(Expression::ZeroValue(ty), Span::UNDEFINED);

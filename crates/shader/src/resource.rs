@@ -7,7 +7,7 @@
 //! ```ignore
 //! static camera: Uniform<Camera> = group(0).binding(0);
 //! static counters: StorageMut<[u32]> = group(0).binding(1);
-//! static albedo: texture_2d<f32> = group(1).binding(0);
+//! static albedo: Texture2D<f32> = group(1).binding(0);
 //! ```
 //!
 //! `group(0).binding(1)` is WGSL's `@group(0) @binding(1)`. A host that
@@ -67,9 +67,9 @@ pub const fn binding<T: Resource>() -> T {
 /// // A `const` works too, and the host can use the same one.
 /// pub const MATERIAL: u32 = 1;
 ///
-/// pub static camera: Uniform<mat4> = group(0).binding(0);
-/// pub static albedo: texture_2d<f32> = group(MATERIAL).binding(0);
-/// pub static linear: sampler = group(MATERIAL).binding(1);
+/// pub static camera: Uniform<Mat4> = group(0).binding(0);
+/// pub static albedo: Texture2D<f32> = group(MATERIAL).binding(0);
+/// pub static linear: Sampler = group(MATERIAL).binding(1);
 /// ```
 ///
 /// Only a resource the host binds takes one:
@@ -176,19 +176,18 @@ writable!(Workgroup);
 writable!(Private);
 
 /// An array of resources bound as one, indexed in the shader.
-#[allow(non_camel_case_types)]
-pub struct binding_array<T: ?Sized, const N: usize = 0>(PhantomData<T>);
+pub struct BindingArray<T: ?Sized, const N: usize = 0>(PhantomData<T>);
 
-impl<T: ?Sized, const N: usize> Resource for binding_array<T, N> {
-    const BINDING: Self = binding_array(PhantomData);
+impl<T: ?Sized, const N: usize> Resource for BindingArray<T, N> {
+    const BINDING: Self = BindingArray(PhantomData);
 }
 
-impl<T: ?Sized + Bindable, const N: usize> Bindable for binding_array<T, N> {}
+impl<T: ?Sized + Bindable, const N: usize> Bindable for BindingArray<T, N> {}
 
-unsafe impl<T: ?Sized, const N: usize> Sync for binding_array<T, N> {}
-unsafe impl<T: ?Sized, const N: usize> Send for binding_array<T, N> {}
+unsafe impl<T: ?Sized, const N: usize> Sync for BindingArray<T, N> {}
+unsafe impl<T: ?Sized, const N: usize> Send for BindingArray<T, N> {}
 
-impl<T: ?Sized, const N: usize> Index<u32> for binding_array<T, N> {
+impl<T: ?Sized, const N: usize> Index<u32> for BindingArray<T, N> {
     type Output = T;
     #[inline]
     fn index(&self, index: u32) -> &T {
@@ -196,7 +195,7 @@ impl<T: ?Sized, const N: usize> Index<u32> for binding_array<T, N> {
     }
 }
 
-impl<T: ?Sized, const N: usize> Index<usize> for binding_array<T, N> {
+impl<T: ?Sized, const N: usize> Index<usize> for BindingArray<T, N> {
     type Output = T;
     #[inline]
     fn index(&self, index: usize) -> &T {
@@ -204,7 +203,7 @@ impl<T: ?Sized, const N: usize> Index<usize> for binding_array<T, N> {
     }
 }
 
-impl<T: ?Sized, const N: usize> IndexMut<usize> for binding_array<T, N> {
+impl<T: ?Sized, const N: usize> IndexMut<usize> for BindingArray<T, N> {
     #[inline]
     fn index_mut(&mut self, index: usize) -> &mut T {
         unimplemented_on_cpu()

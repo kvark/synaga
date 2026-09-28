@@ -5,10 +5,10 @@ use synaga_shader::*;
 use super::common::{globals, unpack_color};
 
 pub struct Locals {
-    pub position: vec2,
+    pub position: Vec2,
     // The host uploads the whole sprite, velocity included; only it reads this.
     #[allow(dead_code)]
-    pub velocity: vec2,
+    pub velocity: Vec2,
     pub color: u32,
 }
 
@@ -16,23 +16,23 @@ pub struct Locals {
 pub const BATCH: u32 = 1;
 
 pub static locals: Uniform<Locals> = group(BATCH).binding(0);
-pub static sprite_texture: texture_2d<f32> = group(BATCH).binding(1);
-pub static sprite_sampler: sampler = group(BATCH).binding(2);
+pub static sprite_texture: Texture2D<f32> = group(BATCH).binding(1);
+pub static sprite_sampler: Sampler = group(BATCH).binding(2);
 
 #[derive(Io)]
 pub struct Vertex {
     #[location(0)]
-    pub pos: vec2,
+    pub pos: Vec2,
 }
 
 #[derive(Io)]
 pub struct VertexOutput {
     #[builtin(position)]
-    pub position: vec4,
+    pub position: Vec4,
     #[location(0)]
-    pub tex_coords: vec2,
+    pub tex_coords: Vec2,
     #[location(1)]
-    pub color: vec4,
+    pub color: Vec4,
 }
 
 #[entry_point(vertex)]
@@ -48,6 +48,6 @@ pub fn vs_main(vertex: Vertex) -> VertexOutput {
 
 #[entry_point(fragment)]
 #[output(location(0))]
-pub fn fs_main(vertex: VertexOutput) -> vec4 {
+pub fn fs_main(vertex: VertexOutput) -> Vec4 {
     vertex.color * sprite_texture.sample_level(&sprite_sampler, vertex.tex_coords, 0.0)
 }

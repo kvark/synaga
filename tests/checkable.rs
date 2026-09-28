@@ -14,56 +14,56 @@ use common::*;
 fn swizzles_as_methods() {
     // `v.xyz` cannot be a field: one piece of memory cannot carry a hundred
     // overlapping names.
-    let wgsl = roundtrip("fn f(v: vec4) -> vec3 { v.xyz() }");
+    let wgsl = roundtrip("fn f(v: Vec4) -> Vec3 { v.xyz() }");
     assert!(wgsl.contains("v.xyz"), "{wgsl}");
-    let wgsl = roundtrip("fn f(v: vec4) -> f32 { v.a() + v.x }");
+    let wgsl = roundtrip("fn f(v: Vec4) -> f32 { v.a() + v.x }");
     assert!(wgsl.contains("v.w"), "{wgsl}");
-    let wgsl = roundtrip("fn f(v: vec4) -> vec3 { v.rgb() }");
+    let wgsl = roundtrip("fn f(v: Vec4) -> Vec3 { v.rgb() }");
     assert!(wgsl.contains("v.xyz"), "{wgsl}");
 }
 
 #[test]
 fn splat_and_extend_and_truncate() {
-    let wgsl = roundtrip("fn f(x: f32) -> vec3 { vec3::splat(x) }");
+    let wgsl = roundtrip("fn f(x: f32) -> Vec3 { Vec3::splat(x) }");
     assert!(wgsl.contains("vec3(x)"), "{wgsl}");
 
-    let wgsl = roundtrip("fn f(v: vec3, w: f32) -> vec4 { v.extend(w) }");
+    let wgsl = roundtrip("fn f(v: Vec3, w: f32) -> Vec4 { v.extend(w) }");
     assert!(wgsl.contains("vec4<f32>(v, w)"), "{wgsl}");
 
-    let wgsl = roundtrip("fn f(v: vec4) -> vec3 { v.truncate() }");
+    let wgsl = roundtrip("fn f(v: Vec4) -> Vec3 { v.truncate() }");
     assert!(wgsl.contains("v.xyz"), "{wgsl}");
 }
 
 #[test]
 fn typed_splat_keeps_its_component_type() {
-    let wgsl = roundtrip("fn f(x: u32) -> vec4<u32> { vec4u::splat(x) }");
+    let wgsl = roundtrip("fn f(x: u32) -> Vec4<u32> { Vec4::<u32>::splat(x) }");
     assert!(wgsl.contains("vec4(x)"), "{wgsl}");
 }
 
 #[test]
 fn extend_chains_to_four() {
-    validate_only("fn f(v: vec2) -> vec4 { v.extend(0.0).extend(1.0) }");
+    validate_only("fn f(v: Vec2) -> Vec4 { v.extend(0.0).extend(1.0) }");
 }
 
 #[test]
 fn from_converts_components() {
     // Rust's `as` only works on primitives, so a vector conversion is `From`.
-    let wgsl = roundtrip("fn f(v: vec3<u32>) -> vec3 { vec3::from(v) }");
+    let wgsl = roundtrip("fn f(v: Vec3<u32>) -> Vec3 { Vec3::from(v) }");
     assert!(wgsl.contains("vec3<f32>(v)"), "{wgsl}");
 }
 
 #[test]
 fn lanewise_comparisons_are_methods() {
     // `a < b` yields one bool in Rust and one per lane in a shader.
-    let wgsl = roundtrip("fn f(a: vec3, b: vec3) -> vec3<bool> { a.cmple(b) }");
+    let wgsl = roundtrip("fn f(a: Vec3, b: Vec3) -> Vec3<bool> { a.cmple(b) }");
     assert!(wgsl.contains("a <= b"), "{wgsl}");
-    validate_only("fn f(a: vec3, b: vec3) -> vec3<bool> { a.cmpgt(b) }");
-    validate_only("fn f(a: vec3<u32>, b: vec3<u32>) -> vec3<bool> { a.cmpeq(b) }");
+    validate_only("fn f(a: Vec3, b: Vec3) -> Vec3<bool> { a.cmpgt(b) }");
+    validate_only("fn f(a: Vec3<u32>, b: Vec3<u32>) -> Vec3<bool> { a.cmpeq(b) }");
 }
 
 #[test]
 fn zero_value_as_an_associated_constant() {
-    let wgsl = roundtrip("fn f() -> vec3 { vec3::ZERO }");
+    let wgsl = roundtrip("fn f() -> Vec3 { Vec3::ZERO }");
     assert!(wgsl.contains("vec3<f32>()"), "{wgsl}");
 }
 
@@ -71,7 +71,7 @@ fn zero_value_as_an_associated_constant() {
 fn address_space_in_the_type() {
     let wgsl = roundtrip_unbound(
         r#"
-        struct Camera { view: mat4 }
+        struct Camera { view: Mat4 }
         static camera: Uniform<Camera> = binding();
         static indices: Storage<[u32]> = binding();
         static counters: StorageMut<[u32]> = binding();
@@ -107,9 +107,9 @@ fn a_reference_to_a_handle_is_the_handle() {
     // `&tex` has no address to take: the resource lives on the GPU.
     let wgsl = roundtrip_unbound(
         r#"
-        static tex: texture_2d<f32> = binding();
-        static samp: sampler = binding();
-        fn f(uv: vec2) -> vec4 { tex.sample_level(&samp, uv, 0.0) }
+        static tex: Texture2D<f32> = binding();
+        static samp: Sampler = binding();
+        fn f(uv: Vec2) -> Vec4 { tex.sample_level(&samp, uv, 0.0) }
         "#,
     );
     assert!(wgsl.contains("textureSampleLevel(tex, samp"), "{wgsl}");
@@ -120,8 +120,8 @@ fn storage_load_has_its_own_spelling() {
     // WGSL calls it `textureLoad` at one argument fewer, which Rust cannot do.
     validate_only(
         r#"
-        #[group(0)] #[binding(0)] static acc: texture_storage_2d<Rgba32Float, ReadWrite> = binding();
-        fn f(c: vec2<i32>) -> vec4 { acc.load(c) }
+        #[group(0)] #[binding(0)] static acc: TextureStorage2D<Rgba32Float, ReadWrite> = binding();
+        fn f(c: Vec2<i32>) -> Vec4 { acc.load(c) }
         "#,
     );
 }
@@ -134,20 +134,20 @@ fn let_underscore_evaluates_and_binds_nothing() {
 #[test]
 fn the_wgsl_shaped_spelling_still_works() {
     // Both spellings lower the same way; only one of them type-checks as Rust.
-    let method = roundtrip("fn f(v: vec4) -> vec3 { v.xyz() }");
-    let field = roundtrip("fn f(v: vec4) -> vec3 { v.xyz }");
+    let method = roundtrip("fn f(v: Vec4) -> Vec3 { v.xyz() }");
+    let field = roundtrip("fn f(v: Vec4) -> Vec3 { v.xyz }");
     assert_eq!(method, field);
 }
 
 #[test]
 fn default_is_the_zero_value() {
     // WGSL spells a zero value `T()`, and Rust spells it `T::default()`.
-    let named = roundtrip("struct S { a: f32, b: vec3 } fn f() -> S { S::default() }");
-    let called = roundtrip("struct S { a: f32, b: vec3 } fn f() -> S { S() }");
+    let named = roundtrip("struct S { a: f32, b: Vec3 } fn f() -> S { S::default() }");
+    let called = roundtrip("struct S { a: f32, b: Vec3 } fn f() -> S { S() }");
     assert_eq!(named, called);
 
     // Not just structs: anything with a zero value has one.
-    assert!(roundtrip("fn f() -> mat3 { mat3::default() }").contains("mat3x3<f32>()"));
+    assert!(roundtrip("fn f() -> Mat3 { Mat3::default() }").contains("mat3x3<f32>()"));
     assert!(roundtrip("fn f() -> u32 { u32::default() }").contains("u32()"));
 }
 
@@ -176,7 +176,7 @@ fn a_write_goes_through_get_mut() {
         r#"
         static counts: StorageMut<[u32]> = binding();
         #[entry_point(compute, threads(64))]
-        fn tally(#[builtin(global_invocation_id)] id: vec3u) {
+        fn tally(#[builtin(global_invocation_id)] id: Vec3<u32>) {
             unsafe {
                 counts.get_mut()[id.x as usize] += 1;
             }

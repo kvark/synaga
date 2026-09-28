@@ -7,14 +7,14 @@
 //!
 //! #[derive(Clone, Copy, Io)]
 //! struct VsOut {
-//!     #[builtin(position)] clip: vec4,
-//!     #[location(0)] uv: vec2,
+//!     #[builtin(position)] clip: Vec4,
+//!     #[location(0)] uv: Vec2,
 //! }
 //!
-//! static camera: Uniform<mat4> = group(0).binding(0);
+//! static camera: Uniform<Mat4> = group(0).binding(0);
 //!
 //! #[entry_point(vertex)]
-//! fn vs(#[location(0)] pos: vec3, #[location(1)] uv: vec2) -> VsOut {
+//! fn vs(#[location(0)] pos: Vec3, #[location(1)] uv: Vec2) -> VsOut {
 //!     VsOut { clip: *camera * pos.extend(1.0), uv }
 //! }
 //! ```
@@ -30,11 +30,15 @@
 //!
 //! What Rust cannot express the way WGSL does:
 //!
+//! - **Names follow Rust.** Types are WGSL's words, capitalized: `vec3<i32>` is
+//!   [`Vec3<i32>`], `mat4x4f` is [`Mat4`], `texture_2d<f32>` is
+//!   [`Texture2D<f32>`]. A bare `Vec3` is `Vec3<f32>`, and `vec3u(1, 2, 3)` is
+//!   `vec3::<u32>(1, 2, 3)`. Builtins are snake_case: `workgroup_barrier()`.
 //! - **Swizzles are methods.** `v.x` is a field, but `v.xyz` would need a
 //!   hundred overlapping names for one piece of memory, so it is `v.xyz()`.
 //!   `.r`/`.g`/`.b`/`.a` are methods for the same reason.
 //! - **Constructors are fixed-arity.** `vec3(x, y, z)` is a function, so the
-//!   other WGSL forms get their own names: [`vec3::splat`], [`vec2::extend`],
+//!   other WGSL forms get their own names: [`Vec3::splat`], [`Vec2::extend`],
 //!   and `From` for joining two vectors.
 //! - **Vector comparisons are methods.** `a < b` yields one `bool` in Rust and
 //!   one per lane in a shader, so the lane-wise forms are `cmplt`, `cmple` and
@@ -48,8 +52,6 @@
 
 // Bodies never run, so every parameter is unused by construction.
 #![allow(unused_variables)]
-// WGSL names its builtins in camelCase; keeping the spelling is the point.
-#![allow(non_snake_case)]
 #![allow(clippy::too_many_arguments, clippy::needless_lifetimes)]
 
 pub mod atomic;

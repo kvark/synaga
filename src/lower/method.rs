@@ -200,7 +200,8 @@ pub(super) fn lower_qualified_call(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
-    ty_path: &[String],
+    // The type it is on, and a vector's scalar when a turbofish says it.
+    (ty_path, ty_scalar): (&[String], Option<Scalar>),
     method: &str,
     args: &[&Expr],
     env: &mut Env,
@@ -209,7 +210,7 @@ pub(super) fn lower_qualified_call(
     // `T::default()` is how Rust spells a zero value, and WGSL's `T()` is the
     // same thing. Any type may have one, so this comes before the vector names.
     if method == "default" && args.is_empty() {
-        if let Some(ty) = super::call::zero_value_type(ctx, ty_path)? {
+        if let Some(ty) = super::call::zero_value_type(ctx, ty_path, ty_scalar)? {
             let handle = function
                 .expressions
                 .append(Expression::ZeroValue(ty), naga::Span::UNDEFINED);
@@ -220,6 +221,7 @@ pub(super) fn lower_qualified_call(
     let Some((size, shorthand)) = parse_vec_ident(ty_name) else {
         return Err(Error::UnsupportedMethod(format!("{ty_name}::{method}")));
     };
+    let shorthand = super::vec_scalar(ty_name, shorthand, ty_scalar)?;
 
     match (method, args) {
         ("splat", [value]) => {
@@ -262,11 +264,13 @@ pub(super) fn lower_qualified_call(
     }
 }
 
-/// `vec4::ZERO` and `vec4::ONE`, which name a value rather than call anything.
+/// `Vec4::ZERO` and `Vec4::ONE`, which name a value rather than call anything.
 pub(super) fn lower_qualified_const(
     ctx: &mut Context,
     function: &mut Function,
+    body: &mut Block,
     ty_name: &str,
+    ty_scalar: Option<Scalar>,
     constant: &str,
 ) -> Result<Typed, Error> {
     if let Some(value) = ctx.scope.enum_variant(ty_name, constant) {
@@ -280,13 +284,26 @@ pub(super) fn lower_qualified_const(
     let Some((size, shorthand)) = parse_vec_ident(ty_name) else {
         return Err(Error::UnknownIdent(format!("{ty_name}::{constant}")));
     };
-    let scalar = shorthand.unwrap_or(Scalar::F32);
+    let scalar = super::vec_scalar(ty_name, shorthand, ty_scalar)?.unwrap_or(Scalar::F32);
     let ty = ctx.intern_vector(size, scalar);
     match constant {
         "ZERO" => {
             let handle = function
                 .expressions
                 .append(Expression::ZeroValue(ty), naga::Span::UNDEFINED);
+            Ok((handle, ty))
+        }
+        "ONE" => {
+            let one = match scalar.kind {
+                naga::ScalarKind::Float => naga::Literal::F32(1.0),
+                naga::ScalarKind::Sint => naga::Literal::I32(1),
+                naga::ScalarKind::Uint => naga::Literal::U32(1),
+                _ => naga::Literal::Bool(true),
+            };
+            let value = function
+                .expressions
+                .append(Expression::Literal(one), naga::Span::UNDEFINED);
+            let handle = emit(function, body, Expression::Splat { size, value })?;
             Ok((handle, ty))
         }
         _ => Err(Error::UnknownIdent(format!("{ty_name}::{constant}"))),

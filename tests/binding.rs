@@ -29,11 +29,11 @@ fn named(name: &str, at: Option<(u32, u32)>) -> (String, Option<(u32, u32)>) {
 #[test]
 fn the_initialiser_says_where() {
     let buffers_and_textures = r#"
-        static camera: Uniform<mat4> = group(0).binding(0);
+        static camera: Uniform<Mat4> = group(0).binding(0);
         static counts: StorageMut<[u32]> = group(0).binding(1);
-        static albedo: texture_2d<f32> = group(1).binding(0);
-        static linear: sampler = group(1).binding(1);
-        fn f(uv: vec2) -> vec4 { camera[0] + albedo.sample(&linear, uv) }
+        static albedo: Texture2D<f32> = group(1).binding(0);
+        static linear: Sampler = group(1).binding(1);
+        fn f(uv: Vec2) -> Vec4 { camera[0] + albedo.sample(&linear, uv) }
     "#;
     // Every resource says, so the default validation has nothing to miss.
     validate_only(buffers_and_textures);
@@ -41,8 +41,8 @@ fn the_initialiser_says_where() {
     // These two want capabilities the default validation leaves off.
     let src = format!(
         "{buffers_and_textures}
-        static scene: acceleration_structure = group(2).binding(0);
-        static textures: binding_array<texture_2d<f32>, 4> = group(3).binding(0);"
+        static scene: AccelerationStructure = group(2).binding(0);
+        static textures: BindingArray<Texture2D<f32>, 4> = group(3).binding(0);"
     );
     assert_eq!(
         bindings(&src),
@@ -63,9 +63,9 @@ fn a_const_can_number_it() {
     let src = r#"
         pub const FRAME: u32 = 2;
         pub const CAMERA: u32 = FRAME;
-        static camera: Uniform<mat4> = group(CAMERA).binding(SLOT);
+        static camera: Uniform<Mat4> = group(CAMERA).binding(SLOT);
         const SLOT: u32 = 5;
-        fn f() -> mat4 { *camera }
+        fn f() -> Mat4 { *camera }
     "#;
     validate_only(src);
     assert_eq!(bindings(src), [named("camera", Some((2, 5)))]);
@@ -92,9 +92,9 @@ fn a_qualified_path_reads_the_same() {
 #[test]
 fn binding_leaves_it_to_the_host() {
     let src = r#"
-        static camera: Uniform<mat4> = binding();
+        static camera: Uniform<Mat4> = binding();
         static tile: Workgroup<[f32; 64]> = binding();
-        fn f() -> mat4 { *camera }
+        fn f() -> Mat4 { *camera }
     "#;
     validate_only_unbound(src);
     assert_eq!(bindings(src), [named("camera", None), named("tile", None)]);
@@ -104,7 +104,7 @@ fn binding_leaves_it_to_the_host() {
 fn the_older_spelling_still_binds() {
     let src = r#"
         #[group(1)] #[binding(2)] static scale: f32 = ();
-        #[group(1)] #[binding(3)] static tex: texture_2d<f32> = binding();
+        #[group(1)] #[binding(3)] static tex: Texture2D<f32> = binding();
         fn f() -> f32 { scale }
     "#;
     assert_eq!(

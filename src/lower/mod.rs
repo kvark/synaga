@@ -368,11 +368,13 @@ impl Context {
             .ok_or_else(|| Error::UnsupportedType("empty path".into()))?;
         let name = seg.ident.to_string();
         let full = path_segments(&path.path);
+        // What follows reads WGSL's names; `Texture2D` and the rest map onto them.
+        let wgsl = wgsl_type_name(&name);
 
         // Textures and samplers take their own argument shapes —
-        // `texture_storage_2d<Format, Access>` has two — so they are resolved
+        // `TextureStorage2D<Format, Access>` has two — so they are resolved
         // before the one-argument rule below.
-        if name == "binding_array" {
+        if wgsl == "binding_array" {
             // The optional count is a const argument, so the element type is
             // picked out rather than taken as the only argument.
             let args = type_args_only(seg);
@@ -387,10 +389,10 @@ impl Context {
             return Ok(self.intern_handle_type(TypeInner::BindingArray { base, size }));
         }
 
-        if let Some(result) = texture::parse_handle_type(self, &name, &collect_type_args(seg)?) {
+        if let Some(result) = texture::parse_handle_type(self, wgsl, &collect_type_args(seg)?) {
             return result;
         }
-        if let Some(ty) = ray::parse_ray_type(self, &name) {
+        if let Some(ty) = ray::parse_ray_type(self, wgsl) {
             return Ok(ty);
         }
         if let Some(ty) = ray::special_struct(self, &name) {
@@ -683,23 +685,90 @@ fn item_location(item: &Item) -> (String, usize) {
     (name, item.span().start().line)
 }
 
-/// Parse `vec2` / `Vec3` / `vec4f` / `vec3i` / `vec2u`.
-/// `None` scalar means "default f32, or infer from constructor args".
+/// Parse a vector's name: the type `Vec3`, its constructor `vec3`, or one of
+/// WGSL's shorthands, `vec3f`, `vec3i` and `vec3u`, which fix the scalar.
+/// `None` scalar means a type argument says, or the constructor's arguments
+/// do, or it is `f32`.
 pub(super) fn parse_vec_ident(name: &str) -> Option<(VectorSize, Option<Scalar>)> {
+    let (digit, scalar) = match name.strip_prefix("Vec") {
+        Some(rest) => (rest, None),
+        None => {
+            let rest = name.strip_prefix("vec")?;
+            match rest.as_bytes() {
+                [_] => (rest, None),
+                [_, b'f'] => (&rest[..1], Some(Scalar::F32)),
+                [_, b'i'] => (&rest[..1], Some(Scalar::I32)),
+                [_, b'u'] => (&rest[..1], Some(Scalar::U32)),
+                _ => return None,
+            }
+        }
+    };
+    let size = match digit {
+        "2" => VectorSize::Bi,
+        "3" => VectorSize::Tri,
+        "4" => VectorSize::Quad,
+        _ => return None,
+    };
+    Some((size, scalar))
+}
+
+/// The WGSL name of a handle type, for one spelled the Rust way:
+/// `TextureStorage2DArray` is `texture_storage_2d_array`. Anything else comes
+/// back as it was, so a struct of the shader's own called `TextureParams` is
+/// never taken for a texture.
+pub(super) fn wgsl_type_name(name: &str) -> &str {
     match name {
-        "vec2" | "Vec2" => Some((VectorSize::Bi, None)),
-        "vec3" | "Vec3" => Some((VectorSize::Tri, None)),
-        "vec4" | "Vec4" => Some((VectorSize::Quad, None)),
-        "vec2f" | "Vec2f" => Some((VectorSize::Bi, Some(Scalar::F32))),
-        "vec3f" | "Vec3f" => Some((VectorSize::Tri, Some(Scalar::F32))),
-        "vec4f" | "Vec4f" => Some((VectorSize::Quad, Some(Scalar::F32))),
-        "vec2i" | "Vec2i" => Some((VectorSize::Bi, Some(Scalar::I32))),
-        "vec3i" | "Vec3i" => Some((VectorSize::Tri, Some(Scalar::I32))),
-        "vec4i" | "Vec4i" => Some((VectorSize::Quad, Some(Scalar::I32))),
-        "vec2u" | "Vec2u" => Some((VectorSize::Bi, Some(Scalar::U32))),
-        "vec3u" | "Vec3u" => Some((VectorSize::Tri, Some(Scalar::U32))),
-        "vec4u" | "Vec4u" => Some((VectorSize::Quad, Some(Scalar::U32))),
-        _ => None,
+        "Texture1D" => "texture_1d",
+        "Texture2D" => "texture_2d",
+        "Texture2DArray" => "texture_2d_array",
+        "Texture3D" => "texture_3d",
+        "TextureCube" => "texture_cube",
+        "TextureCubeArray" => "texture_cube_array",
+        "TextureMultisampled2D" => "texture_multisampled_2d",
+        "TextureDepth2D" => "texture_depth_2d",
+        "TextureDepth2DArray" => "texture_depth_2d_array",
+        "TextureDepthCube" => "texture_depth_cube",
+        "TextureDepthCubeArray" => "texture_depth_cube_array",
+        "TextureDepthMultisampled2D" => "texture_depth_multisampled_2d",
+        "TextureStorage1D" => "texture_storage_1d",
+        "TextureStorage2D" => "texture_storage_2d",
+        "TextureStorage2DArray" => "texture_storage_2d_array",
+        "TextureStorage3D" => "texture_storage_3d",
+        "Sampler" => "sampler",
+        "SamplerComparison" => "sampler_comparison",
+        "AccelerationStructure" => "acceleration_structure",
+        "RayQuery" => "ray_query",
+        "BindingArray" => "binding_array",
+        other => other,
+    }
+}
+
+/// The scalar a turbofish names, as `vec3::<u32>(..)` and `Vec3::<u32>::ZERO`
+/// do: the type argument a type position would take, moved into an
+/// expression.
+pub(super) fn turbofish_scalar(seg: &syn::PathSegment) -> Result<Option<Scalar>, Error> {
+    match &seg.arguments {
+        syn::PathArguments::None => Ok(None),
+        syn::PathArguments::AngleBracketed(args) if args.args.len() == 1 => {
+            match args.args.first() {
+                Some(syn::GenericArgument::Type(ty)) => lower_scalar_ident(ty).map(Some),
+                _ => Err(Error::UnsupportedType(seg.ident.to_string())),
+            }
+        }
+        _ => Err(Error::UnsupportedType(seg.ident.to_string())),
+    }
+}
+
+/// A vector's scalar, from its name or a turbofish. `vec3u::<u32>` says it
+/// twice, which is refused rather than checked for agreement.
+pub(super) fn vec_scalar(
+    name: &str,
+    shorthand: Option<Scalar>,
+    turbofish: Option<Scalar>,
+) -> Result<Option<Scalar>, Error> {
+    match (shorthand, turbofish) {
+        (Some(_), Some(_)) => Err(Error::UnsupportedType(name.into())),
+        (shorthand, turbofish) => Ok(shorthand.or(turbofish)),
     }
 }
 

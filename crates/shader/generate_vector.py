@@ -1,8 +1,7 @@
 """Generates crates/shader/src/vector.rs — the vector types and everything on them."""
-from itertools import permutations, product
+from itertools import permutations
 
-SCALARS = [("f32", "f32", "float"), ("i32", "i32", "sint"),
-           ("u32", "u32", "uint"), ("bool", "bool", "bool")]
+SCALARS = ["f32", "i32", "u32", "bool"]
 SIZES = [2, 3, 4]
 # Every vector gets the same operators, differing only in which ones apply:
 # `bool` has no arithmetic, only integers shift, only signed types negate. One
@@ -10,46 +9,38 @@ SIZES = [2, 3, 4]
 MACRO = r"""/// The operators every vector has, and the ones only some do.
 ///
 /// `macro_rules!` cannot paste `Add` and `Assign` into one identifier, so each
-/// operator names its assigning form too. `$shift` is the `vecNu` a lane-wise
-/// shift takes, since WGSL wants an unsigned shift amount whatever is shifted.
+/// operator names its assigning form too. `$shift` is the `VecN<u32>` a
+/// lane-wise shift takes, since WGSL wants an unsigned shift amount whatever
+/// is shifted.
 macro_rules! vector_ops {
-    ($name:ident, $scalar:ty, $shift:ident $(, $group:ident)*) => {
-        impl Index<usize> for $name {
-            type Output = $scalar;
-            #[inline]
-            fn index(&self, index: usize) -> &$scalar { unimplemented_on_cpu() }
-        }
-        impl IndexMut<usize> for $name {
-            #[inline]
-            fn index_mut(&mut self, index: usize) -> &mut $scalar { unimplemented_on_cpu() }
-        }
+    ($name:ty, $scalar:ty, $shift:ty $(, $group:ident)*) => {
         $(vector_ops!(@group $group, $name, $scalar, $shift);)*
     };
 
-    (@group arith, $name:ident, $scalar:ty, $shift:ident) => {
+    (@group arith, $name:ty, $scalar:ty, $shift:ty) => {
         vector_ops!(@scalar_too Add, add, AddAssign, add_assign, $name, $scalar);
         vector_ops!(@scalar_too Sub, sub, SubAssign, sub_assign, $name, $scalar);
         vector_ops!(@scalar_too Mul, mul, MulAssign, mul_assign, $name, $scalar);
         vector_ops!(@scalar_too Div, div, DivAssign, div_assign, $name, $scalar);
         vector_ops!(@scalar_too Rem, rem, RemAssign, rem_assign, $name, $scalar);
     };
-    (@group bitwise, $name:ident, $scalar:ty, $shift:ident) => {
+    (@group bitwise, $name:ty, $scalar:ty, $shift:ty) => {
         vector_ops!(@lanewise BitAnd, bitand, BitAndAssign, bitand_assign, $name);
         vector_ops!(@lanewise BitOr, bitor, BitOrAssign, bitor_assign, $name);
         vector_ops!(@lanewise BitXor, bitxor, BitXorAssign, bitxor_assign, $name);
     };
-    (@group shift, $name:ident, $scalar:ty, $shift:ident) => {
+    (@group shift, $name:ty, $scalar:ty, $shift:ty) => {
         vector_ops!(@shift Shl, shl, $name, $shift);
         vector_ops!(@shift Shr, shr, $name, $shift);
     };
-    (@group neg, $name:ident, $scalar:ty, $shift:ident) => {
+    (@group neg, $name:ty, $scalar:ty, $shift:ty) => {
         impl Neg for $name {
             type Output = Self;
             #[inline]
             fn neg(self) -> Self { unimplemented_on_cpu() }
         }
     };
-    (@group not, $name:ident, $scalar:ty, $shift:ident) => {
+    (@group not, $name:ty, $scalar:ty, $shift:ty) => {
         impl Not for $name {
             type Output = Self;
             #[inline]
@@ -60,7 +51,7 @@ macro_rules! vector_ops {
     // Arithmetic also works against a scalar, from either side: a shader
     // writes both `v * 2.0` and `2.0 * v`.
     (@scalar_too $trait:ident, $method:ident, $assign:ident, $assign_fn:ident,
-     $name:ident, $scalar:ty) => {
+     $name:ty, $scalar:ty) => {
         vector_ops!(@lanewise $trait, $method, $assign, $assign_fn, $name);
         impl $trait<$scalar> for $name {
             type Output = Self;
@@ -77,7 +68,7 @@ macro_rules! vector_ops {
             fn $assign_fn(&mut self, rhs: $scalar) { unimplemented_on_cpu() }
         }
     };
-    (@lanewise $trait:ident, $method:ident, $assign:ident, $assign_fn:ident, $name:ident) => {
+    (@lanewise $trait:ident, $method:ident, $assign:ident, $assign_fn:ident, $name:ty) => {
         impl $trait for $name {
             type Output = Self;
             #[inline]
@@ -88,7 +79,7 @@ macro_rules! vector_ops {
             fn $assign_fn(&mut self, rhs: Self) { unimplemented_on_cpu() }
         }
     };
-    (@shift $trait:ident, $method:ident, $name:ident, $shift:ident) => {
+    (@shift $trait:ident, $method:ident, $name:ty, $shift:ty) => {
         impl $trait<$shift> for $name {
             type Output = Self;
             #[inline]
@@ -115,9 +106,9 @@ def swizzles(size):
 
     Every reordering and subset of the lanes it has, and nothing that repeats
     one: `v.xyz()`, `v.zyx()`, `v.yx()`, but not `v.xxyy()`. The exhaustive
-    product is 3,984 methods across the twelve types and almost none of them
-    are ever called -- it is not free, since every one is compiled by everybody
-    who depends on this crate.
+    product is 996 methods for the three sizes and almost none of them are
+    ever called -- it is not free, since every one is compiled by everybody who
+    depends on this crate.
 
     A shader that does want a repeating swizzle can still write `v.xxyy` in the
     field spelling, which the transpiler accepts; `rustc` will not check that
@@ -132,11 +123,18 @@ def swizzles(size):
         if max(combo) < size:
             yield combo, RGBA
 
-def vname(size, suffix):
-    return f"vec{size}{suffix}"
 
-def suffix_for(scalar):
-    return {"f32": "", "i32": "i", "u32": "u", "bool": "b"}[scalar]
+def vname(size, scalar="T"):
+    """The type as the generated code writes it: `Vec3<T>`, `Vec3<i32>`."""
+    return f"Vec{size}<{scalar}>"
+
+
+def vctor(size):
+    """The function that builds one, whatever its scalar: `vec3`."""
+    return f"vec{size}"
+
+
+ZERO_ONE = {"f32": ("0.0", "1.0"), "i32": ("0", "1"), "u32": ("0", "1"), "bool": ("false", "true")}
 
 out = []
 w = out.append
@@ -145,6 +143,23 @@ w('''//! Vector types.
 //!
 //! Generated by `generate_vector.py`, then `cargo fmt`; edit that, not this.
 //!
+//! `Vec3<T>` is WGSL's `vec3<T>`, and a bare `Vec3` is `Vec3<f32>`, as `vec3f`
+//! is. `vec3(x, y, z)` builds one of whatever its components are:
+//! `vec3(0.0, 1.0, 0.0)` is a `Vec3<f32>` and `vec3(1, 2, 3)` a `Vec3<i32>`, as
+//! WGSL's literals go, and `vec3::<u32>(1, 2, 3)` says which outright:
+//!
+//! ```
+//! use synaga_shader::*;
+//!
+//! let up = vec3(0.0, 1.0, 0.0);
+//! let cell = vec2(3, 4);
+//! let size = vec2::<u32>(640, 480);
+//! # use core::any::{type_name, type_name_of_val as of};
+//! # assert_eq!(of(&up), type_name::<Vec3<f32>>());
+//! # assert_eq!(of(&cell), type_name::<Vec2<i32>>());
+//! # assert_eq!(of(&size), type_name::<Vec2<u32>>());
+//! ```
+//!
 //! Component access splits two ways: a single `x`/`y`/`z`/`w` is a field, so
 //! `v.x` reads and `v.x = 1.0` writes, while every other swizzle is a method.
 //! Rust has no way to give one piece of memory a hundred overlapping names, so
@@ -152,91 +167,127 @@ w('''//! Vector types.
 //! reason, since they would alias the `x`/`y`/`z`/`w` fields.
 //!
 //! Comparisons are methods too. `a < b` in a shader yields one bool per lane,
-//! and Rust\'s `PartialOrd` yields a single `bool`, so the lane-wise forms are
+//! and Rust's `PartialOrd` yields a single `bool`, so the lane-wise forms are
 //! spelled `cmplt`, `cmple`, and so on, as glam spells them.''')
 w("")
 w("use core::ops::*;")
 w("")
 w("use crate::unimplemented_on_cpu;")
 w("")
+w('''/// What a vector's lanes hold: `f32`, `i32`, `u32` or `bool`.
+///
+/// The bound is also what makes `vec3(0.0, 1.0, 0.0)` a `Vec3<f32>`: `f32` is
+/// the one float type that is a `Scalar`, so Rust gives the literals that type
+/// rather than its usual `f64`.
+pub trait Scalar: Copy + sealed::Sealed {
+    /// Zero, or `false`.
+    const ZERO: Self;
+    /// One, or `true`.
+    const ONE: Self;
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for f32 {}
+    impl Sealed for i32 {}
+    impl Sealed for u32 {}
+    impl Sealed for bool {}
+}
+''')
+for scalar in SCALARS:
+    zero, one = ZERO_ONE[scalar]
+    w(f"impl Scalar for {scalar} {{ const ZERO: Self = {zero}; const ONE: Self = {one}; }}")
+w("")
 w(MACRO)
 w("")
 
 for size in SIZES:
-    for scalar, _, kind in SCALARS:
-        sfx = suffix_for(scalar)
-        name = vname(size, sfx)
-        comps = XYZW[:size]
-        fields = ", ".join(f"pub {c}: {scalar}" for c in comps)
-        args = ", ".join(f"{c}: {scalar}" for c in comps)
-        init = ", ".join(comps)
-        boolname = vname(size, "b")
+    name = f"Vec{size}"
+    ctor = vctor(size)
+    comps = XYZW[:size]
+    fields = ", ".join(f"pub {c}: T" for c in comps)
+    args = ", ".join(f"{c}: T" for c in comps)
+    init = ", ".join(comps)
 
-        w(f"/// `{name}` in WGSL.")
-        w("#[derive(Clone, Copy, Debug, Default, PartialEq)]")
-        w("#[repr(C)]")
-        w("#[allow(non_camel_case_types)]")
-        w(f"pub struct {name} {{ {fields} }}")
+    w(f"/// `vec{size}<T>` in WGSL. A bare `{name}` is `{name}<f32>`, WGSL's `vec{size}f`.")
+    w("#[derive(Clone, Copy, Debug, Default, PartialEq)]")
+    w("#[repr(C)]")
+    w(f"pub struct {name}<T = f32> {{ {fields} }}")
+    w("")
+    w(f"/// Build a [`{name}`] from its components.")
+    w("#[inline]")
+    w(f"pub const fn {ctor}<T: Scalar>({args}) -> {vname(size)} {{ {name} {{ {init} }} }}")
+    w("")
+    w(f"impl<T: Scalar> {vname(size)} {{")
+    w(f"    pub const ZERO: Self = {ctor}({', '.join(['T::ZERO'] * size)});")
+    w(f"    pub const ONE: Self = {ctor}({', '.join(['T::ONE'] * size)});")
+    w("")
+    w("    /// Every lane set to `v`.")
+    w("    #[inline]")
+    w(f"    pub const fn splat(v: T) -> Self {{ {ctor}({', '.join(['v'] * size)}) }}")
+    if size < 4:
+        nc = XYZW[size]
         w("")
-        w(f"/// Build a [`{name}`] from its components.")
-        w("#[allow(non_snake_case)]")
-        w("#[inline]")
-        w(f"pub const fn {name}({args}) -> {name} {{ {name} {{ {init} }} }}")
-        w("")
-        w(f"impl {name} {{")
-        zero = "false" if scalar == "bool" else "0" if scalar != "f32" else "0.0"
-        one = "true" if scalar == "bool" else "1" if scalar != "f32" else "1.0"
-        w(f"    pub const ZERO: Self = {name}({', '.join([zero]*size)});")
-        w(f"    pub const ONE: Self = {name}({', '.join([one]*size)});")
-        w("")
-        w("    /// Every lane set to `v`.")
+        w(f"    /// One lane wider, with `{nc}` appended. This is how a shader's")
+        w(f"    /// `vec{size + 1}(v, {nc})` is spelled.")
         w("    #[inline]")
-        w(f"    pub const fn splat(v: {scalar}) -> Self {{ {name}({', '.join(['v']*size)}) }}")
-        if size < 4:
-            bigger = vname(size + 1, sfx)
-            nc = XYZW[size]
-            w("")
-            w(f"    /// One lane wider, with `{nc}` appended. This is how a shader\\'s")
-            w(f"    /// `vec{size+1}(v, {nc})` is spelled.")
-            w("    #[inline]")
-            w(f"    pub const fn extend(self, {nc}: {scalar}) -> {bigger} {{")
-            w(f"        {bigger}({', '.join('self.' + c for c in comps)}, {nc})")
-            w("    }")
-        if size > 2:
-            smaller = vname(size - 1, sfx)
-            w("")
-            w("    /// One lane narrower, dropping the last.")
-            w("    #[inline]")
-            w(f"    pub const fn truncate(self) -> {smaller} {{")
-            w(f"        {smaller}({', '.join('self.' + c for c in comps[:-1])})")
-            w("    }")
-        # lane-wise comparisons
-        if scalar != "bool":
-            for op, doc in [("cmpeq", "=="), ("cmpne", "!="), ("cmplt", "<"),
-                            ("cmple", "<="), ("cmpgt", ">"), ("cmpge", ">=")]:
-                w("")
-                w(f"    /// Lane-wise `{doc}`.")
-                w("    #[inline]")
-                w(f"    pub fn {op}(self, rhs: Self) -> {boolname} {{ unimplemented_on_cpu() }}")
-        else:
-            for op, doc in [("cmpeq", "=="), ("cmpne", "!=")]:
-                w("")
-                w(f"    /// Lane-wise `{doc}`.")
-                w("    #[inline]")
-                w(f"    pub fn {op}(self, rhs: Self) -> {boolname} {{ unimplemented_on_cpu() }}")
-        # swizzles
-        for combo, letters in swizzles(size):
-            n = len(combo)
-            sw = "".join(letters[i] for i in combo)
-            ret = scalar if n == 1 else vname(n, sfx)
-            body = (f"self.{XYZW[combo[0]]}" if n == 1
-                    else f"{ret}({', '.join('self.' + XYZW[i] for i in combo)})")
-            w("")
-            w("    #[inline]")
-            w(f"    pub const fn {sw}(self) -> {ret} {{ {body} }}")
-        w("}")
+        w(f"    pub const fn extend(self, {nc}: T) -> {vname(size + 1)} {{")
+        w(f"        {vctor(size + 1)}({', '.join('self.' + c for c in comps)}, {nc})")
+        w("    }")
+    if size > 2:
         w("")
+        w("    /// One lane narrower, dropping the last.")
+        w("    #[inline]")
+        w(f"    pub const fn truncate(self) -> {vname(size - 1)} {{")
+        w(f"        {vctor(size - 1)}({', '.join('self.' + c for c in comps[:-1])})")
+        w("    }")
+    for op, doc in [("cmpeq", "=="), ("cmpne", "!=")]:
+        w("")
+        w(f"    /// Lane-wise `{doc}`.")
+        w("    #[inline]")
+        w(f"    pub fn {op}(self, rhs: Self) -> {vname(size, 'bool')} {{ unimplemented_on_cpu() }}")
+    for combo, letters in swizzles(size):
+        n = len(combo)
+        sw = "".join(letters[i] for i in combo)
+        ret = "T" if n == 1 else vname(n)
+        body = (f"self.{XYZW[combo[0]]}" if n == 1
+                else f"{vctor(n)}({', '.join('self.' + XYZW[i] for i in combo)})")
+        w("")
+        w("    #[inline]")
+        w(f"    pub const fn {sw}(self) -> {ret} {{ {body} }}")
+    w("}")
+    w("")
+    w(f"impl<T: Scalar> Index<usize> for {vname(size)} {{")
+    w("    type Output = T;")
+    w("    #[inline]")
+    w("    fn index(&self, index: usize) -> &T { unimplemented_on_cpu() }")
+    w("}")
+    w(f"impl<T: Scalar> IndexMut<usize> for {vname(size)} {{")
+    w("    #[inline]")
+    w("    fn index_mut(&mut self, index: usize) -> &mut T { unimplemented_on_cpu() }")
+    w("}")
+    # two-vector concatenation, for a shader's vec4(vec2, vec2)
+    if size == 4:
+        two = vname(2)
+        w(f"impl<T: Scalar> From<({two}, {two})> for {vname(4)} {{")
+        w("    #[inline]")
+        w(f"    fn from((a, b): ({two}, {two})) -> Self {{ vec4(a.x, a.y, b.x, b.y) }}")
+        w("}")
+    w("")
 
+    for scalar in SCALARS:
+        ty = vname(size, scalar)
+        # Lane-wise ordering, for everything but `bool`.
+        if scalar != "bool":
+            w(f"impl {ty} {{")
+            for i, (op, doc) in enumerate([("cmplt", "<"), ("cmple", "<="),
+                                           ("cmpgt", ">"), ("cmpge", ">=")]):
+                if i:
+                    w("")
+                w(f"    /// Lane-wise `{doc}`.")
+                w("    #[inline]")
+                w(f"    pub fn {op}(self, rhs: Self) -> {vname(size, 'bool')} {{ unimplemented_on_cpu() }}")
+            w("}")
         # Operators are uniform per type, so they go through a macro rather
         # than 2,500 lines of impls that differ only in a name.
         traits = []
@@ -250,27 +301,18 @@ for size in SIZES:
             traits.append("neg")
         if scalar in ("i32", "u32", "bool"):
             traits.append("not")
-        w(f"vector_ops!({name}, {scalar}, {vname(size, 'u')}{''.join(', ' + t for t in traits)});")
-        # two-vector concatenation, for a shader's vec4(vec2, vec2)
-        if size == 4:
-            two = vname(2, sfx)
-            w(f"impl From<({two}, {two})> for {name} {{")
-            w("    #[inline]")
-            w(f"    fn from((a, b): ({two}, {two})) -> Self {{ {name}(a.x, a.y, b.x, b.y) }}")
-            w("}")
+        w(f"vector_ops!({ty}, {scalar}, {vname(size, 'u32')}{''.join(', ' + t for t in traits)});")
         w("")
 
-# component-type conversions, for a shader's `v as vec3<f32>`
+# component-type conversions, for a shader's `vec3<f32>(v)`
 for size in SIZES:
-    for a, _, _ in SCALARS:
-        for b, _, _ in SCALARS:
+    for a in SCALARS:
+        for b in SCALARS:
             if a == b:
                 continue
-            src, dst = vname(size, suffix_for(a)), vname(size, suffix_for(b))
-            comps = XYZW[:size]
-            w(f"impl From<{src}> for {dst} {{")
+            w(f"impl From<{vname(size, a)}> for {vname(size, b)} {{")
             w("    #[inline]")
-            w(f"    fn from(v: {src}) -> Self {{ unimplemented_on_cpu() }}")
+            w(f"    fn from(v: {vname(size, a)}) -> Self {{ unimplemented_on_cpu() }}")
             w("}")
 
 import pathlib

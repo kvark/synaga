@@ -14,7 +14,7 @@ use core::marker::PhantomData;
 
 use crate::resource::{Bindable, Resource};
 use crate::unimplemented_on_cpu;
-use crate::vector::{vec2, vec2i, vec2u, vec3, vec3i, vec3u, vec4, vec4i, vec4u};
+use crate::vector::{Vec2, Vec3, Vec4};
 
 pub use access::*;
 pub use format::*;
@@ -25,13 +25,13 @@ pub trait Component {
     type Texel;
 }
 impl Component for f32 {
-    type Texel = vec4;
+    type Texel = Vec4;
 }
 impl Component for i32 {
-    type Texel = vec4i;
+    type Texel = Vec4<i32>;
 }
 impl Component for u32 {
-    type Texel = vec4u;
+    type Texel = Vec4<u32>;
 }
 
 /// An integer WGSL takes as a mip level, array layer, or sample index.
@@ -46,17 +46,17 @@ impl TexelCoord1 for u32 {}
 
 /// The coordinate of one texel in a two-dimensional texture.
 pub trait TexelCoord2: Copy {}
-impl TexelCoord2 for vec2i {}
-impl TexelCoord2 for vec2u {}
+impl TexelCoord2 for Vec2<i32> {}
+impl TexelCoord2 for Vec2<u32> {}
 
 /// The coordinate of one texel in a three-dimensional texture.
 pub trait TexelCoord3: Copy {}
-impl TexelCoord3 for vec3i {}
-impl TexelCoord3 for vec3u {}
+impl TexelCoord3 for Vec3<i32> {}
+impl TexelCoord3 for Vec3<u32> {}
 
 /// Storage texture formats, as type arguments.
 pub mod format {
-    use crate::vector::{vec4, vec4i, vec4u};
+    use crate::vector::Vec4;
 
     /// A storage texture format, and the texel a shader sees for it.
     pub trait Format {
@@ -75,16 +75,16 @@ pub mod format {
             )*
         };
     }
-    formats!(vec4:
+    formats!(Vec4:
         R8Unorm, R8Snorm, R16Float, Rg8Unorm, Rg8Snorm, R32Float, Rg16Float,
         Rgba8Unorm, Rgba8Snorm, Rgb10a2Unorm, Rg11b10Float, Rg32Float,
         Rgba16Float, Rgba32Float,
     );
-    formats!(vec4u:
+    formats!(Vec4<u32>:
         R8Uint, R16Uint, Rg8Uint, R32Uint, Rg16Uint, Rgba8Uint, Rg32Uint,
         Rgba16Uint, Rgba32Uint,
     );
-    formats!(vec4i:
+    formats!(Vec4<i32>:
         R8Sint, R16Sint, Rg8Sint, R32Sint, Rg16Sint, Rgba8Sint, Rg32Sint,
         Rgba16Sint, Rgba32Sint,
     );
@@ -116,7 +116,6 @@ pub mod access {
 macro_rules! marker {
     ($(#[$doc:meta])* $name:ident<$($param:ident),*>) => {
         $(#[$doc])*
-        #[allow(non_camel_case_types)]
         pub struct $name<$($param),*>(PhantomData<($($param,)*)>);
         impl<$($param),*> Resource for $name<$($param),*> {
             const BINDING: Self = $name(PhantomData);
@@ -127,7 +126,6 @@ macro_rules! marker {
     };
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
-        #[allow(non_camel_case_types)]
         pub struct $name;
         impl Resource for $name {
             const BINDING: Self = $name;
@@ -148,13 +146,13 @@ macro_rules! sampled {
     };
 }
 sampled!(
-    texture_1d,
-    texture_2d,
-    texture_2d_array,
-    texture_3d,
-    texture_cube,
-    texture_cube_array,
-    texture_multisampled_2d,
+    Texture1D,
+    Texture2D,
+    Texture2DArray,
+    Texture3D,
+    TextureCube,
+    TextureCubeArray,
+    TextureMultisampled2D,
 );
 
 /// A depth texture, whose texels are single `f32` depths.
@@ -169,11 +167,11 @@ macro_rules! depth {
     };
 }
 depth!(
-    texture_depth_2d,
-    texture_depth_2d_array,
-    texture_depth_cube,
-    texture_depth_cube_array,
-    texture_depth_multisampled_2d,
+    TextureDepth2D,
+    TextureDepth2DArray,
+    TextureDepthCube,
+    TextureDepthCubeArray,
+    TextureDepthMultisampled2D,
 );
 
 /// A storage texture, parameterised by format and access.
@@ -181,46 +179,43 @@ macro_rules! storage {
     ($($name:ident),* $(,)?) => {
         $(
             marker!(
-                /// A storage texture: `texture_storage_2d<Rgba8Unorm, Write>`.
+                /// A storage texture: `TextureStorage2D<Rgba8Unorm, Write>`.
                 $name<F, A>
             );
         )*
     };
 }
 storage!(
-    texture_storage_1d,
-    texture_storage_2d,
-    texture_storage_2d_array,
-    texture_storage_3d,
+    TextureStorage1D,
+    TextureStorage2D,
+    TextureStorage2DArray,
+    TextureStorage3D,
 );
 
-/// Samples a texture. `sampler_comparison` is its own type, so a depth
+/// Samples a texture. `SamplerComparison` is its own type, so a depth
 /// comparison cannot be handed an ordinary sampler.
-#[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
-pub struct sampler;
-impl Resource for sampler {
-    const BINDING: Self = sampler;
+pub struct Sampler;
+impl Resource for Sampler {
+    const BINDING: Self = Sampler;
 }
-impl Bindable for sampler {}
+impl Bindable for Sampler {}
 
 /// Samples a depth texture, comparing against a reference.
-#[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
-pub struct sampler_comparison;
-impl Resource for sampler_comparison {
-    const BINDING: Self = sampler_comparison;
+pub struct SamplerComparison;
+impl Resource for SamplerComparison {
+    const BINDING: Self = SamplerComparison;
 }
-impl Bindable for sampler_comparison {}
+impl Bindable for SamplerComparison {}
 
 /// What a ray query traces against.
-#[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
-pub struct acceleration_structure;
-impl Resource for acceleration_structure {
-    const BINDING: Self = acceleration_structure;
+pub struct AccelerationStructure;
+impl Resource for AccelerationStructure {
+    const BINDING: Self = AccelerationStructure;
 }
-impl Bindable for acceleration_structure {}
+impl Bindable for AccelerationStructure {}
 
 // The size queries. `dimensions` is the base level; `level_dimensions` is
 // WGSL's `textureDimensions(t, level)`, which Rust cannot overload by arity.
@@ -270,45 +265,45 @@ macro_rules! layered {
     };
 }
 
-sizes!(u32; [T] texture_1d<T>, [F, A] texture_storage_1d<F, A>);
-sizes!(vec2u;
-    [T] texture_2d<T>,
-    [T] texture_2d_array<T>,
-    [T] texture_cube<T>,
-    [T] texture_cube_array<T>,
-    [T] texture_multisampled_2d<T>,
-    [] texture_depth_2d,
-    [] texture_depth_2d_array,
-    [] texture_depth_cube,
-    [] texture_depth_cube_array,
-    [] texture_depth_multisampled_2d,
-    [F, A] texture_storage_2d<F, A>,
-    [F, A] texture_storage_2d_array<F, A>,
+sizes!(u32; [T] Texture1D<T>, [F, A] TextureStorage1D<F, A>);
+sizes!(Vec2<u32>;
+    [T] Texture2D<T>,
+    [T] Texture2DArray<T>,
+    [T] TextureCube<T>,
+    [T] TextureCubeArray<T>,
+    [T] TextureMultisampled2D<T>,
+    [] TextureDepth2D,
+    [] TextureDepth2DArray,
+    [] TextureDepthCube,
+    [] TextureDepthCubeArray,
+    [] TextureDepthMultisampled2D,
+    [F, A] TextureStorage2D<F, A>,
+    [F, A] TextureStorage2DArray<F, A>,
 );
-sizes!(vec3u; [T] texture_3d<T>, [F, A] texture_storage_3d<F, A>);
+sizes!(Vec3<u32>; [T] Texture3D<T>, [F, A] TextureStorage3D<F, A>);
 
-mipped!(u32; [T] texture_1d<T>);
-mipped!(vec2u;
-    [T] texture_2d<T>,
-    [T] texture_2d_array<T>,
-    [T] texture_cube<T>,
-    [T] texture_cube_array<T>,
-    [] texture_depth_2d,
-    [] texture_depth_2d_array,
-    [] texture_depth_cube,
-    [] texture_depth_cube_array,
+mipped!(u32; [T] Texture1D<T>);
+mipped!(Vec2<u32>;
+    [T] Texture2D<T>,
+    [T] Texture2DArray<T>,
+    [T] TextureCube<T>,
+    [T] TextureCubeArray<T>,
+    [] TextureDepth2D,
+    [] TextureDepth2DArray,
+    [] TextureDepthCube,
+    [] TextureDepthCubeArray,
 );
-mipped!(vec3u; [T] texture_3d<T>);
+mipped!(Vec3<u32>; [T] Texture3D<T>);
 
 layered!(
-    [T] texture_2d_array<T>,
-    [T] texture_cube_array<T>,
-    [] texture_depth_2d_array,
-    [] texture_depth_cube_array,
-    [F, A] texture_storage_2d_array<F, A>,
+    [T] Texture2DArray<T>,
+    [T] TextureCubeArray<T>,
+    [] TextureDepth2DArray,
+    [] TextureDepthCubeArray,
+    [F, A] TextureStorage2DArray<F, A>,
 );
 
-impl<T> texture_multisampled_2d<T> {
+impl<T> TextureMultisampled2D<T> {
     /// Samples per texel: `textureNumSamples`.
     #[inline]
     pub fn num_samples(&self) -> u32 {
@@ -316,7 +311,7 @@ impl<T> texture_multisampled_2d<T> {
     }
 }
 
-impl texture_depth_multisampled_2d {
+impl TextureDepthMultisampled2D {
     /// Samples per texel: `textureNumSamples`.
     #[inline]
     pub fn num_samples(&self) -> u32 {
@@ -325,21 +320,21 @@ impl texture_depth_multisampled_2d {
 }
 
 // Loads: one texel, no filtering. Every sampled texture but a cube has them.
-impl<T: Component> texture_1d<T> {
+impl<T: Component> Texture1D<T> {
     /// Read one texel at a mip level: `textureLoad`.
     #[inline]
     pub fn load(&self, coord: impl TexelCoord1, level: impl TexelIndex) -> T::Texel {
         unimplemented_on_cpu()
     }
 }
-impl<T: Component> texture_2d<T> {
+impl<T: Component> Texture2D<T> {
     /// Read one texel at a mip level: `textureLoad`.
     #[inline]
     pub fn load(&self, coord: impl TexelCoord2, level: impl TexelIndex) -> T::Texel {
         unimplemented_on_cpu()
     }
 }
-impl<T: Component> texture_2d_array<T> {
+impl<T: Component> Texture2DArray<T> {
     /// Read one texel of a layer at a mip level: `textureLoad`.
     #[inline]
     pub fn load(
@@ -351,28 +346,28 @@ impl<T: Component> texture_2d_array<T> {
         unimplemented_on_cpu()
     }
 }
-impl<T: Component> texture_3d<T> {
+impl<T: Component> Texture3D<T> {
     /// Read one texel at a mip level: `textureLoad`.
     #[inline]
     pub fn load(&self, coord: impl TexelCoord3, level: impl TexelIndex) -> T::Texel {
         unimplemented_on_cpu()
     }
 }
-impl<T: Component> texture_multisampled_2d<T> {
+impl<T: Component> TextureMultisampled2D<T> {
     /// Read one sample of one texel: `textureLoad`.
     #[inline]
     pub fn load(&self, coord: impl TexelCoord2, sample: impl TexelIndex) -> T::Texel {
         unimplemented_on_cpu()
     }
 }
-impl texture_depth_2d {
+impl TextureDepth2D {
     /// Read one depth at a mip level: `textureLoad`.
     #[inline]
     pub fn load(&self, coord: impl TexelCoord2, level: impl TexelIndex) -> f32 {
         unimplemented_on_cpu()
     }
 }
-impl texture_depth_2d_array {
+impl TextureDepth2DArray {
     /// Read one depth of a layer at a mip level: `textureLoad`.
     #[inline]
     pub fn load(
@@ -384,7 +379,7 @@ impl texture_depth_2d_array {
         unimplemented_on_cpu()
     }
 }
-impl texture_depth_multisampled_2d {
+impl TextureDepthMultisampled2D {
     /// Read one sample of one depth: `textureLoad`.
     #[inline]
     pub fn load(&self, coord: impl TexelCoord2, sample: impl TexelIndex) -> f32 {
@@ -399,7 +394,7 @@ macro_rules! sample {
             /// Filtered read at the level the hardware picks: `textureSample`.
             /// Fragment shaders only, since the level comes from derivatives.
             #[inline]
-            pub fn sample(&self, with: &sampler, coord: $coord $(, $layer: impl TexelIndex)?) -> vec4 {
+            pub fn sample(&self, with: &Sampler, coord: $coord $(, $layer: impl TexelIndex)?) -> Vec4 {
                 unimplemented_on_cpu()
             }
 
@@ -407,11 +402,11 @@ macro_rules! sample {
             #[inline]
             pub fn sample_level(
                 &self,
-                with: &sampler,
+                with: &Sampler,
                 coord: $coord,
                 $($layer: impl TexelIndex,)?
                 level: f32,
-            ) -> vec4 {
+            ) -> Vec4 {
                 unimplemented_on_cpu()
             }
 
@@ -419,11 +414,11 @@ macro_rules! sample {
             #[inline]
             pub fn sample_bias(
                 &self,
-                with: &sampler,
+                with: &Sampler,
                 coord: $coord,
                 $($layer: impl TexelIndex,)?
                 bias: f32,
-            ) -> vec4 {
+            ) -> Vec4 {
                 unimplemented_on_cpu()
             }
 
@@ -431,27 +426,27 @@ macro_rules! sample {
             #[inline]
             pub fn sample_grad(
                 &self,
-                with: &sampler,
+                with: &Sampler,
                 coord: $coord,
                 $($layer: impl TexelIndex,)?
                 ddx: $grad,
                 ddy: $grad,
-            ) -> vec4 {
+            ) -> Vec4 {
                 unimplemented_on_cpu()
             }
         }
     };
 }
-sample!(texture_2d<f32>, vec2, vec2);
-sample!(texture_2d_array<f32>, vec2, vec2, layer);
-sample!(texture_3d<f32>, vec3, vec3);
-sample!(texture_cube<f32>, vec3, vec3);
-sample!(texture_cube_array<f32>, vec3, vec3, layer);
+sample!(Texture2D<f32>, Vec2, Vec2);
+sample!(Texture2DArray<f32>, Vec2, Vec2, layer);
+sample!(Texture3D<f32>, Vec3, Vec3);
+sample!(TextureCube<f32>, Vec3, Vec3);
+sample!(TextureCubeArray<f32>, Vec3, Vec3, layer);
 
-impl texture_1d<f32> {
+impl Texture1D<f32> {
     /// Filtered read: `textureSample`.
     #[inline]
-    pub fn sample(&self, with: &sampler, coord: f32) -> vec4 {
+    pub fn sample(&self, with: &Sampler, coord: f32) -> Vec4 {
         unimplemented_on_cpu()
     }
 }
@@ -463,7 +458,7 @@ macro_rules! sample_depth {
         impl $ty {
             /// Read at the level the hardware picks: `textureSample`.
             #[inline]
-            pub fn sample(&self, with: &sampler, coord: $coord $(, $layer: impl TexelIndex)?) -> f32 {
+            pub fn sample(&self, with: &Sampler, coord: $coord $(, $layer: impl TexelIndex)?) -> f32 {
                 unimplemented_on_cpu()
             }
 
@@ -471,7 +466,7 @@ macro_rules! sample_depth {
             #[inline]
             pub fn sample_level(
                 &self,
-                with: &sampler,
+                with: &Sampler,
                 coord: $coord,
                 $($layer: impl TexelIndex,)?
                 level: impl TexelIndex,
@@ -484,7 +479,7 @@ macro_rules! sample_depth {
             #[inline]
             pub fn sample_compare(
                 &self,
-                with: &sampler_comparison,
+                with: &SamplerComparison,
                 coord: $coord,
                 $($layer: impl TexelIndex,)?
                 depth_ref: f32,
@@ -496,7 +491,7 @@ macro_rules! sample_depth {
             #[inline]
             pub fn sample_compare_level(
                 &self,
-                with: &sampler_comparison,
+                with: &SamplerComparison,
                 coord: $coord,
                 $($layer: impl TexelIndex,)?
                 depth_ref: f32,
@@ -506,10 +501,10 @@ macro_rules! sample_depth {
         }
     };
 }
-sample_depth!(texture_depth_2d, vec2);
-sample_depth!(texture_depth_2d_array, vec2, layer);
-sample_depth!(texture_depth_cube, vec3);
-sample_depth!(texture_depth_cube_array, vec3, layer);
+sample_depth!(TextureDepth2D, Vec2);
+sample_depth!(TextureDepth2DArray, Vec2, layer);
+sample_depth!(TextureDepthCube, Vec3);
+sample_depth!(TextureDepthCubeArray, Vec3, layer);
 
 // Storage textures: `load` needs an access mode that reads, `store` one that
 // writes, and the texel is whatever the format says.
@@ -531,28 +526,27 @@ macro_rules! storage_access {
         }
     };
 }
-storage_access!(texture_storage_1d, TexelCoord1);
-storage_access!(texture_storage_2d, TexelCoord2);
-storage_access!(texture_storage_2d_array, TexelCoord2, layer);
-storage_access!(texture_storage_3d, TexelCoord3);
+storage_access!(TextureStorage1D, TexelCoord1);
+storage_access!(TextureStorage2D, TexelCoord2);
+storage_access!(TextureStorage2DArray, TexelCoord2, layer);
+storage_access!(TextureStorage3D, TexelCoord3);
 
 /// A ray query: a local that traces one ray through an acceleration structure.
 ///
-/// Start one with `ray_query::default()`, point it at a ray with
-/// [`initialize`](ray_query::initialize), and [`proceed`](ray_query::proceed)
+/// Start one with `RayQuery::default()`, point it at a ray with
+/// [`initialize`](RayQuery::initialize), and [`proceed`](RayQuery::proceed)
 /// until it says there is nothing more to consider. It cannot be copied,
 /// which is WGSL's rule too.
-#[allow(non_camel_case_types)]
 #[derive(Default)]
-pub struct ray_query {
+pub struct RayQuery {
     _local: (),
 }
 
-impl ray_query {
+impl RayQuery {
     /// Begin tracing `desc` through `scene`:
     /// `rayQueryInitialize`.
     #[inline]
-    pub fn initialize(&mut self, scene: &acceleration_structure, desc: RayDesc) {
+    pub fn initialize(&mut self, scene: &AccelerationStructure, desc: RayDesc) {
         unimplemented_on_cpu()
     }
 
@@ -603,8 +597,8 @@ pub struct RayDesc {
     pub cull_mask: u32,
     pub tmin: f32,
     pub tmax: f32,
-    pub origin: vec3,
-    pub dir: vec3,
+    pub origin: Vec3,
+    pub dir: Vec3,
 }
 
 /// What was found.
@@ -617,8 +611,8 @@ pub struct RayIntersection {
     pub sbt_record_offset: u32,
     pub geometry_index: u32,
     pub primitive_index: u32,
-    pub barycentrics: vec2,
+    pub barycentrics: Vec2,
     pub front_face: bool,
-    pub object_to_world: crate::matrix::mat4x3,
-    pub world_to_object: crate::matrix::mat4x3,
+    pub object_to_world: crate::matrix::Mat4x3,
+    pub world_to_object: crate::matrix::Mat4x3,
 }

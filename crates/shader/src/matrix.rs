@@ -2,25 +2,23 @@
 //!
 //! `matN(c0, c1, ...)` takes column vectors. A shader's column-major scalar
 //! form has the same name at a different arity, which Rust cannot express, so
-//! that one is [`from_cols_array`](mat2::from_cols_array).
+//! that one is [`from_cols_array`](Mat2::from_cols_array).
 
 use core::ops::*;
 
 use crate::unimplemented_on_cpu;
-use crate::vector::{vec2, vec3, vec4};
+use crate::vector::{Vec2, Vec3, Vec4};
 
 macro_rules! matrix {
-    ($name:ident, $cols:literal, $col:ident, $row:ident, $($c:ident),+) => {
+    ($name:ident, $ctor:ident, $cols:literal, $col:ident, $row:ident, $($c:ident),+) => {
         /// Column-major matrix.
         #[derive(Clone, Copy, Debug, Default, PartialEq)]
         #[repr(C)]
-        #[allow(non_camel_case_types)]
         pub struct $name { $(pub $c: $col),+ }
 
         /// Build from column vectors.
-        #[allow(non_snake_case)]
         #[inline]
-        pub const fn $name($($c: $col),+) -> $name { $name { $($c),+ } }
+        pub const fn $ctor($($c: $col),+) -> $name { $name { $($c),+ } }
 
         impl $name {
             pub const ZERO: Self = $name { $($c: $col::ZERO),+ };
@@ -70,40 +68,15 @@ macro_rules! matrix {
     };
 }
 
-matrix!(mat2x2, 2, vec2, vec2, x_axis, y_axis);
-matrix!(mat3x2, 3, vec2, vec3, x_axis, y_axis, z_axis);
-matrix!(mat4x2, 4, vec2, vec4, x_axis, y_axis, z_axis, w_axis);
-matrix!(mat2x3, 2, vec3, vec2, x_axis, y_axis);
-matrix!(mat3x3, 3, vec3, vec3, x_axis, y_axis, z_axis);
-matrix!(mat4x3, 4, vec3, vec4, x_axis, y_axis, z_axis, w_axis);
-matrix!(mat2x4, 2, vec4, vec2, x_axis, y_axis);
-matrix!(mat3x4, 3, vec4, vec3, x_axis, y_axis, z_axis);
-matrix!(mat4x4, 4, vec4, vec4, x_axis, y_axis, z_axis, w_axis);
-
-/// Square matrices, as a shader spells them.
-#[allow(non_camel_case_types)]
-pub type mat2 = mat2x2;
-#[allow(non_camel_case_types)]
-pub type mat3 = mat3x3;
-#[allow(non_camel_case_types)]
-pub type mat4 = mat4x4;
-
-/// `mat2(c0, c1)` and friends, under the square names.
-#[allow(non_snake_case)]
-#[inline]
-pub const fn mat2(x_axis: vec2, y_axis: vec2) -> mat2 {
-    mat2x2(x_axis, y_axis)
-}
-#[allow(non_snake_case)]
-#[inline]
-pub const fn mat3(x_axis: vec3, y_axis: vec3, z_axis: vec3) -> mat3 {
-    mat3x3(x_axis, y_axis, z_axis)
-}
-#[allow(non_snake_case)]
-#[inline]
-pub const fn mat4(x_axis: vec4, y_axis: vec4, z_axis: vec4, w_axis: vec4) -> mat4 {
-    mat4x4(x_axis, y_axis, z_axis, w_axis)
-}
+matrix!(Mat2, mat2, 2, Vec2, Vec2, x_axis, y_axis);
+matrix!(Mat3x2, mat3x2, 3, Vec2, Vec3, x_axis, y_axis, z_axis);
+matrix!(Mat4x2, mat4x2, 4, Vec2, Vec4, x_axis, y_axis, z_axis, w_axis);
+matrix!(Mat2x3, mat2x3, 2, Vec3, Vec2, x_axis, y_axis);
+matrix!(Mat3, mat3, 3, Vec3, Vec3, x_axis, y_axis, z_axis);
+matrix!(Mat4x3, mat4x3, 4, Vec3, Vec4, x_axis, y_axis, z_axis, w_axis);
+matrix!(Mat2x4, mat2x4, 2, Vec4, Vec2, x_axis, y_axis);
+matrix!(Mat3x4, mat3x4, 3, Vec4, Vec3, x_axis, y_axis, z_axis);
+matrix!(Mat4, mat4, 4, Vec4, Vec4, x_axis, y_axis, z_axis, w_axis);
 
 /// Square matrix products, where the result is the same type.
 macro_rules! square_mul {
@@ -117,42 +90,42 @@ macro_rules! square_mul {
         }
     };
 }
-square_mul!(mat2x2);
-square_mul!(mat3x3);
-square_mul!(mat4x4);
+square_mul!(Mat2);
+square_mul!(Mat3);
+square_mul!(Mat4);
 
-/// `vec4 * mat3x4 -> vec3`, the row-vector product an affine skinning matrix uses.
-impl Mul<mat3x4> for vec4 {
-    type Output = vec3;
+/// `Vec4 * Mat3x4 -> Vec3`, the row-vector product an affine skinning matrix uses.
+impl Mul<Mat3x4> for Vec4 {
+    type Output = Vec3;
     #[inline]
-    fn mul(self, _rhs: mat3x4) -> vec3 {
+    fn mul(self, _rhs: Mat3x4) -> Vec3 {
         crate::unimplemented_on_cpu()
     }
 }
 
-/// `mat3x2 * vec3 -> vec2`, a 2-row matrix times a column.
-impl Mul<vec3> for mat3x2 {
-    type Output = vec2;
+/// `Mat3x2 * Vec3 -> Vec2`, a 2-row matrix times a column.
+impl Mul<Vec3> for Mat3x2 {
+    type Output = Vec2;
     #[inline]
-    fn mul(self, _rhs: vec3) -> vec2 {
+    fn mul(self, _rhs: Vec3) -> Vec2 {
         crate::unimplemented_on_cpu()
     }
 }
 
-/// `mat4x3 * vec4 -> vec3`, an affine matrix times a homogeneous point.
-impl Mul<vec4> for mat4x3 {
-    type Output = vec3;
+/// `Mat4x3 * Vec4 -> Vec3`, an affine matrix times a homogeneous point.
+impl Mul<Vec4> for Mat4x3 {
+    type Output = Vec3;
     #[inline]
-    fn mul(self, _rhs: vec4) -> vec3 {
+    fn mul(self, _rhs: Vec4) -> Vec3 {
         crate::unimplemented_on_cpu()
     }
 }
 
-/// `mat4x3 * mat3x4 -> mat3x3`, the object-to-world linear part of a hit.
-impl Mul<mat3x4> for mat4x3 {
-    type Output = mat3x3;
+/// `Mat4x3 * Mat3x4 -> Mat3`, the object-to-world linear part of a hit.
+impl Mul<Mat3x4> for Mat4x3 {
+    type Output = Mat3;
     #[inline]
-    fn mul(self, _rhs: mat3x4) -> mat3x3 {
+    fn mul(self, _rhs: Mat3x4) -> Mat3 {
         crate::unimplemented_on_cpu()
     }
 }

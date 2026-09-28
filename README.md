@@ -71,29 +71,29 @@ error: sprites@0.1.0: src/shaders/tonemap.rs:20:1: `fn tonemap`: operator `-` do
 use synaga_shader::*;
 
 pub struct Camera {
-    pub view_proj: mat4,
+    pub view_proj: Mat4,
 }
 
 pub static camera: Uniform<Camera> = group(0).binding(0);
-pub static albedo: texture_2d<f32> = group(1).binding(0);
-pub static linear: sampler = group(1).binding(1);
+pub static albedo: Texture2D<f32> = group(1).binding(0);
+pub static linear: Sampler = group(1).binding(1);
 
 #[derive(Clone, Copy, Io)]
 pub struct VsOut {
     #[builtin(position)]
-    pub clip: vec4,
+    pub clip: Vec4,
     #[location(0)]
-    pub uv: vec2,
+    pub uv: Vec2,
 }
 
 #[entry_point(vertex)]
-pub fn vs(#[location(0)] pos: vec3, #[location(1)] uv: vec2) -> VsOut {
+pub fn vs(#[location(0)] pos: Vec3, #[location(1)] uv: Vec2) -> VsOut {
     VsOut { clip: camera.view_proj * pos.extend(1.0), uv }
 }
 
 #[entry_point(fragment)]
 #[output(location(0))]
-pub fn fs(input: VsOut) -> vec4 {
+pub fn fs(input: VsOut) -> Vec4 {
     albedo.sample(&linear, input.uv)
 }
 ```
@@ -126,7 +126,7 @@ either number may be a `const`, which the host can build its layouts from too:
 ```rust,ignore
 pub const MATERIAL: u32 = 1;
 
-pub static albedo: texture_2d<f32> = group(MATERIAL).binding(0);
+pub static albedo: Texture2D<f32> = group(MATERIAL).binding(0);
 ```
 
 `= binding()` leaves the binding to the host (see
@@ -190,18 +190,27 @@ Order does not matter: a function may call one defined below it, and a struct
 may hold one declared later. Sibling files reach each other the Rust ways —
 `use super::brdf::*`, `use super::light::{Sun as Light}`, or a path such as
 `brdf::sample(..)` or `crate::shaders::brdf::sample(..)` — and two modules may
-each have a helper of the same name. `type Color = vec4;` works. A function
+each have a helper of the same name. `type Color = Vec4;` works. A function
 cannot call itself, directly or not, since a shader cannot recurse.
 
 ### Things Rust spells differently
 
 | WGSL | Rust | Why |
 | --- | --- | --- |
+| `vec3<i32>`, `mat4x4f`, `texture_2d<f32>` | `Vec3<i32>`, `Mat4`, `Texture2D<f32>` | Rust capitalizes types; a bare `Vec3` is `Vec3<f32>` |
+| `vec3u(1, 2, 3)` | `vec3::<u32>(1, 2, 3)` | the scalar is a type argument; `vec3(1, 2, 3)` is `i32`, as in WGSL |
+| `workgroupBarrier()`, `countOneBits(x)` | `workgroup_barrier()`, `count_one_bits(x)` | Rust's functions are snake_case |
 | `v.xyz`, `v.rgb` | `v.xyz()`, `v.rgb()` | one piece of memory cannot carry a hundred overlapping names (`v.x` is still a field) |
-| `vec3(x)`, `vec4(v, w)` | `vec3::splat(x)`, `v.extend(w)` | a function cannot be overloaded on arity |
+| `vec3(x)`, `vec4(v, w)` | `Vec3::splat(x)`, `v.extend(w)` | a function cannot be overloaded on arity |
 | `a <= b` on vectors | `a.cmple(b)` | Rust's `<=` yields one `bool`, a shader's yields one per lane |
-| `v as vec3<f32>` | `vec3::from(v)` | `as` only converts primitives |
+| `vec3<f32>(v)` | `Vec3::from(v)` | a type is not a function, and `as` only converts primitives |
 | `T()` | `T::default()` | `T()` is a call, and a struct is not a function |
+
+The types are WGSL's words in WGSL's order, capitalized: `texture_storage_2d_array`
+is `TextureStorage2DArray`, `sampler_comparison` is `SamplerComparison`. A
+float literal needs no suffix: `vec3(0.0, 1.0, 0.0)` is a `Vec3<f32>`, because
+`f32` is the one float type a vector holds. The transpiler still reads WGSL's
+own names, for a source `rustc` never sees.
 
 `usize` is `u32`. A GPU index is 32-bit and WGSL has no `usize`, but `[T; N]`,
 `[T]` and the vectors index by it, so `arr[i as usize]` has to mean what it
@@ -212,9 +221,9 @@ returns. A call that returns nothing can end a block, as in Rust.
 
 ## The dialect in detail
 
-- scalars `f32`, `u32`, `i32`, `bool`; vectors `vec2`/`vec3`/`vec4` (default
-  `f32`), `vecN<T>`, `vec2f`/`vec3i`/`vec4u`; matrices `mat2`/`mat3`/`mat4`,
-  `matCxR`, `mat4f`, `mat2x3<f32>`
+- scalars `f32`, `u32`, `i32`, `bool`; vectors `Vec2<T>`/`Vec3<T>`/`Vec4<T>`
+  of any of them, `f32` when `T` is left out; matrices `Mat2`/`Mat3`/`Mat4` and
+  `Mat2x3` through `Mat4x3`, columns first as in WGSL's `matCxR`
 - constructors `vec3(x, y, z)`; matrix constructors from column vectors or
   column-major scalars
 - components `.x`/`.y`/`.z`/`.w`, swizzles, index `v[0]` / `v[i]` / `m[0]`
@@ -229,13 +238,13 @@ returns. A call that returns nothing can end a block, as in Rust.
 - `const NAME: T = …` (literals, vector/matrix constructors, other constants,
   `cfg!(..)`)
 - structs, their literals and fields; arrays `[T; N]` and `[a, b, c]`; `[T]`
-  for a runtime-sized storage buffer; `binding_array<T>` and
-  `binding_array<T, N>`
+  for a runtime-sized storage buffer; `BindingArray<T>` and
+  `BindingArray<T, N>`
 - math builtins: `dot`, `cross`, `normalize`, `length`, `abs`, `min`, `max`,
   `clamp`, `mix`, `step`, `sin`, `cos`, `pow`, `transpose`, `determinant`, the
   bit-twiddling set and the packing set; `select(reject, accept, condition)` in
   WGSL's argument order; `all`, `any`, `isNan`, `isInf`; `bitcast::<T>(x)`
-- `workgroupBarrier()`, `storageBarrier()`, `discard()`
+- `workgroup_barrier()`, `storage_barrier()`, `discard()`
 - the predeclared `RAY_FLAG_*` and `RAY_QUERY_INTERSECTION_*` names
 
 Not yet: labeled loops, `break` values, `match`, methods on your own types,
@@ -251,7 +260,7 @@ bool one, a shift amount is always `u32`, and so on.
 
 Untyped integer literals take their type from context the way Rust's inference
 would: `n << 1`, `n * 2`, `clamp(n, 0, 10)`, `f(1)`, `let n: u32 = 1` and
-`vec3u(1, 2, 3)` all work whatever integer type is in play. There is no
+`vec3::<u32>(1, 2, 3)` all work whatever integer type is in play. There is no
 `1` to `1.0` conversion, again as in Rust.
 
 A function with a return type has to return on every path; `if c { a }` as a
@@ -316,8 +325,8 @@ fragment input — has to say `#[flat]`:
 ```rust,ignore
 #[derive(Clone, Copy, Io)]
 struct VsOut {
-    #[builtin(position)] pos: vec4,
-    #[location(0)] uv: vec2,
+    #[builtin(position)] pos: Vec4,
+    #[location(0)] uv: Vec2,
     #[location(1)] #[flat] material: u32,
 }
 ```

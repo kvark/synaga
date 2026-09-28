@@ -430,8 +430,8 @@ fn lower_local(
     };
 
     let (value, ty) = match init {
-        // `ray_query` is not a constructible value. `ray_query::default()` is
-        // how Rust names the local; the query itself starts at `rayQueryInitialize`.
+        // A ray query is not a constructible value. `RayQuery::default()` is
+        // how Rust names the local; the query itself starts at `initialize`.
         Some(expr) if is_ray_query_default(expr) => {
             let ty = super::ray::parse_ray_type(ctx, "ray_query").expect("ray_query");
             if matches!(annot, Some(want) if want != ty) {
@@ -570,7 +570,8 @@ fn is_ray_query_default(expr: &Expr) -> bool {
     if path.qself.is_some() || path.path.segments.len() != 2 {
         return false;
     }
-    path.path.segments[0].ident == "ray_query" && path.path.segments[1].ident == "default"
+    let ty = &path.path.segments[0].ident;
+    (ty == "RayQuery" || ty == "ray_query") && path.path.segments[1].ident == "default"
 }
 
 fn strip_pat(pat: &Pat) -> &Pat {

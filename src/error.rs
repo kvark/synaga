@@ -88,7 +88,7 @@ pub enum Error {
     ValueFromStatement(String),
     #[error("unexpected address space on `{0}`: a texture or sampler is a handle")]
     UnexpectedAddressSpace(String),
-    #[error("`{0}` needs an `acceleration_structure`")]
+    #[error("`{0}` needs an `AccelerationStructure`")]
     NotAnAccelerationStructure(String),
     #[error("`{0}` is workgroup or private memory, so it takes no binding")]
     UnexpectedBinding(String),
