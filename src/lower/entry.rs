@@ -361,13 +361,24 @@ pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> R
     let mut body = naga::Block::new();
     env.push_scope();
     ctx.addressed = super::stmt::addressed_names(&item.block);
-    let tail = super::stmt::lower_block(ctx, &mut function, &mut body, &item.block, &mut env)?;
+    let hint = super::stmt::return_hint(ctx, &function);
+    let tail = super::stmt::lower_block_hinted(
+        ctx,
+        &mut function,
+        &mut body,
+        &item.block,
+        &mut env,
+        hint,
+    )?;
     env.pop_scope();
     match tail {
-        Some((value, _)) if function.result.is_some() => body.push(
-            naga::Statement::Return { value: Some(value) },
-            naga::Span::UNDEFINED,
-        ),
+        Some((value, ty)) if function.result.is_some() => {
+            super::stmt::check_return(&function, ty)?;
+            body.push(
+                naga::Statement::Return { value: Some(value) },
+                naga::Span::UNDEFINED,
+            );
+        }
         Some(_) => {}
         None if function.result.is_some() && !super::stmt::always_jumps(&body) => {
             return Err(Error::MissingReturn(function.name.unwrap_or_default()))

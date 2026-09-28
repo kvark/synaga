@@ -48,6 +48,19 @@ pub(super) fn lower_block(
     block: &SynBlock,
     env: &mut Env,
 ) -> Result<Option<Typed>, Error> {
+    lower_block_hinted(ctx, function, body, block, env, None)
+}
+
+/// [`lower_block`], for a block whose value goes somewhere that says its
+/// type: `hint` reaches the tail, as Rust's inference would carry it there.
+pub(super) fn lower_block_hinted(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    block: &SynBlock,
+    env: &mut Env,
+    hint: Option<naga::Scalar>,
+) -> Result<Option<Typed>, Error> {
     let mut tail = None;
     for (i, stmt) in block.stmts.iter().enumerate() {
         let last = i + 1 == block.stmts.len();
@@ -58,7 +71,12 @@ pub(super) fn lower_block(
             }
             Stmt::Expr(Expr::Return(ret), _) => {
                 let value = match ret.expr.as_deref() {
-                    Some(expr) => Some(lower_expr(ctx, function, body, expr, env)?.0),
+                    Some(expr) => {
+                        let hint = return_hint(ctx, function);
+                        let (value, ty) = lower_expr_hinted(ctx, function, body, expr, env, hint)?;
+                        check_return(function, ty)?;
+                        Some(value)
+                    }
                     None => None,
                 };
                 body.push(Statement::Return { value }, Span::UNDEFINED);
@@ -66,7 +84,7 @@ pub(super) fn lower_block(
             }
             Stmt::Expr(expr, semi) => {
                 if last && semi.is_none() && yields_value(expr) {
-                    tail = lower_tail(ctx, function, body, expr, env)?;
+                    tail = lower_tail(ctx, function, body, expr, env, hint)?;
                 } else {
                     lower_stmt_expr(ctx, function, body, expr, env)?;
                     tail = None;
@@ -116,20 +134,39 @@ pub(super) fn lower_tail(
     body: &mut Block,
     expr: &Expr,
     env: &mut Env,
+    hint: Option<naga::Scalar>,
 ) -> Result<Option<Typed>, Error> {
     match expr {
-        Expr::Call(call) => super::call::lower_call_any(ctx, function, body, call, env),
+        Expr::Call(call) => super::call::lower_call_any(ctx, function, body, call, env, hint),
         Expr::MethodCall(call) => super::method::lower_method_any(ctx, function, body, call, env),
-        Expr::If(if_expr) => lower_if_any(ctx, function, body, if_expr, env),
+        Expr::If(if_expr) => lower_if_any(ctx, function, body, if_expr, env, hint),
         Expr::Block(syn::ExprBlock { block, .. }) | Expr::Unsafe(syn::ExprUnsafe { block, .. }) => {
             env.push_scope();
-            let tail = lower_block(ctx, function, body, block, env)?;
+            let tail = lower_block_hinted(ctx, function, body, block, env, hint)?;
             env.pop_scope();
             Ok(tail)
         }
-        Expr::Paren(inner) => lower_tail(ctx, function, body, &inner.expr, env),
-        Expr::Group(inner) => lower_tail(ctx, function, body, &inner.expr, env),
-        other => lower_expr(ctx, function, body, other, env).map(Some),
+        Expr::Paren(inner) => lower_tail(ctx, function, body, &inner.expr, env, hint),
+        Expr::Group(inner) => lower_tail(ctx, function, body, &inner.expr, env, hint),
+        other => lower_expr_hinted(ctx, function, body, other, env, hint).map(Some),
+    }
+}
+
+/// The scalar a function's result says, for the literals in what it returns:
+/// `fn f() -> u32 { 1 }`.
+pub(super) fn return_hint(ctx: &Context, function: &Function) -> Option<naga::Scalar> {
+    let result = function.result.as_ref()?;
+    ctx.shape(result.ty).int_hint()
+}
+
+/// A returned value has to be what the function says it returns. Naga checks
+/// too, but names neither the function nor the problem.
+pub(super) fn check_return(function: &Function, ty: Handle<Type>) -> Result<(), Error> {
+    match &function.result {
+        Some(result) if result.ty != ty => Err(Error::ReturnMismatch(
+            function.name.clone().unwrap_or_default(),
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -636,8 +673,9 @@ pub(super) fn lower_if_expr(
     body: &mut Block,
     if_expr: &syn::ExprIf,
     env: &mut Env,
+    hint: Option<naga::Scalar>,
 ) -> Result<Typed, Error> {
-    lower_if_any(ctx, function, body, if_expr, env)?.ok_or(Error::MissingBlockValue)
+    lower_if_any(ctx, function, body, if_expr, env, hint)?.ok_or(Error::MissingBlockValue)
 }
 
 /// An `if` with an `else`, whose value is its branches' if they have one: an
@@ -648,6 +686,7 @@ fn lower_if_any(
     body: &mut Block,
     if_expr: &syn::ExprIf,
     env: &mut Env,
+    hint: Option<naga::Scalar>,
 ) -> Result<Option<Typed>, Error> {
     let else_expr = if_expr
         .else_branch
@@ -657,11 +696,12 @@ fn lower_if_any(
     let (condition, _) = lower_expr(ctx, function, body, &if_expr.cond, env)?;
     let mut accept = Block::new();
     env.push_scope();
-    let then_tail = lower_block(ctx, function, &mut accept, &if_expr.then_branch, env)?;
+    let then_tail =
+        lower_block_hinted(ctx, function, &mut accept, &if_expr.then_branch, env, hint)?;
     env.pop_scope();
     let mut reject = Block::new();
     env.push_scope();
-    let else_tail = lower_tail(ctx, function, &mut reject, else_expr, env)?;
+    let else_tail = lower_tail(ctx, function, &mut reject, else_expr, env, hint)?;
     env.pop_scope();
     let ((then_val, then_ty), (else_val, else_ty)) = match (then_tail, else_tail) {
         (Some(then), Some(other)) => (then, other),

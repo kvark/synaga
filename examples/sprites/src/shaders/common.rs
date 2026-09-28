@@ -14,6 +14,6 @@ pub const FRAME: u32 = 0;
 pub static globals: Uniform<Globals> = group(FRAME).binding(0);
 
 pub fn unpack_color(raw: u32) -> Vec4 {
-    let bytes = (Vec4::<u32>::splat(raw) >> vec4::<u32>(0, 8, 16, 24)) & Vec4::<u32>::splat(0xFF);
+    let bytes = (Vec4::splat(raw) >> vec4(0, 8, 16, 24)) & Vec4::splat(0xFF);
     Vec4::from(bytes) / 255.0
 }

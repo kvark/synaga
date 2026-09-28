@@ -8,7 +8,7 @@ use super::call::lower_call;
 use super::emit::{emit, expr_kind};
 use super::env::{Env, Slot};
 use super::place::{self, lower_place};
-use super::stmt::{lower_block, lower_if_expr};
+use super::stmt::{lower_block_hinted, lower_if_expr};
 use super::vector::{lower_field, lower_index, splat_mix, splat_shift};
 use super::{Context, Shape, Typed};
 use crate::Error;
@@ -44,13 +44,15 @@ pub(super) fn lower_expr_hinted(
             let module_path = ctx.is_module_path(&segments);
             // `Vec4::ZERO` names a value on a type rather than a binding, and
             // `Vec4::<u32>::ZERO` says the scalar as well.
-            if let [.., ty, item] = &segments[..] {
-                if !module_path {
+            if let [ty @ .., item] = &segments[..] {
+                if !ty.is_empty() && !module_path {
                     let ty_segment = &path.path.segments[path.path.segments.len() - 2];
-                    let ty_scalar = super::turbofish_scalar(ty_segment)?;
-                    return super::method::lower_qualified_const(
-                        ctx, function, body, ty, ty_scalar, item,
-                    );
+                    let on = super::method::OnType {
+                        path: ty,
+                        turbofish: super::turbofish_scalar(ty_segment)?,
+                        hint,
+                    };
+                    return super::method::lower_qualified_const(ctx, function, body, on, item);
                 }
             }
             // A local shadows a module item. A path through a module cannot
@@ -84,19 +86,19 @@ pub(super) fn lower_expr_hinted(
                 return lower_compound_assign(ctx, function, body, &bin.left, &bin.right, op, env);
             }
             let op = map_bin_op(&bin.op)?;
-            lower_binary(ctx, function, body, op, &bin.left, &bin.right, env)
+            lower_binary(ctx, function, body, op, (&bin.left, &bin.right), env, hint)
         }
-        Expr::Unary(unary) => lower_unary(ctx, function, body, unary, env),
+        Expr::Unary(unary) => lower_unary(ctx, function, body, unary, env, hint),
         Expr::Cast(cast) => lower_cast(ctx, function, body, cast, env),
         Expr::Assign(assign) => lower_assign(ctx, function, body, &assign.left, &assign.right, env),
-        Expr::If(if_expr) => lower_if_expr(ctx, function, body, if_expr, env),
+        Expr::If(if_expr) => lower_if_expr(ctx, function, body, if_expr, env, hint),
         Expr::Block(syn::ExprBlock { block, .. }) | Expr::Unsafe(syn::ExprUnsafe { block, .. }) => {
             env.push_scope();
-            let tail = lower_block(ctx, function, body, block, env)?;
+            let tail = lower_block_hinted(ctx, function, body, block, env, hint)?;
             env.pop_scope();
             tail.ok_or(Error::MissingBlockValue)
         }
-        Expr::Call(call) => lower_call(ctx, function, body, call, env),
+        Expr::Call(call) => lower_call(ctx, function, body, call, env, hint),
         Expr::Field(_) | Expr::Index(_) => {
             // A place loads just the component; anything else (a swizzle, a
             // field of a function argument) falls back to the value walk.
@@ -171,6 +173,7 @@ fn lower_unary(
     body: &mut Block,
     unary: &syn::ExprUnary,
     env: &mut Env,
+    hint: Option<Scalar>,
 ) -> Result<Typed, Error> {
     // `*place` loads the place. Rust resource wrappers (`Workgroup<T>` and the
     // rest) need the star to see the inner value; in the shader the name is
@@ -186,7 +189,9 @@ fn lower_unary(
         let handle = emit(function, body, Expression::Load { pointer: inner })?;
         return Ok((handle, base));
     }
-    let (inner, ty) = lower_expr(ctx, function, body, &unary.expr, env)?;
+    // `-` and `!` keep their operand's type, so where the result goes is
+    // where the operand goes.
+    let (inner, ty) = lower_expr_hinted(ctx, function, body, &unary.expr, env, hint)?;
     let op = match unary.op {
         // Naga has no negation for matrices or unsigned integers.
         syn::UnOp::Neg(_) => match ctx.shape(ty).elem_kind() {
@@ -210,22 +215,38 @@ fn lower_binary(
     function: &mut Function,
     body: &mut Block,
     op: BinaryOperator,
-    left_expr: &Expr,
-    right_expr: &Expr,
+    (left_expr, right_expr): (&Expr, &Expr),
     env: &mut Env,
+    outer: Option<Scalar>,
 ) -> Result<Typed, Error> {
     let shift = is_shift(op);
+    // Arithmetic, bitwise operators and shifts produce their operands' type,
+    // so where the result goes says what the operands are too. A comparison's
+    // `bool` says nothing about them.
+    let outer = match op {
+        BinaryOperator::Add
+        | BinaryOperator::Subtract
+        | BinaryOperator::Multiply
+        | BinaryOperator::Divide
+        | BinaryOperator::Modulo
+        | BinaryOperator::And
+        | BinaryOperator::ExclusiveOr
+        | BinaryOperator::InclusiveOr
+        | BinaryOperator::ShiftLeft
+        | BinaryOperator::ShiftRight => outer,
+        _ => None,
+    };
     // Lower the side that pins down the type first, so an untyped integer
     // literal on the other side can follow it. Literals have no side effects,
     // so swapping the order is not observable.
     let (mut left, mut left_ty, mut right, mut right_ty) =
         if !shift && is_untyped_int(left_expr) && !is_untyped_int(right_expr) {
-            let (right, right_ty) = lower_expr(ctx, function, body, right_expr, env)?;
+            let (right, right_ty) = lower_expr_hinted(ctx, function, body, right_expr, env, outer)?;
             let hint = ctx.shape(right_ty).int_hint();
             let (left, left_ty) = lower_expr_hinted(ctx, function, body, left_expr, env, hint)?;
             (left, left_ty, right, right_ty)
         } else {
-            let (left, left_ty) = lower_expr(ctx, function, body, left_expr, env)?;
+            let (left, left_ty) = lower_expr_hinted(ctx, function, body, left_expr, env, outer)?;
             // Shift amounts are always `u32`, whatever the left operand is.
             let hint = if shift {
                 Some(Scalar::U32)

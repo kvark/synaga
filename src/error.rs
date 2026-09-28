@@ -84,6 +84,8 @@ pub enum Error {
     UnexpectedWorkgroupSize,
     #[error("entry point `{0}` is missing #[output(...)]")]
     MissingReturnBinding(String),
+    #[error("`{0}` returns a value that is not the type it declares")]
+    ReturnMismatch(String),
     #[error("`{0}` produces no value, so it cannot be used as one")]
     ValueFromStatement(String),
     #[error("unexpected address space on `{0}`: a texture or sampler is a handle")]

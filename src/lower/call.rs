@@ -37,15 +37,17 @@ fn pointer_arg(
 }
 
 /// The type `T()` names, for a zero value: a vector, matrix, scalar, or struct.
-/// `turbofish` is a vector's scalar, when the path says it: `Vec3::<u32>`.
+/// A vector's scalar comes from its path, `Vec3::<u32>`, or failing that from
+/// `hint`, where the value goes.
 pub(super) fn zero_value_type(
     ctx: &mut Context,
     path: &[String],
     turbofish: Option<naga::Scalar>,
+    hint: Option<naga::Scalar>,
 ) -> Result<Option<Handle<naga::Type>>, Error> {
     let name = super::last(path);
     if let Some((size, shorthand)) = parse_vec_ident(&name) {
-        let scalar = super::vec_scalar(&name, shorthand, turbofish)?;
+        let scalar = super::vec_scalar(&name, shorthand, turbofish)?.or(hint);
         return Ok(Some(
             ctx.intern_vector(size, scalar.unwrap_or(naga::Scalar::F32)),
         ));
@@ -113,18 +115,20 @@ pub(super) fn lower_call_stmt(
     call: &syn::ExprCall,
     env: &mut Env,
 ) -> Result<(), Error> {
-    lower_call_any(ctx, function, body, call, env).map(|_| ())
+    lower_call_any(ctx, function, body, call, env, None).map(|_| ())
 }
 
-/// A call in value position: it has to produce something.
+/// A call in value position: it has to produce something. `hint` is the
+/// integer scalar where the value goes, if that says one.
 pub(super) fn lower_call(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
     call: &syn::ExprCall,
     env: &mut Env,
+    hint: Option<naga::Scalar>,
 ) -> Result<Typed, Error> {
-    lower_call_any(ctx, function, body, call, env)?
+    lower_call_any(ctx, function, body, call, env, hint)?
         .ok_or_else(|| Error::ValueFromStatement(callee_label(call)))
 }
 
@@ -207,12 +211,17 @@ fn lower_bitcast(
 
 /// A call anywhere: what it produces, or `None` for a call to something that
 /// produces nothing, which is fine in statement or tail position.
+///
+/// `hint` is where the value goes, as Rust's inference would see it: it is
+/// what makes `let c: Vec3<u32> = vec3(1, 2, 3)` a `u32` vector, when nothing
+/// in the call itself says so.
 pub(super) fn lower_call_any(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
     call: &syn::ExprCall,
     env: &mut Env,
+    hint: Option<naga::Scalar>,
 ) -> Result<Option<Typed>, Error> {
     if let Some(ty) = bitcast_target(call) {
         return lower_bitcast(ctx, function, body, call, env, ty).map(Some);
@@ -227,18 +236,14 @@ pub(super) fn lower_call_any(
         // build, a vector's scalar included.
         Callee::Associated { ty, item } => {
             let ty_segment = &syn_path.segments[syn_path.segments.len() - 2];
-            let ty_scalar = super::turbofish_scalar(ty_segment)?;
+            let on = super::method::OnType {
+                path: &ty,
+                turbofish: super::turbofish_scalar(ty_segment)?,
+                hint,
+            };
             let args: Vec<&Expr> = call.args.iter().collect();
-            return super::method::lower_qualified_call(
-                ctx,
-                function,
-                body,
-                (&ty, ty_scalar),
-                &item,
-                &args,
-                env,
-            )
-            .map(Some);
+            return super::method::lower_qualified_call(ctx, function, body, on, &item, &args, env)
+                .map(Some);
         }
         Callee::Function(path) => path,
     };
@@ -252,7 +257,7 @@ pub(super) fn lower_call_any(
     if call.args.is_empty() {
         let last = syn_path.segments.last().expect("a path has a segment");
         let turbofish = super::turbofish_scalar(last)?;
-        if let Some(ty) = zero_value_type(ctx, &path, turbofish)? {
+        if let Some(ty) = zero_value_type(ctx, &path, turbofish, hint)? {
             let handle = function
                 .expressions
                 .append(Expression::ZeroValue(ty), Span::UNDEFINED);
@@ -260,13 +265,13 @@ pub(super) fn lower_call_any(
         }
     }
     if parse_vec_ident(&name).is_some() {
-        return lower_vec_ctor(ctx, function, body, call, env).map(Some);
+        return lower_vec_ctor(ctx, function, body, call, env, hint).map(Some);
     }
     if parse_mat_ident(&name).is_some() {
         return lower_mat_ctor(ctx, function, body, call, env).map(Some);
     }
     if name == "select" {
-        return lower_select(ctx, function, body, call, env).map(Some);
+        return lower_select(ctx, function, body, call, env, hint).map(Some);
     }
     if let Some(barrier) = barrier(&name) {
         if !call.args.is_empty() {
@@ -286,7 +291,7 @@ pub(super) fn lower_call_any(
         return lower_relational(ctx, function, body, call, env, &name, fun).map(Some);
     }
     if let Some(spec) = math_spec(&name) {
-        return lower_math(ctx, function, body, call, env, &name, spec).map(Some);
+        return lower_math(ctx, function, body, call, env, (&name, spec), hint).map(Some);
     }
     Err(Error::UnknownFunction(name))
 }
@@ -299,11 +304,12 @@ fn lower_select(
     body: &mut Block,
     call: &syn::ExprCall,
     env: &mut Env,
+    hint: Option<naga::Scalar>,
 ) -> Result<Typed, Error> {
     if call.args.len() != 3 {
         return Err(Error::WrongArgCount("select".into()));
     }
-    let (reject, ty) = lower_expr_hinted(ctx, function, body, &call.args[0], env, None)?;
+    let (reject, ty) = lower_expr_hinted(ctx, function, body, &call.args[0], env, hint)?;
     let hint = ctx.shape(ty).int_hint();
     let (accept, accept_ty) = lower_expr_hinted(ctx, function, body, &call.args[1], env, hint)?;
     if accept_ty != ty {
@@ -505,14 +511,19 @@ fn lower_math(
     body: &mut Block,
     call: &syn::ExprCall,
     env: &mut Env,
-    name: &str,
-    spec: MathSpec,
+    (name, spec): (&str, MathSpec),
+    hint: Option<naga::Scalar>,
 ) -> Result<Typed, Error> {
     if call.args.len() != spec.argc {
         return Err(Error::WrongArgCount(name.into()));
     }
     // `clamp(n, 0, 1)`: the first argument fixes the type, the rest follow it.
-    let mut hint = None;
+    // Where the result is the first argument's type, or its scalar, where the
+    // result goes says the type as well: `let n: u32 = max(1, 2)`.
+    let mut hint = match spec.result {
+        MathResult::SameAsFirst | MathResult::ScalarOfFirst => hint,
+        _ => None,
+    };
     let mut args = Vec::new();
     let mut tys = Vec::new();
     for arg in &call.args {

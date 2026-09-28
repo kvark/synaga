@@ -31,7 +31,7 @@ mod vector;
 use emit::item_kind;
 use env::{Env, Slot};
 use scope::{Lowered, Ns, Scope, State};
-use stmt::{always_jumps, lower_block};
+use stmt::always_jumps;
 
 /// A lowered expression and the type it evaluates to. Every `lower_*` that
 /// produces a value hands back one of these.
@@ -641,12 +641,15 @@ impl Context {
         let mut body = Block::new();
         env.push_scope();
         self.addressed = stmt::addressed_names(&item.block);
-        let tail = lower_block(self, &mut function, &mut body, &item.block, &mut env)?;
+        let hint = stmt::return_hint(self, &function);
+        let tail =
+            stmt::lower_block_hinted(self, &mut function, &mut body, &item.block, &mut env, hint)?;
         env.pop_scope();
         match tail {
             // A function returning nothing may still end in an expression with
             // a value; `rustc` has checked that it is `()`.
-            Some((value, _)) if function.result.is_some() => {
+            Some((value, ty)) if function.result.is_some() => {
+                stmt::check_return(&function, ty)?;
                 body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED)
             }
             Some(_) => {}

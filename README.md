@@ -260,8 +260,11 @@ bool one, a shift amount is always `u32`, and so on.
 
 Untyped integer literals take their type from context the way Rust's inference
 would: `n << 1`, `n * 2`, `clamp(n, 0, 10)`, `f(1)`, `let n: u32 = 1` and
-`vec3::<u32>(1, 2, 3)` all work whatever integer type is in play. There is no
-`1` to `1.0` conversion, again as in Rust.
+`fn f() -> u32 { 1 }` all work whatever integer type is in play. A vector's
+scalar comes from the same place: `let c: Vec3<u32> = vec3(1, 2, 3)` and
+`(Vec4::splat(raw) >> vec4(0, 8, 16, 24)) & Vec4::splat(0xFF)` are `u32`
+vectors because of what they meet, as `rustc` sees it. There is no `1` to `1.0`
+conversion, again as in Rust.
 
 A function with a return type has to return on every path; `if c { a }` as a
 whole body is rejected rather than quietly falling off the end.

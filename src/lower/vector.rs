@@ -73,6 +73,7 @@ pub(super) fn lower_vec_ctor(
     body: &mut Block,
     call: &syn::ExprCall,
     env: &mut Env,
+    outer: Option<Scalar>,
 ) -> Result<Typed, Error> {
     let (name, turbofish) = match call.func.as_ref() {
         Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
@@ -89,9 +90,11 @@ pub(super) fn lower_vec_ctor(
         return Err(Error::VecCtorArgs);
     }
     // `vec3::<u32>(1, 2, 3)`, or WGSL's `vec3u(1, 2, 3)`, fixes the component
-    // type up front; plain `vec3(..)` takes it from the first argument and
-    // the rest follow.
-    let mut hint = shorthand.and_then(|s| Shape::Scalar(s).int_hint());
+    // type up front; plain `vec3(..)` takes it from where the vector goes, or
+    // from the first argument, and the rest follow.
+    let mut hint = shorthand
+        .and_then(|s| Shape::Scalar(s).int_hint())
+        .or(outer);
     let mut components = Vec::new();
     let mut component_tys = Vec::new();
     for arg in &call.args {

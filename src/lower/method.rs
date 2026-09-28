@@ -196,21 +196,36 @@ fn compare_op(name: &str) -> Option<BinaryOperator> {
 
 /// `vec3::splat(x)`, `vec4::from(v)`, `vec4::ZERO`: a call or a constant
 /// qualified by the type it belongs to.
+/// The type a qualified call or constant is on, as its path spells it.
+pub(super) struct OnType<'a> {
+    pub path: &'a [String],
+    /// A vector's scalar, when a turbofish says it: `Vec3::<u32>::splat(1)`.
+    pub turbofish: Option<Scalar>,
+    /// Where the value goes, for a vector whose path says no scalar.
+    pub hint: Option<Scalar>,
+}
+
+impl OnType<'_> {
+    /// The vector's scalar, from its name, its turbofish or where it goes.
+    fn scalar(&self, name: &str, shorthand: Option<Scalar>) -> Result<Option<Scalar>, Error> {
+        Ok(super::vec_scalar(name, shorthand, self.turbofish)?.or(self.hint))
+    }
+}
+
 pub(super) fn lower_qualified_call(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
-    // The type it is on, and a vector's scalar when a turbofish says it.
-    (ty_path, ty_scalar): (&[String], Option<Scalar>),
+    on: OnType,
     method: &str,
     args: &[&Expr],
     env: &mut Env,
 ) -> Result<Typed, Error> {
-    let ty_name = &super::last(ty_path);
+    let ty_name = &super::last(on.path);
     // `T::default()` is how Rust spells a zero value, and WGSL's `T()` is the
     // same thing. Any type may have one, so this comes before the vector names.
     if method == "default" && args.is_empty() {
-        if let Some(ty) = super::call::zero_value_type(ctx, ty_path, ty_scalar)? {
+        if let Some(ty) = super::call::zero_value_type(ctx, on.path, on.turbofish, on.hint)? {
             let handle = function
                 .expressions
                 .append(Expression::ZeroValue(ty), naga::Span::UNDEFINED);
@@ -221,7 +236,7 @@ pub(super) fn lower_qualified_call(
     let Some((size, shorthand)) = parse_vec_ident(ty_name) else {
         return Err(Error::UnsupportedMethod(format!("{ty_name}::{method}")));
     };
-    let shorthand = super::vec_scalar(ty_name, shorthand, ty_scalar)?;
+    let shorthand = on.scalar(ty_name, shorthand)?;
 
     match (method, args) {
         ("splat", [value]) => {
@@ -269,10 +284,10 @@ pub(super) fn lower_qualified_const(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
-    ty_name: &str,
-    ty_scalar: Option<Scalar>,
+    on: OnType,
     constant: &str,
 ) -> Result<Typed, Error> {
+    let ty_name = &super::last(on.path);
     if let Some(value) = ctx.scope.enum_variant(ty_name, constant) {
         let ty = ctx.intern_scalar(Scalar::U32);
         let handle = function.expressions.append(
@@ -284,7 +299,7 @@ pub(super) fn lower_qualified_const(
     let Some((size, shorthand)) = parse_vec_ident(ty_name) else {
         return Err(Error::UnknownIdent(format!("{ty_name}::{constant}")));
     };
-    let scalar = super::vec_scalar(ty_name, shorthand, ty_scalar)?.unwrap_or(Scalar::F32);
+    let scalar = on.scalar(ty_name, shorthand)?.unwrap_or(Scalar::F32);
     let ty = ctx.intern_vector(size, scalar);
     match constant {
         "ZERO" => {
