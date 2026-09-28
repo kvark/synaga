@@ -148,6 +148,8 @@ pub enum Error {
     MixedStructBindings(String),
     #[error("`{0}` is `#[repr(C)]`, which says the host shares it, but {1}")]
     HostLayout(String, String),
+    #[error("`{0}::default()` is zero on the GPU, and in Rust too only if `{1}` derives `Default`, which it does not: derive it, or spell the value out")]
+    UnseenDefault(String, String),
     #[error("entry point `{0}` returns a struct with field bindings; drop `#[output(...)]`")]
     RedundantReturnBinding(String),
     #[error("`#[location]` field `{0}` is an integer, so it needs `#[flat]`")]

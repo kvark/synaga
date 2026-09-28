@@ -142,13 +142,45 @@ fn the_wgsl_shaped_spelling_still_works() {
 #[test]
 fn default_is_the_zero_value() {
     // WGSL spells a zero value `T()`, and Rust spells it `T::default()`.
-    let named = roundtrip("struct S { a: f32, b: Vec3 } fn f() -> S { S::default() }");
-    let called = roundtrip("struct S { a: f32, b: Vec3 } fn f() -> S { S() }");
+    let decl = "#[derive(Default)] struct S { a: f32, b: Vec3 }";
+    let named = roundtrip(&format!("{decl} fn f() -> S {{ S::default() }}"));
+    let called = roundtrip(&format!("{decl} fn f() -> S {{ S() }}"));
     assert_eq!(named, called);
 
     // Not just structs: anything with a zero value has one.
     assert!(roundtrip("fn f() -> Mat3 { Mat3::default() }").contains("mat3x3<f32>()"));
     assert!(roundtrip("fn f() -> u32 { u32::default() }").contains("u32()"));
+}
+
+#[test]
+fn default_is_zero_only_where_it_is_derived() {
+    // A `Default` written by hand is where the transpiler cannot see it, in
+    // the host, and need not be zero.
+    let msg = reject("struct S { a: f32 } fn f() -> S { S::default() }");
+    assert!(
+        msg.contains(
+            "`S::default()` is zero on the GPU, and in Rust too only if `S` derives `Default`, \
+             which it does not"
+        ),
+        "{msg}"
+    );
+    // A derived one calls each field's.
+    let nested = "struct Inner { a: f32 } #[derive(Default)] struct S { i: Inner, b: f32 }";
+    let msg = reject(&format!("{nested} fn f() -> S {{ S::default() }}"));
+    assert!(msg.contains("only if `Inner` derives `Default`"), "{msg}");
+
+    // `..Default::default()` is the struct's own `default()`, for the fields
+    // left out.
+    let msg =
+        reject("struct S { a: f32, b: f32 } fn f() -> S { S { a: 1.0, ..Default::default() } }");
+    assert!(msg.contains("`S::default()` is zero"), "{msg}");
+    let msg = reject(&format!(
+        "{nested} fn f() -> S {{ S {{ b: 1.0, ..Default::default() }} }}"
+    ));
+    assert!(msg.contains("only if `Inner` derives `Default`"), "{msg}");
+    validate_only(&format!(
+        "{nested} fn f(i: Inner) -> S {{ S {{ i, ..Default::default() }} }}"
+    ));
 }
 
 #[test]

@@ -239,7 +239,9 @@ The rest of `core` a shader reaches for works too: `core::f32::consts::PI`,
 `u32::MAX`, `x.to_bits()` and `f32::from_bits(n)`, `n.rotate_left(k)`,
 `n.unsigned_abs()`, `mask.all()` on a `Vec3<bool>`, and `v.cast::<i32>()`, which
 converts every lane as `as` converts a scalar. A struct literal may end in
-`..Default::default()` or `..other`.
+`..Default::default()` or `..other`. `T::default()` is the zero value, so a
+struct has to derive `Default` for it: one written by hand would be in the
+host, where the transpiler cannot see what it returns.
 
 ### Items, as Rust has them
 

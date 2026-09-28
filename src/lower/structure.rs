@@ -21,6 +21,7 @@ pub(super) fn lower_struct_item(
     }
     let name = item.ident.to_string();
     let repr = host_repr(&item.attrs, &name)?;
+    let derives_default = derives_default(&item.attrs);
     let named = match item.fields {
         Fields::Named(fields) => fields,
         Fields::Unnamed(_) => return Err(Error::UnsupportedItem("tuple struct".into())),
@@ -97,7 +98,47 @@ pub(super) fn lower_struct_item(
     if let Some(repr) = repr.filter(|_| bound == 0) {
         ctx.host_reprs.insert(handle, repr);
     }
+    if derives_default {
+        ctx.derived_defaults.insert(handle);
+    }
     Ok(handle)
+}
+
+/// Does a struct with `attrs` derive `Default`?
+fn derives_default(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .filter(|a| a.path().is_ident("derive"))
+        .any(|attr| {
+            let mut found = false;
+            // A derive list that does not parse is `rustc`'s to report.
+            let _ = attr.parse_nested_meta(|meta| {
+                let last = meta.path.segments.last();
+                found |= last.is_some_and(|s| s.ident == "Default");
+                Ok(())
+            });
+            found
+        })
+}
+
+/// The struct in `ty` whose `default()` may not be zero, if there is one.
+///
+/// `T::default()` lowers to the zero value, which is what a derived `Default`
+/// gives when every field's is zero too, as a scalar's, vector's and
+/// matrix's are. A struct's `Default` written by hand is in the host, where
+/// the shader cannot see it, and need not be zero: a skinned vertex's weights
+/// may default to all on its first joint.
+pub(super) fn unseen_default(ctx: &Context, ty: Handle<Type>) -> Option<String> {
+    match ctx.module.types[ty].inner {
+        TypeInner::Array { base, .. } => unseen_default(ctx, base),
+        TypeInner::Struct { ref members, .. } => {
+            if !ctx.derived_defaults.contains(&ty) {
+                return Some(ctx.module.types[ty].name.clone().unwrap_or_default());
+            }
+            members.iter().find_map(|m| unseen_default(ctx, m.ty))
+        }
+        _ => None,
+    }
 }
 
 /// Check every `#[repr(C)]` struct in `ty`, the type of a buffer: the GPU
@@ -345,7 +386,22 @@ pub(super) fn lower_struct_lit(
             return Err(Error::StructFieldCount(name));
         }
         None => Rest::None,
-        Some(rest) if is_default(rest, &name) => Rest::Zero,
+        Some(rest) if is_default(rest, &name) => {
+            // Only the fields left out come from the default, but `rustc`
+            // calls the struct's own `default()` for them.
+            let unseen = if ctx.derived_defaults.contains(&ty) {
+                expected
+                    .iter()
+                    .filter(|(n, _)| !provided.iter().any(|(p, _, _)| p == n))
+                    .find_map(|&(_, want_ty)| unseen_default(ctx, want_ty))
+            } else {
+                Some(name.clone())
+            };
+            if let Some(unseen) = unseen {
+                return Err(Error::UnseenDefault(name, unseen));
+            }
+            Rest::Zero
+        }
         Some(rest) => {
             let (base, base_ty) = super::expr::lower_expr(ctx, function, body, rest, env)?;
             if base_ty != ty {
