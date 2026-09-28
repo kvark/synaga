@@ -161,7 +161,23 @@ fn lower_value_method(
             let handle = emit(function, body, Expression::Binary { op, left, right })?;
             Ok((handle, ty))
         }
-        _ => Err(Error::UnsupportedMethod(name)),
+        _ => {
+            // `y.asin()`, `y.atan2(x)`: the same builtins as the free functions,
+            // with the receiver as the first argument. `f32` already has these
+            // methods, so rustc accepts them.
+            if let Some(typed) = super::call::lower_math_method(
+                ctx,
+                function,
+                body,
+                (base, base_ty),
+                &name,
+                args,
+                env,
+            )? {
+                return Ok(typed);
+            }
+            Err(Error::UnsupportedMethod(name))
+        }
     }
 }
 
@@ -253,6 +269,14 @@ pub(super) fn lower_qualified_const(
     ty_name: &str,
     constant: &str,
 ) -> Result<Typed, Error> {
+    if let Some(value) = ctx.scope.enum_variant(ty_name, constant) {
+        let ty = ctx.intern_scalar(Scalar::U32);
+        let handle = function.expressions.append(
+            Expression::Literal(naga::Literal::U32(value)),
+            naga::Span::UNDEFINED,
+        );
+        return Ok((handle, ty));
+    }
     let Some((size, shorthand)) = parse_vec_ident(ty_name) else {
         return Err(Error::UnknownIdent(format!("{ty_name}::{constant}")));
     };

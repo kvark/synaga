@@ -86,6 +86,16 @@ fn lower_const_expr(
         }
         Expr::Path(path) => {
             let segments = super::path_segments(&path.path);
+            if let [enumeration, variant] = segments.as_slice() {
+                if let Some(value) = ctx.scope.enum_variant(enumeration, variant) {
+                    let ty = ctx.intern_scalar(Scalar::U32);
+                    let handle = ctx.module.global_expressions.append(
+                        Expression::Literal(naga::Literal::U32(value)),
+                        Span::UNDEFINED,
+                    );
+                    return Ok((handle, ty));
+                }
+            }
             let index = ctx
                 .constant(&segments)?
                 .ok_or_else(|| Error::UnknownIdent(super::last(&segments)))?;

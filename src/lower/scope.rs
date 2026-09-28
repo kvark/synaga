@@ -83,9 +83,19 @@ pub(crate) struct Scope {
     sources: Vec<SourceScope>,
     pub entries: Vec<Entry>,
     by_name: HashMap<(Ns, String), Vec<usize>>,
+    /// `Mode::Variance` is the discriminant, as a `u32`. Shaders compare and
+    /// cast these; they do not pass the enum type itself to Naga.
+    variants: HashMap<(String, String), u32>,
 }
 
 impl Scope {
+    /// The `u32` discriminant of `Enum::Variant`, if that enum was declared.
+    pub fn enum_variant(&self, enumeration: &str, variant: &str) -> Option<u32> {
+        self.variants
+            .get(&(enumeration.to_string(), variant.to_string()))
+            .copied()
+    }
+
     /// Index the items of `files`, dropping any whose `#[cfg]` does not hold.
     pub fn index(files: Vec<(Option<String>, syn::File)>, cfg: &Cfg) -> Result<Self, IndexError> {
         let mut scope = Scope::default();
@@ -104,6 +114,16 @@ impl Scope {
                 if let Item::Use(item_use) = &item {
                     let scope_of = &mut scope.sources[source];
                     collect_use(&item_use.tree, Vec::new(), scope_of);
+                    continue;
+                }
+                if let Item::Enum(enumeration) = &item {
+                    let variants =
+                        enum_variants(enumeration).map_err(|error| IndexError { source, error })?;
+                    for (variant, value) in variants {
+                        scope
+                            .variants
+                            .insert((enumeration.ident.to_string(), variant), value);
+                    }
                     continue;
                 }
                 let name = item_name(&item);
@@ -288,6 +308,41 @@ fn collect_use(tree: &UseTree, mut prefix: Vec<String>, scope: &mut SourceScope)
                 collect_use(tree, prefix.clone(), scope);
             }
         }
+    }
+}
+
+/// Fieldless variants become `u32` discriminants. An omitted one is one past
+/// the previous, starting at zero, as in Rust.
+fn enum_variants(item: &syn::ItemEnum) -> Result<Vec<(String, u32)>, Error> {
+    let mut next = 0u32;
+    let mut variants = Vec::with_capacity(item.variants.len());
+    for variant in &item.variants {
+        if !matches!(variant.fields, syn::Fields::Unit) {
+            return Err(Error::UnsupportedItem(format!(
+                "enum variant `{}::{}` with fields",
+                item.ident, variant.ident
+            )));
+        }
+        if let Some((_, expr)) = &variant.discriminant {
+            next = enum_discriminant(expr)?;
+        }
+        variants.push((variant.ident.to_string(), next));
+        next = next.saturating_add(1);
+    }
+    Ok(variants)
+}
+
+fn enum_discriminant(expr: &syn::Expr) -> Result<u32, Error> {
+    match expr {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(value),
+            ..
+        }) => value.base10_parse().map_err(Error::from),
+        syn::Expr::Paren(inner) => enum_discriminant(&inner.expr),
+        syn::Expr::Group(inner) => enum_discriminant(&inner.expr),
+        _ => Err(Error::UnsupportedConstExpr(
+            "enum discriminant must be an integer literal".into(),
+        )),
     }
 }
 

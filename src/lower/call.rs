@@ -1,4 +1,4 @@
-use naga::{Block, Expression, Function, Handle, MathFunction, Span, Statement};
+use naga::{Block, Expression, Function, Handle, MathFunction, Span, Statement, Type};
 use syn::Expr;
 
 use super::emit::emit;
@@ -454,6 +454,36 @@ fn math_spec(name: &str) -> Option<MathSpec> {
     Some(MathSpec { fun, argc, result })
 }
 
+/// `y.sin()`, `y.atan2(x)`, `v.dot(w)`: a math builtin with the receiver as
+/// its first argument. `None` when `name` is not one, or the arity does not
+/// match, so some other method can still claim it.
+pub(super) fn lower_math_method(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    receiver: Typed,
+    name: &str,
+    args: &[&syn::Expr],
+    env: &mut Env,
+) -> Result<Option<Typed>, Error> {
+    let Some(spec) = math_spec(name) else {
+        return Ok(None);
+    };
+    if args.len() + 1 != spec.argc {
+        return Ok(None);
+    }
+    let mut hint = ctx.shape(receiver.1).int_hint();
+    let mut handles = vec![receiver.0];
+    let mut tys = vec![receiver.1];
+    for arg in args {
+        let (handle, ty) = super::expr::lower_expr_hinted(ctx, function, body, arg, env, hint)?;
+        hint = hint.or_else(|| ctx.shape(ty).int_hint());
+        handles.push(handle);
+        tys.push(ty);
+    }
+    finish_math(ctx, function, body, spec, &handles, &tys).map(Some)
+}
+
 fn lower_math(
     ctx: &mut Context,
     function: &mut Function,
@@ -476,6 +506,17 @@ fn lower_math(
         args.push(h);
         tys.push(ty);
     }
+    finish_math(ctx, function, body, spec, &args, &tys)
+}
+
+fn finish_math(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    spec: MathSpec,
+    args: &[Handle<Expression>],
+    tys: &[Handle<Type>],
+) -> Result<Typed, Error> {
     let result_ty = match spec.result {
         MathResult::SameAsFirst => tys[0],
         MathResult::ScalarOfFirst => {
