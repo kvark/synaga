@@ -61,9 +61,130 @@ pub(super) fn lower_block_hinted(
     env: &mut Env,
     hint: Option<naga::Scalar>,
 ) -> Result<Option<Typed>, Error> {
+    lower_stmts(ctx, function, body, &block.stmts, env, hint)
+}
+
+/// A function's body. What it ends in is returned from where it is, so an
+/// `if` in tail position returns from each branch, as a `return` in each
+/// would, rather than through a local both branches store to: idiomatic Rust
+/// leaves the `return`s out, and the module should not be the worse for it.
+pub(super) fn lower_body(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    block: &SynBlock,
+    env: &mut Env,
+) -> Result<(), Error> {
+    if function.result.is_none() {
+        // `rustc` has checked that whatever the body ends in is `()`.
+        let _ = lower_block(ctx, function, body, block, env)?;
+        return Ok(());
+    }
+    lower_returning_block(ctx, function, body, block, env)?;
+    if !always_jumps(body) {
+        return Err(Error::MissingReturn(
+            function.name.clone().unwrap_or_default(),
+        ));
+    }
+    Ok(())
+}
+
+/// A block the function returns the value of.
+fn lower_returning_block(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    block: &SynBlock,
+    env: &mut Env,
+) -> Result<(), Error> {
+    // An `if` or a block is taken apart even when a branch ends in its own
+    // `return`, as in `if c { return a; } else { b }`.
+    let returns = |tail: &Expr| match tail {
+        Expr::If(if_expr) => if_expr.else_branch.is_some(),
+        Expr::Block(_) | Expr::Unsafe(_) => true,
+        other => yields_value(other),
+    };
+    match block.stmts.split_last() {
+        Some((Stmt::Expr(tail, None), rest)) if returns(tail) => {
+            let _ = lower_stmts(ctx, function, body, rest, env, None)?;
+            lower_returning_expr(ctx, function, body, tail, env)
+        }
+        // No value at the end: the block leaves by its own `return`s, which
+        // the caller checks for.
+        _ => {
+            let hint = return_hint(ctx, function);
+            let _ = lower_stmts(ctx, function, body, &block.stmts, env, hint)?;
+            Ok(())
+        }
+    }
+}
+
+/// An expression in tail position, returned: each branch of an `if` returns
+/// its own value.
+fn lower_returning_expr(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    expr: &Expr,
+    env: &mut Env,
+) -> Result<(), Error> {
+    match expr {
+        Expr::Paren(inner) => lower_returning_expr(ctx, function, body, &inner.expr, env),
+        Expr::Group(inner) => lower_returning_expr(ctx, function, body, &inner.expr, env),
+        Expr::Block(syn::ExprBlock { block, .. }) | Expr::Unsafe(syn::ExprUnsafe { block, .. }) => {
+            env.push_scope();
+            lower_returning_block(ctx, function, body, block, env)?;
+            env.pop_scope();
+            Ok(())
+        }
+        Expr::If(syn::ExprIf {
+            cond,
+            then_branch,
+            else_branch: Some((_, else_expr)),
+            ..
+        }) => {
+            let (condition, _) = lower_expr(ctx, function, body, cond, env)?;
+            let mut accept = Block::new();
+            env.push_scope();
+            lower_returning_block(ctx, function, &mut accept, then_branch, env)?;
+            env.pop_scope();
+            let mut reject = Block::new();
+            env.push_scope();
+            lower_returning_expr(ctx, function, &mut reject, else_expr, env)?;
+            env.pop_scope();
+            body.push(
+                Statement::If {
+                    condition,
+                    accept,
+                    reject,
+                },
+                Span::UNDEFINED,
+            );
+            Ok(())
+        }
+        other => {
+            let hint = return_hint(ctx, function);
+            if let Some((value, ty)) = lower_tail(ctx, function, body, other, env, hint)? {
+                check_return(function, ty)?;
+                body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Statements, in order, and the value of the last if it has one.
+fn lower_stmts(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    stmts: &[Stmt],
+    env: &mut Env,
+    hint: Option<naga::Scalar>,
+) -> Result<Option<Typed>, Error> {
     let mut tail = None;
-    for (i, stmt) in block.stmts.iter().enumerate() {
-        let last = i + 1 == block.stmts.len();
+    for (i, stmt) in stmts.iter().enumerate() {
+        let last = i + 1 == stmts.len();
         match stmt {
             Stmt::Local(local) => {
                 lower_local(ctx, function, body, local, env)?;
@@ -138,7 +259,9 @@ pub(super) fn lower_tail(
 ) -> Result<Option<Typed>, Error> {
     match expr {
         Expr::Call(call) => super::call::lower_call_any(ctx, function, body, call, env, hint),
-        Expr::MethodCall(call) => super::method::lower_method_any(ctx, function, body, call, env),
+        Expr::MethodCall(call) => {
+            super::method::lower_method_any(ctx, function, body, call, env, hint)
+        }
         Expr::If(if_expr) => lower_if_any(ctx, function, body, if_expr, env, hint),
         Expr::Block(syn::ExprBlock { block, .. }) | Expr::Unsafe(syn::ExprUnsafe { block, .. }) => {
             env.push_scope();
@@ -186,10 +309,10 @@ fn lower_stmt_expr(
         // Some builtins write rather than produce, so they only make sense here.
         Expr::Call(call) => super::call::lower_call_stmt(ctx, function, body, call, env),
         Expr::MethodCall(call) => {
-            super::method::lower_method_any(ctx, function, body, call, env).map(|_| ())
+            super::method::lower_method_any(ctx, function, body, call, env, None).map(|_| ())
         }
         Expr::Continue(cont) => lower_continue(body, cont),
-        // `unsafe` is for `rustc`, which wants it around `get_mut`. The shader
+        // `unsafe` is for `rustc`, and an older `get_mut` wanted it. The shader
         // has nothing to say about it.
         Expr::Block(syn::ExprBlock { block, .. }) | Expr::Unsafe(syn::ExprUnsafe { block, .. }) => {
             env.push_scope();

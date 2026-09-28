@@ -92,7 +92,6 @@ pub fn vs(#[location(0)] pos: Vec3, #[location(1)] uv: Vec2) -> VsOut {
 }
 
 #[entry_point(fragment)]
-#[output(location(0))]
 pub fn fs(input: VsOut) -> Vec4 {
     albedo.sample(&linear, input.uv)
 }
@@ -109,9 +108,19 @@ the ones a host that binds by name looks for.
 ### Entry points and their interface
 
 `#[entry_point(vertex)]`, `#[entry_point(fragment)]` or
-`#[entry_point(compute, threads(8, 4))]`. Parameters carry `#[location(N)]` or
-`#[builtin(name)]`; a fragment shader returning a bare value says where it goes
-with `#[output(location(0))]`.
+`#[entry_point(compute, threads(8, 4))]`. A parameter carries `#[location(N)]`
+or `#[builtin(name)]`, or is named after a builtin its stage takes and needs
+neither:
+
+```rust,ignore
+#[entry_point(compute, threads(64))]
+pub fn reset(global_invocation_id: Vec3<u32>, num_workgroups: Vec3<u32>) { .. }
+```
+
+A bare value an entry point returns is a vertex shader's position and a
+fragment shader's first colour target, `location(0)`. `#[output(..)]` on the
+function says otherwise, `#[output(builtin(frag_depth))]`; it is on the
+function because Rust has no attributes on types.
 
 A struct whose fields are all bound derives `Io`, which is what lets `rustc`
 accept the attributes on its fields. It counts the fields as read, since the
@@ -140,25 +149,27 @@ The address space is in the type: `Uniform<T>`, `Storage<T>`, `StorageMut<T>`,
 are their own types. Each derefs to what it holds, so `camera.view_proj` reads
 through it.
 
-None of them is a `static mut`. Other invocations run at the same time and may
-write the same memory, which Rust calls shared mutable state; edition 2024
-refuses even a read through a `static mut`. So a write goes through
-`get_mut`, which is `unsafe` because the shader, not the compiler, keeps the
-invocations apart:
+None of them is a `static mut`, since edition 2024 refuses even a read through
+one. A write goes through `get_mut`:
 
 ```rust,ignore
 pub static particles: StorageMut<[Particle]> = group(0).binding(0);
 
-let p = particles[i];                                  // a read needs nothing
-unsafe { particles.get_mut()[i].life -= delta };       // a write says so
+let p = particles[i];                       // a read derefs
+particles.get_mut()[i].life -= delta;       // a write says so
 ```
+
+Other invocations run at the same time and may write the same memory, and the
+shader keeps them apart, as it has to in WGSL. `get_mut` hands out `&mut` from
+`&self`, which would be unsound if it ever returned on the CPU; it does not,
+so it is not `unsafe`.
 
 Atomics are `AtomicU32` and `AtomicI32`, with the standard methods but no
 `Ordering`, since WGSL's atomics are relaxed and nothing stronger:
 `count.fetch_add(1)`, `lock.compare_exchange_weak(0, 1)`, which hands back a
 plain `{ old_value, exchanged }`. They take `&self`, as the standard ones do, so
-a buffer changed only through its atomics needs no `unsafe` at all. On the CPU
-they are real atomics.
+a buffer changed only through its atomics needs no `get_mut`. On the CPU they
+are real atomics.
 
 ### Textures and ray queries are methods
 
@@ -183,6 +194,21 @@ texture.
 
 An array texture takes its layer after the coordinate, as WGSL does:
 `layers.sample_level(&s, uv, layer, 0.0)`.
+
+### Math, as `f32` and glam name it
+
+`x.sqrt()`, `y.atan2(x)`, `a.max(b)`, `v.normalize()`, `v.dot(w)`, `a.lerp(b, t)`:
+math is methods, named as `f32` names them and as glam names what only a vector
+has. Each means what the Rust method means. Where the GPU builtin of that name
+does something else, the difference is made up, as `x.fract()` is
+`x - x.trunc()`, or refused: `x.round()` takes a half away from zero in Rust and
+to the even neighbour on the GPU, so the shader says `x.round_ties_even()`.
+
+The rest of `core` a shader reaches for works too: `core::f32::consts::PI`,
+`u32::MAX`, `x.to_bits()` and `f32::from_bits(n)`, `n.rotate_left(k)`,
+`n.unsigned_abs()`, `mask.all()` on a `Vec3<bool>`, and `v.cast::<i32>()`, which
+converts every lane as `as` converts a scalar. A struct literal may end in
+`..Default::default()` or `..other`.
 
 ### Items, as Rust has them
 
@@ -236,8 +262,9 @@ returns. A call that returns nothing can end a block, as in Rust.
 - out-parameters: `&mut T` is WGSL's `ptr<function, T>`; `&T` is the same
   pointer with writes refused
 - `const NAME: T = …` (literals, vector/matrix constructors, other constants,
-  `cfg!(..)`)
-- structs, their literals and fields; arrays `[T; N]` and `[a, b, c]`; `[T]`
+  `u32::MAX` and the rest of a primitive's own, `core::f32::consts`, `cfg!(..)`)
+- structs, their literals, with `..Default::default()` or `..other` for the rest,
+  and fields; arrays `[T; N]` and `[a, b, c]`; `[T]`
   for a runtime-sized storage buffer; `BindingArray<T>` and
   `BindingArray<T, N>`
 - math builtins: `dot`, `cross`, `normalize`, `length`, `abs`, `min`, `max`,

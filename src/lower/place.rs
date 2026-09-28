@@ -45,8 +45,7 @@ pub(super) fn lower_place(
         Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
             lower_place(ctx, function, body, &unary.expr, env)
         }
-        // `buf.get_mut()` is how Rust writes to a resource: the same storage,
-        // with the `unsafe` that says the shader keeps its invocations apart.
+        // `buf.get_mut()` is how Rust writes to a resource: the same storage.
         Expr::MethodCall(call) if is_get_mut(call) => {
             lower_place(ctx, function, body, &call.receiver, env)
         }

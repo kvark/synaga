@@ -47,7 +47,6 @@ pub fn vs_main(vertex: Vertex) -> VertexOutput {
 }
 
 #[entry_point(fragment)]
-#[output(location(0))]
 pub fn fs_main(vertex: VertexOutput) -> Vec4 {
     vertex.color * sprite_texture.sample_level(&sprite_sampler, vertex.tex_coords, 0.0)
 }

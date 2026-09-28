@@ -104,9 +104,6 @@ pub(super) fn lower_struct_lit(
     if lit.qself.is_some() {
         return Err(Error::UnsupportedExpr("struct literal".into()));
     }
-    if lit.rest.is_some() {
-        return Err(Error::UnsupportedExpr("struct rest `..`".into()));
-    }
     let path = super::path_segments(&lit.path);
     let name = super::last(&path);
     let ty = ctx
@@ -139,24 +136,62 @@ pub(super) fn lower_struct_lit(
         provided.push((fname, expr, fty));
     }
 
-    if provided.len() != expected.len() {
-        return Err(Error::StructFieldCount(name));
-    }
+    // `..Default::default()` leaves the other fields zero, which is what a
+    // shader struct's `Default` is; `..other` takes them from `other`.
+    let rest = match lit.rest.as_deref() {
+        None if provided.len() != expected.len() => {
+            return Err(Error::StructFieldCount(name));
+        }
+        None => Rest::None,
+        Some(rest) if is_default(rest, &name) => Rest::Zero,
+        Some(rest) => {
+            let (base, base_ty) = super::expr::lower_expr(ctx, function, body, rest, env)?;
+            if base_ty != ty {
+                return Err(Error::TypeMismatch);
+            }
+            Rest::From(base)
+        }
+    };
 
     let mut components = Vec::with_capacity(expected.len());
-    for (want_name, want_ty) in &expected {
-        let found = provided
-            .iter()
-            .find(|(n, _, _)| n == want_name)
-            .ok_or_else(|| Error::MissingStructField(want_name.clone()))?;
-        if found.2 != *want_ty {
-            return Err(Error::TypeMismatch);
-        }
-        components.push(found.1);
+    for (index, (want_name, want_ty)) in expected.iter().enumerate() {
+        let component = match (provided.iter().find(|(n, _, _)| n == want_name), &rest) {
+            (Some(&(_, value, ty)), _) if ty == *want_ty => value,
+            (Some(_), _) => return Err(Error::TypeMismatch),
+            (None, Rest::Zero) => function
+                .expressions
+                .append(Expression::ZeroValue(*want_ty), Span::UNDEFINED),
+            (None, &Rest::From(base)) => {
+                let index = index as u32;
+                emit(function, body, Expression::AccessIndex { base, index })?
+            }
+            (None, Rest::None) => return Err(Error::MissingStructField(want_name.clone())),
+        };
+        components.push(component);
     }
 
     let handle = emit(function, body, Expression::Compose { ty, components })?;
     Ok((handle, ty))
+}
+
+/// Where the fields a struct literal leaves out come from.
+enum Rest {
+    None,
+    Zero,
+    From(Handle<Expression>),
+}
+
+/// `Default::default()` or `Name::default()`, for the struct `name`.
+fn is_default(expr: &syn::Expr, name: &str) -> bool {
+    let syn::Expr::Call(call) = expr else {
+        return false;
+    };
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return false;
+    };
+    let segments = super::path_segments(&path.path);
+    call.args.is_empty()
+        && matches!(&segments[..], [.., ty, f] if f == "default" && (ty == "Default" || ty == name))
 }
 
 pub(super) fn lower_struct_field(

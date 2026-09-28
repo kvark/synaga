@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use naga::{
     AddressSpace, ArraySize, Block, Expression, Function, FunctionArgument, FunctionResult, Handle,
-    Module, Scalar, ScalarKind, Span, Statement, Type, TypeInner, VectorSize,
+    Module, Scalar, ScalarKind, Span, Type, TypeInner, VectorSize,
 };
 use syn::{FnArg, Item, ItemFn, ReturnType, Signature};
 
@@ -31,7 +31,6 @@ mod vector;
 use emit::item_kind;
 use env::{Env, Slot};
 use scope::{Lowered, Ns, Scope, State};
-use stmt::always_jumps;
 
 /// A lowered expression and the type it evaluates to. Every `lower_*` that
 /// produces a value hands back one of these.
@@ -230,6 +229,18 @@ impl Context {
         match self.resolve(Ns::Value, path)? {
             Some(Lowered::Const(index)) => Ok(Some(index)),
             _ => Ok(None),
+        }
+    }
+
+    /// The value of `core::f32::consts::PI` and its siblings, by that path or
+    /// by the name a `use` brought in.
+    pub(super) fn float_const(&self, path: &[String]) -> Option<f32> {
+        match path {
+            [name] => {
+                let outside = self.scope.external_path(self.current, name)?;
+                constant::std_float(&outside)
+            }
+            _ => constant::std_float(path),
         }
     }
 
@@ -641,23 +652,8 @@ impl Context {
         let mut body = Block::new();
         env.push_scope();
         self.addressed = stmt::addressed_names(&item.block);
-        let hint = stmt::return_hint(self, &function);
-        let tail =
-            stmt::lower_block_hinted(self, &mut function, &mut body, &item.block, &mut env, hint)?;
+        stmt::lower_body(self, &mut function, &mut body, &item.block, &mut env)?;
         env.pop_scope();
-        match tail {
-            // A function returning nothing may still end in an expression with
-            // a value; `rustc` has checked that it is `()`.
-            Some((value, ty)) if function.result.is_some() => {
-                stmt::check_return(&function, ty)?;
-                body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED)
-            }
-            Some(_) => {}
-            None if function.result.is_some() && !always_jumps(&body) => {
-                return Err(Error::MissingReturn(function.name.unwrap_or_default()))
-            }
-            None => {}
-        }
         function.body = body;
         let handle = self.module.functions.append(function, Span::UNDEFINED);
         Ok(Lowered::Function(handle))
@@ -752,13 +748,21 @@ pub(super) fn wgsl_type_name(name: &str) -> &str {
 pub(super) fn turbofish_scalar(seg: &syn::PathSegment) -> Result<Option<Scalar>, Error> {
     match &seg.arguments {
         syn::PathArguments::None => Ok(None),
-        syn::PathArguments::AngleBracketed(args) if args.args.len() == 1 => {
-            match args.args.first() {
-                Some(syn::GenericArgument::Type(ty)) => lower_scalar_ident(ty).map(Some),
-                _ => Err(Error::UnsupportedType(seg.ident.to_string())),
-            }
+        syn::PathArguments::AngleBracketed(args) => {
+            angle_scalar(args, &seg.ident.to_string()).map(Some)
         }
         _ => Err(Error::UnsupportedType(seg.ident.to_string())),
+    }
+}
+
+/// The one scalar in `<u32>`, after `what`: `Vec3::<u32>`, `v.cast::<u32>()`.
+pub(super) fn angle_scalar(
+    args: &syn::AngleBracketedGenericArguments,
+    what: &str,
+) -> Result<Scalar, Error> {
+    match (args.args.len(), args.args.first()) {
+        (1, Some(syn::GenericArgument::Type(ty))) => lower_scalar_ident(ty),
+        _ => Err(Error::UnsupportedType(what.into())),
     }
 }
 

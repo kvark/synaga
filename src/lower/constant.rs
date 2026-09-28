@@ -87,18 +87,29 @@ fn lower_const_expr(
         Expr::Path(path) => {
             let segments = super::path_segments(&path.path);
             if let [enumeration, variant] = segments.as_slice() {
-                if let Some(value) = ctx.scope.enum_variant(enumeration, variant) {
-                    let ty = ctx.intern_scalar(Scalar::U32);
-                    let handle = ctx.module.global_expressions.append(
-                        Expression::Literal(naga::Literal::U32(value)),
-                        Span::UNDEFINED,
-                    );
+                let literal = match ctx.scope.enum_variant(enumeration, variant) {
+                    Some(value) => Some(naga::Literal::U32(value)),
+                    None => scalar_const(enumeration, variant),
+                };
+                if let Some(literal) = literal {
+                    let ty = ctx.intern_scalar(literal.scalar());
+                    let handle = ctx
+                        .module
+                        .global_expressions
+                        .append(Expression::Literal(literal), Span::UNDEFINED);
                     return Ok((handle, ty));
                 }
             }
-            let index = ctx
-                .constant(&segments)?
-                .ok_or_else(|| Error::UnknownIdent(super::last(&segments)))?;
+            let Some(index) = ctx.constant(&segments)? else {
+                let value = ctx
+                    .float_const(&segments)
+                    .ok_or_else(|| Error::UnknownIdent(super::last(&segments)))?;
+                let handle = ctx.module.global_expressions.append(
+                    Expression::Literal(naga::Literal::F32(value)),
+                    Span::UNDEFINED,
+                );
+                return Ok((handle, ctx.intern_scalar(Scalar::F32)));
+            };
             let info = &ctx.consts[index];
             let (handle, ty) = (info.handle, info.ty);
             let expr = ctx
@@ -119,6 +130,58 @@ fn lower_const_expr(
         }
         other => Err(Error::UnsupportedConstExpr(super::emit::expr_kind(other))),
     }
+}
+
+/// `u32::MAX`, `f32::EPSILON`: a primitive's own constants, as literals.
+/// There are none for an infinity or a NaN, which WGSL cannot write.
+pub(super) fn scalar_const(ty: &str, name: &str) -> Option<naga::Literal> {
+    use naga::Literal as L;
+    Some(match (ty, name) {
+        ("u32", "MAX") => L::U32(u32::MAX),
+        ("u32", "MIN") => L::U32(u32::MIN),
+        ("i32", "MAX") => L::I32(i32::MAX),
+        ("i32", "MIN") => L::I32(i32::MIN),
+        ("u32" | "i32", "BITS") => L::U32(32),
+        ("f32", "MAX") => L::F32(f32::MAX),
+        ("f32", "MIN") => L::F32(f32::MIN),
+        ("f32", "MIN_POSITIVE") => L::F32(f32::MIN_POSITIVE),
+        ("f32", "EPSILON") => L::F32(f32::EPSILON),
+        _ => return None,
+    })
+}
+
+/// `core::f32::consts::PI`, `std::f32::consts::TAU`: the constants `rustc`
+/// has for `f32`, which the shader takes as literals of the same value.
+pub(super) fn std_float(path: &[String]) -> Option<f32> {
+    use core::f32::consts as c;
+    let [.., ty, consts, name] = path else {
+        return None;
+    };
+    if ty != "f32" || consts != "consts" {
+        return None;
+    }
+    Some(match name.as_str() {
+        "PI" => c::PI,
+        "TAU" => c::TAU,
+        "E" => c::E,
+        "FRAC_PI_2" => c::FRAC_PI_2,
+        "FRAC_PI_3" => c::FRAC_PI_3,
+        "FRAC_PI_4" => c::FRAC_PI_4,
+        "FRAC_PI_6" => c::FRAC_PI_6,
+        "FRAC_PI_8" => c::FRAC_PI_8,
+        "FRAC_1_PI" => c::FRAC_1_PI,
+        "FRAC_2_PI" => c::FRAC_2_PI,
+        "FRAC_2_SQRT_PI" => c::FRAC_2_SQRT_PI,
+        "SQRT_2" => c::SQRT_2,
+        "FRAC_1_SQRT_2" => c::FRAC_1_SQRT_2,
+        "LN_2" => c::LN_2,
+        "LN_10" => c::LN_10,
+        "LOG2_E" => c::LOG2_E,
+        "LOG2_10" => c::LOG2_10,
+        "LOG10_E" => c::LOG10_E,
+        "LOG10_2" => c::LOG10_2,
+        _ => return None,
+    })
 }
 
 pub(super) fn strip_parens(expr: &Expr) -> &Expr {

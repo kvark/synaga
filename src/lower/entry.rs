@@ -182,6 +182,46 @@ fn map_builtin(name: &str) -> Result<BuiltIn, Error> {
     })
 }
 
+/// The builtin a parameter is by its name alone: `global_invocation_id:
+/// Vec3<u32>` needs no `#[builtin]`. Only what the stage takes as input
+/// counts, so a vertex shader's `position` is still an attribute that has to
+/// say its `#[location]`.
+fn input_builtin(stage: ShaderStage, name: &str) -> Option<BuiltIn> {
+    use BuiltIn as B;
+    let builtin = map_builtin(name).ok()?;
+    let takes = match stage {
+        ShaderStage::Vertex => matches!(builtin, B::VertexIndex | B::InstanceIndex),
+        ShaderStage::Fragment => matches!(builtin, B::Position { .. } | B::FrontFacing),
+        ShaderStage::Compute => matches!(
+            builtin,
+            B::GlobalInvocationId
+                | B::LocalInvocationId
+                | B::LocalInvocationIndex
+                | B::WorkGroupId
+                | B::NumWorkGroups
+        ),
+        _ => false,
+    };
+    takes.then_some(builtin)
+}
+
+/// Where a bare value an entry point returns goes when it does not say: a
+/// vertex shader's is its position, the one thing it has to produce, and a
+/// fragment shader's is its first colour target.
+fn default_output(stage: ShaderStage) -> Option<Binding> {
+    match stage {
+        ShaderStage::Vertex => Some(Binding::BuiltIn(BuiltIn::Position { invariant: false })),
+        ShaderStage::Fragment => Some(Binding::Location {
+            location: 0,
+            interpolation: None,
+            sampling: None,
+            blend_src: None,
+            per_primitive: false,
+        }),
+        _ => None,
+    }
+}
+
 /// Only vertex outputs and fragment inputs are interpolated, so only they need
 /// an interpolation mode.
 fn needs_interpolation(stage: ShaderStage, is_input: bool) -> bool {
@@ -304,7 +344,8 @@ pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> R
             } else {
                 let mut binding = info
                     .return_binding
-                    .ok_or_else(|| Error::MissingReturnBinding(name.clone()))?;
+                    .or_else(|| default_output(stage))
+                    .ok_or_else(|| Error::ComputeReturnsValue(name.clone()))?;
                 apply_default_interpolation(ctx, result_ty, &mut binding);
                 check_interpolation(&binding, &name, stage, false)?;
                 Some(FunctionResult {
@@ -351,9 +392,9 @@ pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> R
                 }
             }
             None => {
-                return Err(Error::MissingArgBinding(
-                    arg.name.clone().unwrap_or_default(),
-                ))
+                let name = arg.name.clone().unwrap_or_default();
+                let builtin = input_builtin(stage, &name).ok_or(Error::MissingArgBinding(name))?;
+                arg.binding = Some(Binding::BuiltIn(builtin));
             }
         }
     }
@@ -361,30 +402,8 @@ pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> R
     let mut body = naga::Block::new();
     env.push_scope();
     ctx.addressed = super::stmt::addressed_names(&item.block);
-    let hint = super::stmt::return_hint(ctx, &function);
-    let tail = super::stmt::lower_block_hinted(
-        ctx,
-        &mut function,
-        &mut body,
-        &item.block,
-        &mut env,
-        hint,
-    )?;
+    super::stmt::lower_body(ctx, &mut function, &mut body, &item.block, &mut env)?;
     env.pop_scope();
-    match tail {
-        Some((value, ty)) if function.result.is_some() => {
-            super::stmt::check_return(&function, ty)?;
-            body.push(
-                naga::Statement::Return { value: Some(value) },
-                naga::Span::UNDEFINED,
-            );
-        }
-        Some(_) => {}
-        None if function.result.is_some() && !super::stmt::always_jumps(&body) => {
-            return Err(Error::MissingReturn(function.name.unwrap_or_default()))
-        }
-        None => {}
-    }
     function.body = body;
 
     ctx.module.entry_points.push(EntryPoint {

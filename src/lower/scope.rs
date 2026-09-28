@@ -183,6 +183,36 @@ impl Scope {
             || rest.len() < path.len()
     }
 
+    /// Where `name`, as seen from source `from`, comes from outside the
+    /// sources: `PI` after `use core::f32::consts::PI`, or after a `use` of a
+    /// module that has that `use`. The path is the outside one.
+    pub fn external_path(&self, from: usize, name: &str) -> Option<Vec<String>> {
+        self.external_path_in(from, name, 0)
+    }
+
+    fn external_path_in(&self, from: usize, name: &str, depth: usize) -> Option<Vec<String>> {
+        if depth > 16 {
+            return None;
+        }
+        let scope = &self.sources[from];
+        if let Some(target) = scope.imports.get(name) {
+            let (last, modules) = strip_relative(target).split_last()?;
+            return match modules.last().and_then(|m| self.module(from, m)) {
+                Some(source) => self.external_path_in(source, last, depth + 1),
+                None => Some(target.clone()),
+            };
+        }
+        scope.globs.iter().find_map(|glob| {
+            match strip_relative(glob)
+                .last()
+                .and_then(|m| self.module(from, m))
+            {
+                Some(source) => self.external_path_in(source, name, depth + 1),
+                None => Some(glob.iter().cloned().chain([name.to_string()]).collect()),
+            }
+        })
+    }
+
     /// Which entry `path` names in namespace `ns`, as seen from source `from`.
     pub fn resolve(&self, from: usize, ns: Ns, path: &[String]) -> Result<Option<usize>, Error> {
         self.resolve_in(from, ns, path, 0, true)

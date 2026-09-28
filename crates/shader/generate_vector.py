@@ -30,8 +30,8 @@ macro_rules! vector_ops {
         vector_ops!(@lanewise BitXor, bitxor, BitXorAssign, bitxor_assign, $name);
     };
     (@group shift, $name:ty, $scalar:ty, $shift:ty) => {
-        vector_ops!(@shift Shl, shl, $name, $shift);
-        vector_ops!(@shift Shr, shr, $name, $shift);
+        vector_ops!(@shift Shl, shl, ShlAssign, shl_assign, $name, $shift);
+        vector_ops!(@shift Shr, shr, ShrAssign, shr_assign, $name, $shift);
     };
     (@group neg, $name:ty, $scalar:ty, $shift:ty) => {
         impl Neg for $name {
@@ -79,7 +79,8 @@ macro_rules! vector_ops {
             fn $assign_fn(&mut self, rhs: Self) { unimplemented_on_cpu() }
         }
     };
-    (@shift $trait:ident, $method:ident, $name:ty, $shift:ty) => {
+    (@shift $trait:ident, $method:ident, $assign:ident, $assign_fn:ident,
+     $name:ty, $shift:ty) => {
         impl $trait<$shift> for $name {
             type Output = Self;
             #[inline]
@@ -89,6 +90,114 @@ macro_rules! vector_ops {
             type Output = Self;
             #[inline]
             fn $method(self, rhs: u32) -> Self { unimplemented_on_cpu() }
+        }
+        impl $assign<$shift> for $name {
+            #[inline]
+            fn $assign_fn(&mut self, rhs: $shift) { unimplemented_on_cpu() }
+        }
+        impl $assign<u32> for $name {
+            #[inline]
+            fn $assign_fn(&mut self, rhs: u32) { unimplemented_on_cpu() }
+        }
+    };
+}
+
+/// The math on a vector, named as Rust names it: `f32`'s own methods
+/// (`v.sqrt()`, `v.max(w)`, `v.mul_add(a, b)`), and glam's for what only a
+/// vector has (`v.dot(w)`, `v.normalize()`, `a.lerp(b, t)`).
+///
+/// Each means what the Rust method means. Two of the GPU's builtins round
+/// differently from the Rust methods of the same name, so `fract` here is
+/// `self - self.trunc()` as `f32::fract` is, and the GPU's `round`, which
+/// takes a half to the even neighbour, is `round_ties_even`. The free
+/// functions keep WGSL's names and meanings: `fract(v)` is `v - floor(v)`.
+macro_rules! vector_math {
+    ($name:ty, $scalar:ty $(, $group:ident)*) => {
+        $(vector_math!(@group $group, $name, $scalar);)*
+    };
+
+    (@group ord, $name:ty, $scalar:ty) => {
+        impl $name {
+            /// The lesser of each pair of lanes.
+            #[inline]
+            pub fn min(self, rhs: Self) -> Self { unimplemented_on_cpu() }
+            /// The greater of each pair of lanes.
+            #[inline]
+            pub fn max(self, rhs: Self) -> Self { unimplemented_on_cpu() }
+            /// Each lane held between the lanes of `min` and `max`.
+            #[inline]
+            pub fn clamp(self, min: Self, max: Self) -> Self { unimplemented_on_cpu() }
+            /// The sum of the lane-wise products.
+            #[inline]
+            pub fn dot(self, rhs: Self) -> $scalar { unimplemented_on_cpu() }
+        }
+    };
+    (@group signed, $name:ty, $scalar:ty) => {
+        impl $name {
+            /// The magnitude of each lane.
+            #[inline]
+            pub fn abs(self) -> Self { unimplemented_on_cpu() }
+            /// `-1`, `0` or `1` per lane, by its sign.
+            #[inline]
+            pub fn signum(self) -> Self { unimplemented_on_cpu() }
+        }
+    };
+    (@group float, $name:ty, $scalar:ty) => {
+        vector_math!(@lanewise $name, abs floor ceil trunc round_ties_even fract sqrt recip
+            exp exp2 ln log2 sin cos tan asin acos atan sinh cosh tanh asinh acosh atanh
+            to_degrees to_radians normalize);
+        impl $name {
+            /// Each lane raised to the power `n`.
+            #[inline]
+            pub fn powf(self, n: $scalar) -> Self { unimplemented_on_cpu() }
+            /// The angle of each pair of lanes, `self` being `y`, as `f32::atan2`.
+            #[inline]
+            pub fn atan2(self, x: Self) -> Self { unimplemented_on_cpu() }
+            /// `self * a + b`: the GPU's `fma`.
+            #[inline]
+            pub fn mul_add(self, a: Self, b: Self) -> Self { unimplemented_on_cpu() }
+            /// The Euclidean length.
+            #[inline]
+            pub fn length(self) -> $scalar { unimplemented_on_cpu() }
+            /// The squared length, which saves the square root.
+            #[inline]
+            pub fn length_squared(self) -> $scalar { unimplemented_on_cpu() }
+            /// The distance to `rhs`.
+            #[inline]
+            pub fn distance(self, rhs: Self) -> $scalar { unimplemented_on_cpu() }
+            /// This direction reflected off a surface facing `normal`, which
+            /// has to be normalized.
+            #[inline]
+            pub fn reflect(self, normal: Self) -> Self { unimplemented_on_cpu() }
+            /// This direction refracted through a surface facing `normal`,
+            /// with `eta` the ratio of the indices of refraction.
+            #[inline]
+            pub fn refract(self, normal: Self, eta: $scalar) -> Self { unimplemented_on_cpu() }
+            /// `self` at `s == 0` and `rhs` at `s == 1`: the GPU's `mix`.
+            #[inline]
+            pub fn lerp(self, rhs: Self, s: $scalar) -> Self { unimplemented_on_cpu() }
+        }
+    };
+    (@group bool, $name:ty, $scalar:ty) => {
+        impl $name {
+            /// Whether every lane is `true`.
+            #[inline]
+            pub fn all(self) -> bool { unimplemented_on_cpu() }
+            /// Whether any lane is `true`.
+            #[inline]
+            pub fn any(self) -> bool { unimplemented_on_cpu() }
+        }
+    };
+
+    // One-lane-in, one-lane-out methods that `f32` has under the same name,
+    // with the same meaning, which is all their documentation needs to say.
+    (@lanewise $name:ty, $($method:ident)*) => {
+        impl $name {
+            $(
+                #[doc = concat!("`f32::", stringify!($method), "` on each lane.")]
+                #[inline]
+                pub fn $method(self) -> Self { unimplemented_on_cpu() }
+            )*
         }
     };
 }"""
@@ -168,7 +277,29 @@ w('''//! Vector types.
 //!
 //! Comparisons are methods too. `a < b` in a shader yields one bool per lane,
 //! and Rust's `PartialOrd` yields a single `bool`, so the lane-wise forms are
-//! spelled `cmplt`, `cmple`, and so on, as glam spells them.''')
+//! spelled `cmplt`, `cmple`, and so on, as glam spells them.
+//!
+//! So is the math, named as `f32` names it, and as glam does for what only a
+//! vector has. `cast` converts the lanes, as `as` converts a scalar:
+//!
+//! ```no_run
+//! use synaga_shader::*;
+//!
+//! fn lambert(normal: Vec3, light: Vec3) -> f32 {
+//!     normal.normalize().dot(light).max(0.0)
+//! }
+//! fn inside(p: Vec2<i32>, extent: Vec2<i32>) -> bool {
+//!     p.cmpge(Vec2::ZERO).all() && p.cmplt(extent).all()
+//! }
+//! fn texel(uv: Vec2, size: Vec2<u32>) -> Vec2<i32> {
+//!     (uv * size.cast::<f32>()).cast()
+//! }
+//! ```
+//!
+//! Each means what the Rust method of that name means, which for two of them
+//! is not what the GPU builtin of that name does: `v.fract()` is
+//! `v - v.trunc()`, and the GPU's rounding is `v.round_ties_even()`. The free
+//! functions, `fract(v)` and `round(v)`, are the GPU's.''')
 w("")
 w("use core::ops::*;")
 w("")
@@ -225,6 +356,11 @@ for size in SIZES:
     w("    /// Every lane set to `v`.")
     w("    #[inline]")
     w(f"    pub const fn splat(v: T) -> Self {{ {ctor}({', '.join(['v'] * size)}) }}")
+    w("")
+    w("    /// Each lane converted to `U`, as `as` converts a scalar: `v.cast::<i32>()`")
+    w(f"    /// is WGSL's `vec{size}<i32>(v)`. Into `bool`, a lane is `true` unless it is zero.")
+    w("    #[inline]")
+    w(f"    pub fn cast<U: Scalar>(self) -> {vname(size, 'U')} {{ unimplemented_on_cpu() }}")
     if size < 4:
         nc = XYZW[size]
         w("")
@@ -302,6 +438,14 @@ for size in SIZES:
         if scalar in ("i32", "u32", "bool"):
             traits.append("not")
         w(f"vector_ops!({ty}, {scalar}, {vname(size, 'u32')}{''.join(', ' + t for t in traits)});")
+        groups = {"f32": ["ord", "float"], "i32": ["ord", "signed"], "u32": ["ord"], "bool": ["bool"]}
+        w(f"vector_math!({ty}, {scalar}{''.join(', ' + g for g in groups[scalar])});")
+        if size == 3 and scalar == "f32":
+            w(f"impl {ty} {{")
+            w("    /// The cross product, perpendicular to both.")
+            w("    #[inline]")
+            w("    pub fn cross(self, rhs: Self) -> Self { unimplemented_on_cpu() }")
+            w("}")
         w("")
 
 # component-type conversions, for a shader's `vec3<f32>(v)`
