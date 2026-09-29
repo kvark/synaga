@@ -606,6 +606,11 @@ fn layout_checks(shared: &BTreeSet<crate::lower::SharedStruct>) -> String {
          // `rustc`'s layout of each struct the shaders share with the host, checked\n\
          // against the GPU's. `synaga_shader::check_layout!` includes this in the\n\
          // module that lists the shader modules.\n\
+         //\n\
+         // `self::` keeps a module from being read as a crate of the same name,\n\
+         // which a crate that warns about `unused_qualifications` would call\n\
+         // unnecessary.\n\
+         #[allow(unused_qualifications)]\n\
          const _: () = {\n",
     );
     for s in shared {

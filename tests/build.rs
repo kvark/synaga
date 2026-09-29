@@ -601,6 +601,11 @@ fn the_layout_of_each_shared_struct_is_left_for_rustc_to_check() {
         .emit_to(&dir.join("out"))
         .expect("emit");
     let checks = std::fs::read_to_string(dir.join("out/gpu_layout.rs")).expect("read checks");
+    // A crate may warn about qualified paths; these have to be qualified.
+    assert!(
+        checks.contains("#[allow(unused_qualifications)]\nconst _: () = {"),
+        "{checks}"
+    );
     assert!(
         checks.contains("::core::mem::size_of::<self::params::Params>() == 16"),
         "{checks}"
