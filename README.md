@@ -157,6 +157,9 @@ pub static particles: StorageMut<[Particle]> = group(0).binding(0);
 
 let p = particles[i];                       // a read derefs
 particles.get_mut()[i].life -= delta;       // a write says so
+
+let p = &mut particles.get_mut()[i];        // or name the element
+p.pos += p.vel * delta;
 ```
 
 Other invocations run at the same time and may write the same memory, and the
@@ -294,6 +297,8 @@ returns. A call that returns nothing can end a block, as in Rust.
   field, a component, a matrix column
 - out-parameters: `&mut T` is WGSL's `ptr<function, T>`; `&T` is the same
   pointer with writes refused
+- `let p = &mut place;` and `let p = &place;` name a place, which is then read
+  and written through `p`
 - `const NAME: T = …` (literals, vector/matrix constructors, other constants,
   `u32::MAX` and the rest of a primitive's own, `core::f32::consts`, `cfg!(..)`)
 - structs, their literals, with `..Default::default()` or `..other` for the rest,
@@ -360,6 +365,10 @@ components picked out of a loaded value. That is what makes them assignable,
 and it means reading one field of a uniform buffer loads that field instead of
 the whole struct. A function argument is a value, so its fields can be read but
 not written.
+
+`let p = &mut particles.get_mut()[i];` makes `p` that pointer. The element's
+index is worked out once, where it is borrowed, and `p.x = 1.0` stores to the
+buffer rather than to a copy.
 
 ### Host-assigned bindings
 

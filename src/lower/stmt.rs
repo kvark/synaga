@@ -575,6 +575,11 @@ fn lower_local(
     }
 
     let (name, annot) = bind_ident_pat(&local.pat)?;
+    if let Some(init) = &local.init {
+        if init.diverge.is_none() && bind_borrow(ctx, function, body, &name, &init.expr, env)? {
+            return Ok(());
+        }
+    }
     let annot = annot.map(|ty| ctx.lower_type(ty)).transpose()?;
 
     // `let x: T;` declares the slot and leaves it to a later assignment, the
@@ -642,6 +647,42 @@ fn lower_local(
     }
     env.push(name, Slot::Ptr(pointer), ty);
     Ok(())
+}
+
+/// `let p = &mut place;` names the place: `p.x = 1.0` stores through it and
+/// `p.x` loads from it, as `place.x` would. Nothing is copied, and the place's
+/// index is worked out once, where the borrow is. Naga has no local that holds
+/// a pointer, so `p` is the pointer itself rather than a variable. A handle
+/// (`&tex`) and a borrow of a value that is not a place are left to `let`.
+fn bind_borrow(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    name: &str,
+    init: &Expr,
+    env: &mut Env,
+) -> Result<bool, Error> {
+    let Expr::Reference(reference) = strip_parens(init) else {
+        return Ok(false);
+    };
+    let Some(place) = super::place::lower_place(ctx, function, body, &reference.expr, env)? else {
+        return Ok(false);
+    };
+    if super::texture::is_handle(ctx, place.ty) {
+        return Ok(false);
+    }
+    let mutable = reference.mutability.is_some();
+    if mutable && !place.writable {
+        return Err(Error::AssignToReadonly(place.root));
+    }
+    env.push_in(
+        name.to_string(),
+        Slot::Ptr(place.pointer),
+        place.ty,
+        mutable,
+        place.space,
+    );
+    Ok(true)
 }
 
 /// `ray_query::default()`, the checkable spelling of an uninitialized query local.
