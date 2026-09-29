@@ -21,11 +21,18 @@
 //!
 //! # What runs on the CPU
 //!
-//! Very little, yet. The atomics are real atomics, the [`ir`] module decodes
-//! what the build step wrote, and a host can build the vectors and matrices
-//! it shares with a shader, below. Everything else panics: the types are here
-//! to be *checked*, and the shader runs on a GPU. Implementations can be
-//! filled in later without a signature changing.
+//! The math: the vectors, the matrices and the builtins, so a shader's pure
+//! helpers can be called from Rust and tested there. Each means on the CPU
+//! what it means in the shader. A method or operator named as Rust names it
+//! is Rust's, so `v.fract()` is `v - v.trunc()` and `+` on a `Vec3<u32>`
+//! panics on overflow under overflow checks, as `+` on a `u32` does. A free
+//! function keeps WGSL's meaning, so `fract(v)` is `v - floor(v)`. The atomics
+//! are real atomics, and the [`ir`] module decodes what the build step wrote.
+//!
+//! What needs the GPU panics: resources, textures and samplers, ray queries,
+//! barriers and `discard()`. Running those needs a runtime that runs the
+//! shader's invocations, with their memory, which this crate does not have.
+//! The types are there to be *checked*.
 //!
 //! # Sharing a struct with the host
 //!
@@ -74,7 +81,8 @@
 //!
 //! [synaga]: https://github.com/kvark/synaga
 
-// Bodies never run, so every parameter is unused by construction.
+// The bodies that need the GPU never run on the CPU, so their parameters are
+// unused by construction.
 #![allow(unused_variables)]
 #![allow(clippy::too_many_arguments, clippy::needless_lifetimes)]
 
@@ -102,15 +110,19 @@ pub trait Io {
     fn read_every_field(&self);
 }
 
-/// The body of everything in this crate.
+/// The body of what only the GPU runs: resources, textures, ray queries and
+/// barriers.
 ///
-/// A shader runs on a GPU; these types are here so `rustc` can check the
-/// source that describes it. Reaching one of these at runtime means something
-/// called a shader function on the CPU.
+/// These types are here so `rustc` can check the source that describes the
+/// shader. Reaching one of these at runtime means something called a shader
+/// function that uses one on the CPU.
 #[inline]
 #[track_caller]
 pub fn unimplemented_on_cpu<T>() -> T {
-    panic!("shader functions describe GPU work and cannot run on the CPU")
+    panic!(
+        "this needs the GPU: synaga-shader runs a shader's math on the CPU, \
+         but not its resources, textures, ray queries or barriers"
+    )
 }
 
 /// The ray flags and intersection kinds WGSL predeclares.

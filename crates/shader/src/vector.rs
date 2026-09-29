@@ -32,7 +32,7 @@
 //! So is the math, named as `f32` names it, and as glam does for what only a
 //! vector has. `cast` converts the lanes, as `as` converts a scalar:
 //!
-//! ```no_run
+//! ```
 //! use synaga_shader::*;
 //!
 //! fn lambert(normal: Vec3, light: Vec3) -> f32 {
@@ -44,23 +44,28 @@
 //! fn texel(uv: Vec2, size: Vec2<u32>) -> Vec2<i32> {
 //!     (uv * size.cast::<f32>()).cast()
 //! }
+//! # assert_eq!(lambert(vec3(0.0, 0.0, 2.0), vec3(0.0, 0.6, 0.8)), 0.8);
+//! # assert!(inside(vec2(1, 2), vec2(4, 4)) && !inside(vec2(-1, 2), vec2(4, 4)));
+//! # assert_eq!(texel(vec2(0.5, 0.25), vec2(640, 480)), vec2(320, 120));
 //! ```
 //!
 //! Each means what the Rust method of that name means, which for two of them
 //! is not what the GPU builtin of that name does: `v.fract()` is
 //! `v - v.trunc()`, and the GPU's rounding is `v.round_ties_even()`. The free
 //! functions, `fract(v)` and `round(v)`, are the GPU's.
+//!
+//! All of it runs on the CPU too, lane by lane, as Rust runs the scalar
+//! code: `+` on a `Vec3<u32>` panics on overflow where `+` on a `u32` would,
+//! and `wrapping_add` wraps, as the GPU's `+` does.
 
 use core::ops::*;
-
-use crate::unimplemented_on_cpu;
 
 /// What a vector's lanes hold: `f32`, `i32`, `u32` or `bool`.
 ///
 /// The bound is also what makes `vec3(0.0, 1.0, 0.0)` a `Vec3<f32>`: `f32` is
 /// the one float type that is a `Scalar`, so Rust gives the literals that type
 /// rather than its usual `f64`.
-pub trait Scalar: Copy + sealed::Sealed {
+pub trait Scalar: Copy + PartialEq + PartialOrd + sealed::Sealed {
     /// Zero, or `false`.
     const ZERO: Self;
     /// One, or `true`.
@@ -68,11 +73,106 @@ pub trait Scalar: Copy + sealed::Sealed {
 }
 
 mod sealed {
-    pub trait Sealed {}
-    impl Sealed for f32 {}
-    impl Sealed for i32 {}
-    impl Sealed for u32 {}
-    impl Sealed for bool {}
+    /// How a lane converts to another, as `as` converts a primitive. Out of
+    /// reach outside this crate, so it adds no methods to `f32` and the rest.
+    pub trait Sealed: Copy {
+        fn to_f32(self) -> f32;
+        fn to_i32(self) -> i32;
+        fn to_u32(self) -> u32;
+        /// `true` unless it is zero, as the GPU's `bool(x)`.
+        fn to_bool(self) -> bool;
+        /// `lane as Self`.
+        fn convert<S: Sealed>(lane: S) -> Self;
+    }
+
+    impl Sealed for f32 {
+        #[inline]
+        fn to_f32(self) -> f32 {
+            self
+        }
+        #[inline]
+        fn to_i32(self) -> i32 {
+            self as i32
+        }
+        #[inline]
+        fn to_u32(self) -> u32 {
+            self as u32
+        }
+        #[inline]
+        fn to_bool(self) -> bool {
+            self != 0.0
+        }
+        #[inline]
+        fn convert<S: Sealed>(lane: S) -> Self {
+            lane.to_f32()
+        }
+    }
+    impl Sealed for i32 {
+        #[inline]
+        fn to_f32(self) -> f32 {
+            self as f32
+        }
+        #[inline]
+        fn to_i32(self) -> i32 {
+            self
+        }
+        #[inline]
+        fn to_u32(self) -> u32 {
+            self as u32
+        }
+        #[inline]
+        fn to_bool(self) -> bool {
+            self != 0
+        }
+        #[inline]
+        fn convert<S: Sealed>(lane: S) -> Self {
+            lane.to_i32()
+        }
+    }
+    impl Sealed for u32 {
+        #[inline]
+        fn to_f32(self) -> f32 {
+            self as f32
+        }
+        #[inline]
+        fn to_i32(self) -> i32 {
+            self as i32
+        }
+        #[inline]
+        fn to_u32(self) -> u32 {
+            self
+        }
+        #[inline]
+        fn to_bool(self) -> bool {
+            self != 0
+        }
+        #[inline]
+        fn convert<S: Sealed>(lane: S) -> Self {
+            lane.to_u32()
+        }
+    }
+    impl Sealed for bool {
+        #[inline]
+        fn to_f32(self) -> f32 {
+            self as u32 as f32
+        }
+        #[inline]
+        fn to_i32(self) -> i32 {
+            self as i32
+        }
+        #[inline]
+        fn to_u32(self) -> u32 {
+            self as u32
+        }
+        #[inline]
+        fn to_bool(self) -> bool {
+            self
+        }
+        #[inline]
+        fn convert<S: Sealed>(lane: S) -> Self {
+            lane.to_bool()
+        }
+    }
 }
 
 impl Scalar for f32 {
@@ -123,14 +223,14 @@ macro_rules! vector_ops {
         impl Neg for $name {
             type Output = Self;
             #[inline]
-            fn neg(self) -> Self { unimplemented_on_cpu() }
+            fn neg(self) -> Self { self.map_lanes(|a| -a) }
         }
     };
     (@group not, $name:ty, $scalar:ty, $shift:ty) => {
         impl Not for $name {
             type Output = Self;
             #[inline]
-            fn not(self) -> Self { unimplemented_on_cpu() }
+            fn not(self) -> Self { self.map_lanes(|a| !a) }
         }
     };
 
@@ -143,27 +243,27 @@ macro_rules! vector_ops {
         impl $trait<$scalar> for $name {
             type Output = Self;
             #[inline]
-            fn $method(self, rhs: $scalar) -> Self { unimplemented_on_cpu() }
+            fn $method(self, rhs: $scalar) -> Self { self.map_lanes(|a| $trait::$method(a, rhs)) }
         }
         impl $trait<$name> for $scalar {
             type Output = $name;
             #[inline]
-            fn $method(self, rhs: $name) -> $name { unimplemented_on_cpu() }
+            fn $method(self, rhs: $name) -> $name { rhs.map_lanes(|b| $trait::$method(self, b)) }
         }
         impl $assign<$scalar> for $name {
             #[inline]
-            fn $assign_fn(&mut self, rhs: $scalar) { unimplemented_on_cpu() }
+            fn $assign_fn(&mut self, rhs: $scalar) { *self = $trait::$method(*self, rhs) }
         }
     };
     (@lanewise $trait:ident, $method:ident, $assign:ident, $assign_fn:ident, $name:ty) => {
         impl $trait for $name {
             type Output = Self;
             #[inline]
-            fn $method(self, rhs: Self) -> Self { unimplemented_on_cpu() }
+            fn $method(self, rhs: Self) -> Self { self.zip_lanes(rhs, $trait::$method) }
         }
         impl $assign for $name {
             #[inline]
-            fn $assign_fn(&mut self, rhs: Self) { unimplemented_on_cpu() }
+            fn $assign_fn(&mut self, rhs: Self) { *self = $trait::$method(*self, rhs) }
         }
     };
     (@shift $trait:ident, $method:ident, $assign:ident, $assign_fn:ident,
@@ -171,20 +271,20 @@ macro_rules! vector_ops {
         impl $trait<$shift> for $name {
             type Output = Self;
             #[inline]
-            fn $method(self, rhs: $shift) -> Self { unimplemented_on_cpu() }
+            fn $method(self, rhs: $shift) -> Self { self.zip_lanes(rhs, $trait::$method) }
         }
         impl $trait<u32> for $name {
             type Output = Self;
             #[inline]
-            fn $method(self, rhs: u32) -> Self { unimplemented_on_cpu() }
+            fn $method(self, rhs: u32) -> Self { self.map_lanes(|a| $trait::$method(a, rhs)) }
         }
         impl $assign<$shift> for $name {
             #[inline]
-            fn $assign_fn(&mut self, rhs: $shift) { unimplemented_on_cpu() }
+            fn $assign_fn(&mut self, rhs: $shift) { *self = $trait::$method(*self, rhs) }
         }
         impl $assign<u32> for $name {
             #[inline]
-            fn $assign_fn(&mut self, rhs: u32) { unimplemented_on_cpu() }
+            fn $assign_fn(&mut self, rhs: u32) { *self = $trait::$method(*self, rhs) }
         }
     };
 }
@@ -193,11 +293,12 @@ macro_rules! vector_ops {
 /// (`v.sqrt()`, `v.max(w)`, `v.mul_add(a, b)`), and glam's for what only a
 /// vector has (`v.dot(w)`, `v.normalize()`, `a.lerp(b, t)`).
 ///
-/// Each means what the Rust method means. Two of the GPU's builtins round
-/// differently from the Rust methods of the same name, so `fract` here is
-/// `self - self.trunc()` as `f32::fract` is, and the GPU's `round`, which
-/// takes a half to the even neighbour, is `round_ties_even`. The free
-/// functions keep WGSL's names and meanings: `fract(v)` is `v - floor(v)`.
+/// Each means what the Rust method means, on the CPU as on the GPU. Two of
+/// the GPU's builtins round differently from the Rust methods of the same
+/// name, so `fract` here is `self - self.trunc()` as `f32::fract` is, and the
+/// GPU's `round`, which takes a half to the even neighbour, is
+/// `round_ties_even`. The free functions keep WGSL's names and meanings:
+/// `fract(v)` is `v - floor(v)`.
 macro_rules! vector_math {
     ($name:ty, $scalar:ty $(, $group:ident)*) => {
         $(vector_math!(@group $group, $name, $scalar);)*
@@ -207,65 +308,83 @@ macro_rules! vector_math {
         impl $name {
             /// The lesser of each pair of lanes.
             #[inline]
-            pub fn min(self, rhs: Self) -> Self { unimplemented_on_cpu() }
+            pub fn min(self, rhs: Self) -> Self { self.zip_lanes(rhs, |a, b| a.min(b)) }
             /// The greater of each pair of lanes.
             #[inline]
-            pub fn max(self, rhs: Self) -> Self { unimplemented_on_cpu() }
-            /// Each lane held between the lanes of `min` and `max`.
+            pub fn max(self, rhs: Self) -> Self { self.zip_lanes(rhs, |a, b| a.max(b)) }
+            /// Each lane held between the lanes of `min` and `max`, which
+            /// have to be in order.
             #[inline]
-            pub fn clamp(self, min: Self, max: Self) -> Self { unimplemented_on_cpu() }
+            pub fn clamp(self, min: Self, max: Self) -> Self {
+                debug_assert!(min.cmple(max).all(), "clamp: expected min <= max");
+                self.max(min).min(max)
+            }
             /// The sum of the lane-wise products.
             #[inline]
-            pub fn dot(self, rhs: Self) -> $scalar { unimplemented_on_cpu() }
+            pub fn dot(self, rhs: Self) -> $scalar { (self * rhs).element_sum() }
             /// The sum of the lanes.
             #[inline]
-            pub fn element_sum(self) -> $scalar { unimplemented_on_cpu() }
+            pub fn element_sum(self) -> $scalar { self.reduce_lanes(|a, b| a + b) }
         }
     };
     (@group signed, $name:ty, $scalar:ty) => {
         impl $name {
             /// The magnitude of each lane.
             #[inline]
-            pub fn abs(self) -> Self { unimplemented_on_cpu() }
+            pub fn abs(self) -> Self { self.map_lanes(<$scalar>::abs) }
             /// `-1`, `0` or `1` per lane, by its sign.
             #[inline]
-            pub fn signum(self) -> Self { unimplemented_on_cpu() }
+            pub fn signum(self) -> Self { self.map_lanes(<$scalar>::signum) }
         }
     };
     (@group float, $name:ty, $scalar:ty) => {
-        vector_math!(@lanewise $name, abs floor ceil trunc round_ties_even fract sqrt recip
-            exp exp2 ln log2 sin cos tan asin acos atan sinh cosh tanh asinh acosh atanh
-            to_degrees to_radians normalize);
+        vector_math!(@lanewise $name, $scalar, abs floor ceil trunc round_ties_even fract sqrt
+            recip exp exp2 ln log2 sin cos tan asin acos atan sinh cosh tanh asinh acosh atanh
+            to_degrees to_radians);
         impl $name {
+            /// This direction at unit length: `self / self.length()`.
+            #[inline]
+            pub fn normalize(self) -> Self { self * self.length().recip() }
             /// Each lane raised to the power `n`.
             #[inline]
-            pub fn powf(self, n: $scalar) -> Self { unimplemented_on_cpu() }
+            pub fn powf(self, n: $scalar) -> Self { self.map_lanes(|a| a.powf(n)) }
             /// The angle of each pair of lanes, `self` being `y`, as `f32::atan2`.
             #[inline]
-            pub fn atan2(self, x: Self) -> Self { unimplemented_on_cpu() }
+            pub fn atan2(self, x: Self) -> Self { self.zip_lanes(x, <$scalar>::atan2) }
             /// `self * a + b`: the GPU's `fma`.
             #[inline]
-            pub fn mul_add(self, a: Self, b: Self) -> Self { unimplemented_on_cpu() }
+            pub fn mul_add(self, a: Self, b: Self) -> Self {
+                self.zip3_lanes(a, b, <$scalar>::mul_add)
+            }
             /// The Euclidean length.
             #[inline]
-            pub fn length(self) -> $scalar { unimplemented_on_cpu() }
+            pub fn length(self) -> $scalar { self.dot(self).sqrt() }
             /// The squared length, which saves the square root.
             #[inline]
-            pub fn length_squared(self) -> $scalar { unimplemented_on_cpu() }
+            pub fn length_squared(self) -> $scalar { self.dot(self) }
             /// The distance to `rhs`.
             #[inline]
-            pub fn distance(self, rhs: Self) -> $scalar { unimplemented_on_cpu() }
+            pub fn distance(self, rhs: Self) -> $scalar { (self - rhs).length() }
             /// This direction reflected off a surface facing `normal`, which
             /// has to be normalized.
             #[inline]
-            pub fn reflect(self, normal: Self) -> Self { unimplemented_on_cpu() }
+            pub fn reflect(self, normal: Self) -> Self { self - 2.0 * self.dot(normal) * normal }
             /// This direction refracted through a surface facing `normal`,
-            /// with `eta` the ratio of the indices of refraction.
+            /// with `eta` the ratio of the indices of refraction. Zero where
+            /// the light is reflected entirely.
             #[inline]
-            pub fn refract(self, normal: Self, eta: $scalar) -> Self { unimplemented_on_cpu() }
+            pub fn refract(self, normal: Self, eta: $scalar) -> Self {
+                let n_dot_i = normal.dot(self);
+                let k = 1.0 - eta * eta * (1.0 - n_dot_i * n_dot_i);
+                if k >= 0.0 {
+                    eta * self - (eta * n_dot_i + k.sqrt()) * normal
+                } else {
+                    Self::ZERO
+                }
+            }
             /// `self` at `s == 0` and `rhs` at `s == 1`: the GPU's `mix`.
             #[inline]
-            pub fn lerp(self, rhs: Self, s: $scalar) -> Self { unimplemented_on_cpu() }
+            pub fn lerp(self, rhs: Self, s: $scalar) -> Self { self * (1.0 - s) + rhs * s }
         }
     };
     (@group wrapping, $name:ty, $scalar:ty) => {
@@ -273,37 +392,43 @@ macro_rules! vector_math {
             /// Lane-wise `+`, wrapping around on overflow, as the GPU's `+`
             /// does, rather than panicking as Rust's does under overflow checks.
             #[inline]
-            pub fn wrapping_add(self, rhs: Self) -> Self { unimplemented_on_cpu() }
+            pub fn wrapping_add(self, rhs: Self) -> Self {
+                self.zip_lanes(rhs, <$scalar>::wrapping_add)
+            }
             /// Lane-wise `-`, wrapping around on overflow.
             #[inline]
-            pub fn wrapping_sub(self, rhs: Self) -> Self { unimplemented_on_cpu() }
+            pub fn wrapping_sub(self, rhs: Self) -> Self {
+                self.zip_lanes(rhs, <$scalar>::wrapping_sub)
+            }
             /// Lane-wise `*`, wrapping around on overflow.
             #[inline]
-            pub fn wrapping_mul(self, rhs: Self) -> Self { unimplemented_on_cpu() }
+            pub fn wrapping_mul(self, rhs: Self) -> Self {
+                self.zip_lanes(rhs, <$scalar>::wrapping_mul)
+            }
             /// Each lane negated, wrapping around on overflow: `0 - self`.
             #[inline]
-            pub fn wrapping_neg(self) -> Self { unimplemented_on_cpu() }
+            pub fn wrapping_neg(self) -> Self { self.map_lanes(<$scalar>::wrapping_neg) }
         }
     };
     (@group bool, $name:ty, $scalar:ty) => {
         impl $name {
             /// Whether every lane is `true`.
             #[inline]
-            pub fn all(self) -> bool { unimplemented_on_cpu() }
+            pub fn all(self) -> bool { self.reduce_lanes(|a, b| a & b) }
             /// Whether any lane is `true`.
             #[inline]
-            pub fn any(self) -> bool { unimplemented_on_cpu() }
+            pub fn any(self) -> bool { self.reduce_lanes(|a, b| a | b) }
         }
     };
 
     // One-lane-in, one-lane-out methods that `f32` has under the same name,
     // with the same meaning, which is all their documentation needs to say.
-    (@lanewise $name:ty, $($method:ident)*) => {
+    (@lanewise $name:ty, $scalar:ty, $($method:ident)*) => {
         impl $name {
             $(
                 #[doc = concat!("`f32::", stringify!($method), "` on each lane.")]
                 #[inline]
-                pub fn $method(self) -> Self { unimplemented_on_cpu() }
+                pub fn $method(self) -> Self { self.map_lanes(<$scalar>::$method) }
             )*
         }
     };
@@ -337,7 +462,35 @@ impl<T: Scalar> Vec2<T> {
     /// is WGSL's `vec2<i32>(v)`. Into `bool`, a lane is `true` unless it is zero.
     #[inline]
     pub fn cast<U: Scalar>(self) -> Vec2<U> {
-        unimplemented_on_cpu()
+        self.map_lanes(U::convert)
+    }
+
+    /// `f` of each lane.
+    #[inline]
+    pub(crate) fn map_lanes<U: Scalar>(self, f: impl Fn(T) -> U) -> Vec2<U> {
+        vec2(f(self.x), f(self.y))
+    }
+
+    /// `f` of each pair of lanes.
+    #[inline]
+    pub(crate) fn zip_lanes<U: Scalar, V: Scalar>(
+        self,
+        rhs: Vec2<U>,
+        f: impl Fn(T, U) -> V,
+    ) -> Vec2<V> {
+        vec2(f(self.x, rhs.x), f(self.y, rhs.y))
+    }
+
+    /// `f` of each three lanes.
+    #[inline]
+    pub(crate) fn zip3_lanes(self, b: Self, c: Self, f: impl Fn(T, T, T) -> T) -> Self {
+        vec2(f(self.x, b.x, c.x), f(self.y, b.y, c.y))
+    }
+
+    /// The lanes, combined first to last.
+    #[inline]
+    pub(crate) fn reduce_lanes(self, f: impl Fn(T, T) -> T) -> T {
+        f(self.x, self.y)
     }
 
     /// One lane wider, with `z` appended. This is how a shader's
@@ -350,13 +503,13 @@ impl<T: Scalar> Vec2<T> {
     /// Lane-wise `==`.
     #[inline]
     pub fn cmpeq(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a == b)
     }
 
     /// Lane-wise `!=`.
     #[inline]
     pub fn cmpne(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a != b)
     }
 
     #[inline]
@@ -416,25 +569,25 @@ impl Vec2<f32> {
     /// Lane-wise `<`.
     #[inline]
     pub fn cmplt(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a < b)
     }
 
     /// Lane-wise `<=`.
     #[inline]
     pub fn cmple(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a <= b)
     }
 
     /// Lane-wise `>`.
     #[inline]
     pub fn cmpgt(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a > b)
     }
 
     /// Lane-wise `>=`.
     #[inline]
     pub fn cmpge(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
 vector_ops!(Vec2<f32>, f32, Vec2<u32>, arith, neg);
@@ -444,25 +597,25 @@ impl Vec2<i32> {
     /// Lane-wise `<`.
     #[inline]
     pub fn cmplt(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a < b)
     }
 
     /// Lane-wise `<=`.
     #[inline]
     pub fn cmple(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a <= b)
     }
 
     /// Lane-wise `>`.
     #[inline]
     pub fn cmpgt(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a > b)
     }
 
     /// Lane-wise `>=`.
     #[inline]
     pub fn cmpge(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
 vector_ops!(Vec2<i32>, i32, Vec2<u32>, arith, bitwise, shift, neg, not);
@@ -472,25 +625,25 @@ impl Vec2<u32> {
     /// Lane-wise `<`.
     #[inline]
     pub fn cmplt(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a < b)
     }
 
     /// Lane-wise `<=`.
     #[inline]
     pub fn cmple(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a <= b)
     }
 
     /// Lane-wise `>`.
     #[inline]
     pub fn cmpgt(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a > b)
     }
 
     /// Lane-wise `>=`.
     #[inline]
     pub fn cmpge(self, rhs: Self) -> Vec2<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
 vector_ops!(Vec2<u32>, u32, Vec2<u32>, arith, bitwise, shift, not);
@@ -528,7 +681,39 @@ impl<T: Scalar> Vec3<T> {
     /// is WGSL's `vec3<i32>(v)`. Into `bool`, a lane is `true` unless it is zero.
     #[inline]
     pub fn cast<U: Scalar>(self) -> Vec3<U> {
-        unimplemented_on_cpu()
+        self.map_lanes(U::convert)
+    }
+
+    /// `f` of each lane.
+    #[inline]
+    pub(crate) fn map_lanes<U: Scalar>(self, f: impl Fn(T) -> U) -> Vec3<U> {
+        vec3(f(self.x), f(self.y), f(self.z))
+    }
+
+    /// `f` of each pair of lanes.
+    #[inline]
+    pub(crate) fn zip_lanes<U: Scalar, V: Scalar>(
+        self,
+        rhs: Vec3<U>,
+        f: impl Fn(T, U) -> V,
+    ) -> Vec3<V> {
+        vec3(f(self.x, rhs.x), f(self.y, rhs.y), f(self.z, rhs.z))
+    }
+
+    /// `f` of each three lanes.
+    #[inline]
+    pub(crate) fn zip3_lanes(self, b: Self, c: Self, f: impl Fn(T, T, T) -> T) -> Self {
+        vec3(
+            f(self.x, b.x, c.x),
+            f(self.y, b.y, c.y),
+            f(self.z, b.z, c.z),
+        )
+    }
+
+    /// The lanes, combined first to last.
+    #[inline]
+    pub(crate) fn reduce_lanes(self, f: impl Fn(T, T) -> T) -> T {
+        f(f(self.x, self.y), self.z)
     }
 
     /// One lane wider, with `w` appended. This is how a shader's
@@ -547,13 +732,13 @@ impl<T: Scalar> Vec3<T> {
     /// Lane-wise `==`.
     #[inline]
     pub fn cmpeq(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a == b)
     }
 
     /// Lane-wise `!=`.
     #[inline]
     pub fn cmpne(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a != b)
     }
 
     #[inline]
@@ -675,25 +860,25 @@ impl Vec3<f32> {
     /// Lane-wise `<`.
     #[inline]
     pub fn cmplt(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a < b)
     }
 
     /// Lane-wise `<=`.
     #[inline]
     pub fn cmple(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a <= b)
     }
 
     /// Lane-wise `>`.
     #[inline]
     pub fn cmpgt(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a > b)
     }
 
     /// Lane-wise `>=`.
     #[inline]
     pub fn cmpge(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
 vector_ops!(Vec3<f32>, f32, Vec3<u32>, arith, neg);
@@ -702,7 +887,11 @@ impl Vec3<f32> {
     /// The cross product, perpendicular to both.
     #[inline]
     pub fn cross(self, rhs: Self) -> Self {
-        unimplemented_on_cpu()
+        vec3(
+            self.y * rhs.z - rhs.y * self.z,
+            self.z * rhs.x - rhs.z * self.x,
+            self.x * rhs.y - rhs.x * self.y,
+        )
     }
 }
 
@@ -710,25 +899,25 @@ impl Vec3<i32> {
     /// Lane-wise `<`.
     #[inline]
     pub fn cmplt(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a < b)
     }
 
     /// Lane-wise `<=`.
     #[inline]
     pub fn cmple(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a <= b)
     }
 
     /// Lane-wise `>`.
     #[inline]
     pub fn cmpgt(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a > b)
     }
 
     /// Lane-wise `>=`.
     #[inline]
     pub fn cmpge(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
 vector_ops!(Vec3<i32>, i32, Vec3<u32>, arith, bitwise, shift, neg, not);
@@ -738,25 +927,25 @@ impl Vec3<u32> {
     /// Lane-wise `<`.
     #[inline]
     pub fn cmplt(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a < b)
     }
 
     /// Lane-wise `<=`.
     #[inline]
     pub fn cmple(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a <= b)
     }
 
     /// Lane-wise `>`.
     #[inline]
     pub fn cmpgt(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a > b)
     }
 
     /// Lane-wise `>=`.
     #[inline]
     pub fn cmpge(self, rhs: Self) -> Vec3<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
 vector_ops!(Vec3<u32>, u32, Vec3<u32>, arith, bitwise, shift, not);
@@ -795,7 +984,45 @@ impl<T: Scalar> Vec4<T> {
     /// is WGSL's `vec4<i32>(v)`. Into `bool`, a lane is `true` unless it is zero.
     #[inline]
     pub fn cast<U: Scalar>(self) -> Vec4<U> {
-        unimplemented_on_cpu()
+        self.map_lanes(U::convert)
+    }
+
+    /// `f` of each lane.
+    #[inline]
+    pub(crate) fn map_lanes<U: Scalar>(self, f: impl Fn(T) -> U) -> Vec4<U> {
+        vec4(f(self.x), f(self.y), f(self.z), f(self.w))
+    }
+
+    /// `f` of each pair of lanes.
+    #[inline]
+    pub(crate) fn zip_lanes<U: Scalar, V: Scalar>(
+        self,
+        rhs: Vec4<U>,
+        f: impl Fn(T, U) -> V,
+    ) -> Vec4<V> {
+        vec4(
+            f(self.x, rhs.x),
+            f(self.y, rhs.y),
+            f(self.z, rhs.z),
+            f(self.w, rhs.w),
+        )
+    }
+
+    /// `f` of each three lanes.
+    #[inline]
+    pub(crate) fn zip3_lanes(self, b: Self, c: Self, f: impl Fn(T, T, T) -> T) -> Self {
+        vec4(
+            f(self.x, b.x, c.x),
+            f(self.y, b.y, c.y),
+            f(self.z, b.z, c.z),
+            f(self.w, b.w, c.w),
+        )
+    }
+
+    /// The lanes, combined first to last.
+    #[inline]
+    pub(crate) fn reduce_lanes(self, f: impl Fn(T, T) -> T) -> T {
+        f(f(f(self.x, self.y), self.z), self.w)
     }
 
     /// One lane narrower, dropping the last.
@@ -807,13 +1034,13 @@ impl<T: Scalar> Vec4<T> {
     /// Lane-wise `==`.
     #[inline]
     pub fn cmpeq(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a == b)
     }
 
     /// Lane-wise `!=`.
     #[inline]
     pub fn cmpne(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a != b)
     }
 
     #[inline]
@@ -1198,25 +1425,25 @@ impl Vec4<f32> {
     /// Lane-wise `<`.
     #[inline]
     pub fn cmplt(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a < b)
     }
 
     /// Lane-wise `<=`.
     #[inline]
     pub fn cmple(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a <= b)
     }
 
     /// Lane-wise `>`.
     #[inline]
     pub fn cmpgt(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a > b)
     }
 
     /// Lane-wise `>=`.
     #[inline]
     pub fn cmpge(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
 vector_ops!(Vec4<f32>, f32, Vec4<u32>, arith, neg);
@@ -1226,25 +1453,25 @@ impl Vec4<i32> {
     /// Lane-wise `<`.
     #[inline]
     pub fn cmplt(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a < b)
     }
 
     /// Lane-wise `<=`.
     #[inline]
     pub fn cmple(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a <= b)
     }
 
     /// Lane-wise `>`.
     #[inline]
     pub fn cmpgt(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a > b)
     }
 
     /// Lane-wise `>=`.
     #[inline]
     pub fn cmpge(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
 vector_ops!(Vec4<i32>, i32, Vec4<u32>, arith, bitwise, shift, neg, not);
@@ -1254,25 +1481,25 @@ impl Vec4<u32> {
     /// Lane-wise `<`.
     #[inline]
     pub fn cmplt(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a < b)
     }
 
     /// Lane-wise `<=`.
     #[inline]
     pub fn cmple(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a <= b)
     }
 
     /// Lane-wise `>`.
     #[inline]
     pub fn cmpgt(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a > b)
     }
 
     /// Lane-wise `>=`.
     #[inline]
     pub fn cmpge(self, rhs: Self) -> Vec4<bool> {
-        unimplemented_on_cpu()
+        self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
 vector_ops!(Vec4<u32>, u32, Vec4<u32>, arith, bitwise, shift, not);
@@ -1412,216 +1639,216 @@ unsafe impl<T: Scalar + bytemuck::Pod> bytemuck::Pod for Vec4<T> {}
 impl From<Vec2<f32>> for Vec2<i32> {
     #[inline]
     fn from(v: Vec2<f32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec2<f32>> for Vec2<u32> {
     #[inline]
     fn from(v: Vec2<f32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec2<f32>> for Vec2<bool> {
     #[inline]
     fn from(v: Vec2<f32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec2<i32>> for Vec2<f32> {
     #[inline]
     fn from(v: Vec2<i32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec2<i32>> for Vec2<u32> {
     #[inline]
     fn from(v: Vec2<i32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec2<i32>> for Vec2<bool> {
     #[inline]
     fn from(v: Vec2<i32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec2<u32>> for Vec2<f32> {
     #[inline]
     fn from(v: Vec2<u32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec2<u32>> for Vec2<i32> {
     #[inline]
     fn from(v: Vec2<u32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec2<u32>> for Vec2<bool> {
     #[inline]
     fn from(v: Vec2<u32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec2<bool>> for Vec2<f32> {
     #[inline]
     fn from(v: Vec2<bool>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec2<bool>> for Vec2<i32> {
     #[inline]
     fn from(v: Vec2<bool>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec2<bool>> for Vec2<u32> {
     #[inline]
     fn from(v: Vec2<bool>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec3<f32>> for Vec3<i32> {
     #[inline]
     fn from(v: Vec3<f32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec3<f32>> for Vec3<u32> {
     #[inline]
     fn from(v: Vec3<f32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec3<f32>> for Vec3<bool> {
     #[inline]
     fn from(v: Vec3<f32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec3<i32>> for Vec3<f32> {
     #[inline]
     fn from(v: Vec3<i32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec3<i32>> for Vec3<u32> {
     #[inline]
     fn from(v: Vec3<i32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec3<i32>> for Vec3<bool> {
     #[inline]
     fn from(v: Vec3<i32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec3<u32>> for Vec3<f32> {
     #[inline]
     fn from(v: Vec3<u32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec3<u32>> for Vec3<i32> {
     #[inline]
     fn from(v: Vec3<u32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec3<u32>> for Vec3<bool> {
     #[inline]
     fn from(v: Vec3<u32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec3<bool>> for Vec3<f32> {
     #[inline]
     fn from(v: Vec3<bool>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec3<bool>> for Vec3<i32> {
     #[inline]
     fn from(v: Vec3<bool>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec3<bool>> for Vec3<u32> {
     #[inline]
     fn from(v: Vec3<bool>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec4<f32>> for Vec4<i32> {
     #[inline]
     fn from(v: Vec4<f32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec4<f32>> for Vec4<u32> {
     #[inline]
     fn from(v: Vec4<f32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec4<f32>> for Vec4<bool> {
     #[inline]
     fn from(v: Vec4<f32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec4<i32>> for Vec4<f32> {
     #[inline]
     fn from(v: Vec4<i32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec4<i32>> for Vec4<u32> {
     #[inline]
     fn from(v: Vec4<i32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec4<i32>> for Vec4<bool> {
     #[inline]
     fn from(v: Vec4<i32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec4<u32>> for Vec4<f32> {
     #[inline]
     fn from(v: Vec4<u32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec4<u32>> for Vec4<i32> {
     #[inline]
     fn from(v: Vec4<u32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec4<u32>> for Vec4<bool> {
     #[inline]
     fn from(v: Vec4<u32>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec4<bool>> for Vec4<f32> {
     #[inline]
     fn from(v: Vec4<bool>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec4<bool>> for Vec4<i32> {
     #[inline]
     fn from(v: Vec4<bool>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
 impl From<Vec4<bool>> for Vec4<u32> {
     #[inline]
     fn from(v: Vec4<bool>) -> Self {
-        unimplemented_on_cpu()
+        v.cast()
     }
 }
