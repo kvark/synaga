@@ -413,14 +413,18 @@ fn lower_for(
     let (Some(start), Some(end)) = (range.start.as_deref(), range.end.as_deref()) else {
         return Err(Error::UnsupportedStmt("unbounded range".into()));
     };
-    let name = match &*for_expr.pat {
-        Pat::Ident(ident) if ident.by_ref.is_none() => ident.ident.to_string(),
-        Pat::Wild(_) => "_".to_string(),
+    let (name, mutable) = match &*for_expr.pat {
+        Pat::Ident(ident) if ident.by_ref.is_none() => {
+            (ident.ident.to_string(), ident.mutability.is_some())
+        }
+        Pat::Wild(_) => ("_".to_string(), false),
         _ => return Err(Error::PatternParam),
     };
+    let inclusive = matches!(range.limits, syn::RangeLimits::Closed(_));
 
-    // Whichever end is not an untyped literal fixes the counter's type, the
-    // same way `0..n` infers in Rust.
+    // Both ends are evaluated once, before the loop. Whichever is not an
+    // untyped literal fixes the counter's type, the same way `0..n` infers
+    // in Rust.
     let (init, ty, bound) = if is_untyped_int(start) && !is_untyped_int(end) {
         let (bound, ty) = lower_expr(ctx, function, body, end, env)?;
         let hint = ctx.shape(ty).int_hint();
@@ -441,6 +445,8 @@ fn lower_for(
         }
     }
 
+    // The range's own position, which the body cannot touch: in Rust,
+    // assigning to `i` in `for mut i in ..` changes `i`, not the iteration.
     let counter = function.local_variables.append(
         LocalVariable {
             name: Some(name.clone()),
@@ -460,39 +466,87 @@ fn lower_for(
         Span::UNDEFINED,
     );
 
-    env.push_scope();
-    env.push(name, Slot::Ptr(pointer), ty);
-
-    // `if !(i < end) { break; }`
     let mut loop_body = Block::new();
     let current = emit(function, &mut loop_body, Expression::Load { pointer })?;
-    let condition = emit(
-        function,
-        &mut loop_body,
-        Expression::Binary {
-            op: match range.limits {
-                syn::RangeLimits::Closed(_) => naga::BinaryOperator::LessEqual,
-                syn::RangeLimits::HalfOpen(_) => naga::BinaryOperator::Less,
+    // `if !(i < end) { break; }`. An inclusive range stops in `continuing`
+    // instead, once it has run for `end`: testing `i <= end` would need `i`
+    // to step past `end`, which it cannot do when `end` is the largest value.
+    if !inclusive {
+        let condition = emit(
+            function,
+            &mut loop_body,
+            Expression::Binary {
+                op: naga::BinaryOperator::Less,
+                left: current,
+                right: bound,
             },
-            left: current,
-            right: bound,
-        },
-    )?;
-    let mut reject = Block::new();
-    reject.push(Statement::Break, Span::UNDEFINED);
-    loop_body.push(
-        Statement::If {
-            condition,
-            accept: Block::new(),
-            reject,
-        },
-        Span::UNDEFINED,
-    );
-    let _ = lower_block(ctx, function, &mut loop_body, &for_expr.body, env)?;
+        )?;
+        let mut reject = Block::new();
+        reject.push(Statement::Break, Span::UNDEFINED);
+        loop_body.push(
+            Statement::If {
+                condition,
+                accept: Block::new(),
+                reject,
+            },
+            Span::UNDEFINED,
+        );
+    }
 
-    // `continuing { i += 1; }`
+    env.push_scope();
+    if name != "_" {
+        // The binding is this iteration's value. It gets storage of its own
+        // only when the body assigns or borrows it.
+        if mutable || ctx.addressed.contains(&name) {
+            let local = function.local_variables.append(
+                LocalVariable {
+                    name: Some(name.clone()),
+                    ty,
+                    init: None,
+                },
+                Span::UNDEFINED,
+            );
+            let binding = function
+                .expressions
+                .append(Expression::LocalVariable(local), Span::UNDEFINED);
+            loop_body.push(
+                Statement::Store {
+                    pointer: binding,
+                    value: current,
+                },
+                Span::UNDEFINED,
+            );
+            env.push(name, Slot::Ptr(binding), ty);
+        } else {
+            env.push_in(
+                name,
+                Slot::Value(current),
+                ty,
+                false,
+                naga::AddressSpace::Function,
+            );
+        }
+    }
+    let _ = lower_block(ctx, function, &mut loop_body, &for_expr.body, env)?;
+    env.pop_scope();
+
+    // `continuing { i += 1; }`, and for an inclusive range, leave once the
+    // iteration for `end` is done. The step after the last one may wrap,
+    // which is harmless: nothing reads the counter again.
     let mut continuing = Block::new();
     let step = emit(function, &mut continuing, Expression::Load { pointer })?;
+    let break_if = match inclusive {
+        true => Some(emit(
+            function,
+            &mut continuing,
+            Expression::Binary {
+                op: naga::BinaryOperator::Equal,
+                left: step,
+                right: bound,
+            },
+        )?),
+        false => None,
+    };
     let one = function
         .expressions
         .append(Expression::Literal(int_one(ctx, ty)), Span::UNDEFINED);
@@ -512,13 +566,33 @@ fn lower_for(
         },
         Span::UNDEFINED,
     );
-    env.pop_scope();
 
+    let looped = Statement::Loop {
+        body: loop_body,
+        continuing,
+        break_if,
+    };
+    if !inclusive {
+        body.push(looped, Span::UNDEFINED);
+        return Ok(());
+    }
+    // An inclusive range with its end before its start runs no iterations.
+    let nonempty = emit(
+        function,
+        body,
+        Expression::Binary {
+            op: naga::BinaryOperator::LessEqual,
+            left: init,
+            right: bound,
+        },
+    )?;
+    let mut accept = Block::new();
+    accept.push(looped, Span::UNDEFINED);
     body.push(
-        Statement::Loop {
-            body: loop_body,
-            continuing,
-            break_if: None,
+        Statement::If {
+            condition: nonempty,
+            accept,
+            reject: Block::new(),
         },
         Span::UNDEFINED,
     );
