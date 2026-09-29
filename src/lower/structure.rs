@@ -26,6 +26,27 @@ pub(super) fn lower_struct_item(
         return Ok(ctx.nominal_type(&name)?.expect("a declared set"));
     }
     let repr = host_repr(&item.attrs, &name)?;
+    // The layout check below works on the GPU's types, where `usize` is
+    // already a `u32`, so a pointer-sized field is caught here, on the Rust one.
+    if repr.is_some() {
+        for field in &item.fields {
+            if let Some(int) = ctx.scope.pointer_sized(&field.ty) {
+                let field = field
+                    .ident
+                    .as_ref()
+                    .map(|i| i.to_string())
+                    .unwrap_or_default();
+                return Err(Error::HostLayout(
+                    name,
+                    format!(
+                        "its field `{field}` is a `{int}`, which is as wide as a pointer on the host \
+                         and 32 bits on the GPU: use `{}`",
+                        super::global::fixed_width(int)
+                    ),
+                ));
+            }
+        }
+    }
     let derives_default = derives_default(&item.attrs);
     let named = match item.fields {
         Fields::Named(fields) => fields,

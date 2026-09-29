@@ -89,6 +89,9 @@ pub(crate) struct Scope {
     pub enums: HashMap<String, super::nominal::EnumInfo>,
     /// The `bitflags!` sets, by name, which are too.
     pub flags: HashMap<String, super::nominal::FlagsInfo>,
+    /// What each `type` alias stands for, as written, so that a check on the
+    /// Rust type can see through it after the alias is lowered.
+    aliases: HashMap<String, syn::Type>,
 }
 
 impl Scope {
@@ -97,6 +100,48 @@ impl Scope {
         self.variants
             .get(&(enumeration.to_string(), variant.to_string()))
             .copied()
+    }
+
+    /// The pointer-sized integer in `ty`, through arrays, type arguments and
+    /// aliases. `usize` is as wide as a pointer on the host and a `u32` on the
+    /// GPU, so a host that shares one cannot agree with the GPU on it.
+    pub fn pointer_sized(&self, ty: &syn::Type) -> Option<&'static str> {
+        self.pointer_sized_in(ty, 0)
+    }
+
+    fn pointer_sized_in(&self, ty: &syn::Type, depth: usize) -> Option<&'static str> {
+        if depth > 16 {
+            return None;
+        }
+        match ty {
+            syn::Type::Path(path) => {
+                let last = path.path.segments.last()?;
+                match last.ident.to_string().as_str() {
+                    "usize" => return Some("usize"),
+                    "isize" => return Some("isize"),
+                    name => {
+                        let aliased = self.aliases.get(name);
+                        if let Some(found) =
+                            aliased.and_then(|t| self.pointer_sized_in(t, depth + 1))
+                        {
+                            return Some(found);
+                        }
+                    }
+                }
+                let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+                    return None;
+                };
+                args.args.iter().find_map(|arg| match arg {
+                    syn::GenericArgument::Type(inner) => self.pointer_sized_in(inner, depth + 1),
+                    _ => None,
+                })
+            }
+            syn::Type::Array(array) => self.pointer_sized_in(&array.elem, depth + 1),
+            syn::Type::Slice(slice) => self.pointer_sized_in(&slice.elem, depth + 1),
+            syn::Type::Paren(inner) => self.pointer_sized_in(&inner.elem, depth + 1),
+            syn::Type::Group(inner) => self.pointer_sized_in(&inner.elem, depth + 1),
+            _ => None,
+        }
     }
 
     /// Index the items of `files`, dropping any whose `#[cfg]` does not hold.
@@ -140,6 +185,11 @@ impl Scope {
                         scope.flags.extend(sets);
                         continue;
                     }
+                }
+                if let Item::Type(alias) = &item {
+                    scope
+                        .aliases
+                        .insert(alias.ident.to_string(), (*alias.ty).clone());
                 }
                 let name = item_name(&item);
                 if let Some(key) = &name {

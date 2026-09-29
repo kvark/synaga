@@ -168,6 +168,8 @@ pub enum Error {
     FlagsRepr(String),
     #[error("`bitflags!` {0}")]
     Bitflags(String),
+    #[error("`{0}` is shared with the host, but it holds a `{1}`, which is as wide as a pointer there and 32 bits on the GPU: use `{2}`")]
+    PointerSized(String, &'static str, &'static str),
 }
 
 impl Error {

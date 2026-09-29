@@ -58,8 +58,26 @@ pub(super) fn lower_static(ctx: &mut Context, item: ItemStatic) -> Result<(), Er
     ctx.pending_space = None;
     let ty = ctx.lower_type(&item.ty)?;
     let from_type = ctx.pending_space.take();
+    // A buffer's contents are the host's too. `usize` indexes well enough in
+    // a shader, but the host lays it out wider than the GPU does.
+    if matches!(
+        from_type,
+        Some(naga::AddressSpace::Uniform | naga::AddressSpace::Storage { .. })
+    ) {
+        if let Some(int) = ctx.scope.pointer_sized(&item.ty) {
+            return Err(Error::PointerSized(name, int, fixed_width(int)));
+        }
+    }
     let from_init = initializer_binding(ctx, &name, &item.expr)?;
     insert_global(ctx, name, ty, &item.attrs, from_type, from_init)
+}
+
+/// The 32-bit integer a shared `usize` or `isize` should be.
+pub(super) fn fixed_width(int: &str) -> &'static str {
+    match int {
+        "isize" => "i32",
+        _ => "u32",
+    }
 }
 
 /// Where a static's initialiser says it binds.

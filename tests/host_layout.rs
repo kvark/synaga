@@ -131,3 +131,58 @@ fn only_what_a_buffer_holds_has_to_match() {
     let msg = reject("#[repr(C, packed)] struct P { a: f32 } fn f(p: P) -> f32 { p.a }");
     assert!(msg.contains("the GPU has no packed layout"), "{msg}");
 }
+
+#[test]
+fn a_pointer_sized_field_cannot_be_shared() {
+    // `usize` is a `u32` on the GPU, which is also what the layout check sees,
+    // so without this the struct would look like 4 bytes on both sides.
+    let msg = reject(&uniform("#[repr(C)] struct P { count: usize }"));
+    assert!(
+        msg.contains(
+            "`P` is `#[repr(C)]`, which says the host shares it, but its field `count` is a \
+             `usize`, which is as wide as a pointer on the host and 32 bits on the GPU: use `u32`"
+        ),
+        "{msg}"
+    );
+    let msg = reject(&uniform("#[repr(C)] struct P { offset: isize }"));
+    assert!(
+        msg.contains("`isize`") && msg.contains("use `i32`"),
+        "{msg}"
+    );
+    // Through an array, an alias, or a struct that holds one.
+    let msg = reject(&uniform("#[repr(C)] struct P { counts: [usize; 4] }"));
+    assert!(msg.contains("`counts` is a `usize`"), "{msg}");
+    let msg = reject(&uniform(
+        "type Count = usize; type Counts = [Count; 2]; #[repr(C)] struct P { counts: Counts }",
+    ));
+    assert!(msg.contains("`counts` is a `usize`"), "{msg}");
+    let msg = reject(&uniform(
+        "#[repr(C)] struct Inner { n: usize } #[repr(C)] struct P { inner: Inner }",
+    ));
+    assert!(msg.contains("`Inner` is `#[repr(C)]`"), "{msg}");
+}
+
+#[test]
+fn a_buffer_of_pointer_sized_integers_cannot_be_shared() {
+    let msg = reject("static counts: Storage<[usize]> = binding(); fn f() -> usize { counts[0] }");
+    assert!(
+        msg.contains(
+            "`counts` is shared with the host, but it holds a `usize`, which is as wide as a \
+             pointer there and 32 bits on the GPU: use `u32`"
+        ),
+        "{msg}"
+    );
+    let msg = reject("static n: Uniform<isize> = binding(); fn f() -> isize { *n }");
+    assert!(msg.contains("use `i32`"), "{msg}");
+}
+
+#[test]
+fn usize_still_indexes() {
+    // Indexing takes `usize` in Rust, so a shader has to be able to say it.
+    // Only sharing one with the host is refused.
+    validate_only_unbound(
+        "static items: Storage<[u32]> = binding();
+         #[derive(Clone, Copy)] struct Local { i: usize }
+         fn f(i: u32) -> u32 { let local = Local { i: i as usize }; items[local.i] }",
+    );
+}
