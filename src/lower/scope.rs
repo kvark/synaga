@@ -259,6 +259,11 @@ impl Scope {
         Ok(())
     }
 
+    /// The module source `index` is, by the name it is reached by.
+    pub fn source_name(&self, index: usize) -> Option<&str> {
+        self.sources.get(index).and_then(|s| s.name.as_deref())
+    }
+
     fn source_named(&self, name: &str) -> Option<usize> {
         self.sources
             .iter()

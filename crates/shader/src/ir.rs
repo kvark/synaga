@@ -161,3 +161,30 @@ macro_rules! include_ir {
         include!(concat!(env!("OUT_DIR"), "/", $file));
     };
 }
+
+/// Checks `rustc`'s layout of each struct the shaders share with the host
+/// against the GPU's, as `size_of` and `offset_of!` assertions the build wrote.
+///
+/// The transpiler already lays each such struct out as `rustc` would and
+/// refuses it where the GPU disagrees; this asks `rustc` itself, for the target
+/// being built. It goes in the module that lists the shader modules, since
+/// the assertions name each struct through its module: `camera::Camera` is
+/// `self::camera::Camera` there.
+///
+/// ```ignore
+/// // src/shaders/mod.rs
+/// pub mod camera;
+/// synaga_shader::check_layout!();
+/// ```
+///
+/// The file is named after the generated module: `shaders_layout.rs` for the
+/// default `shaders.rs`, or name it for another.
+#[macro_export]
+macro_rules! check_layout {
+    () => {
+        include!(concat!(env!("OUT_DIR"), "/shaders_layout.rs"));
+    };
+    ($file:literal) => {
+        include!(concat!(env!("OUT_DIR"), "/", $file));
+    };
+}

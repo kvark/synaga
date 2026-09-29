@@ -11,3 +11,6 @@
 pub mod common;
 pub mod sprite;
 pub mod tonemap;
+
+// `rustc`'s layout of `Globals` and `Locals`, asserted to be the GPU's.
+synaga_shader::check_layout!();

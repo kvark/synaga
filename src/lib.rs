@@ -74,6 +74,16 @@ pub(crate) fn parse_expecting(
     cfg: &Cfg,
     bindings: Option<build::Bindings>,
 ) -> Result<naga::Module, SourceError> {
+    parse_shared(sources, cfg, bindings).map(|(module, _)| module)
+}
+
+/// [`parse_expecting`], and the structs the module shares with a host, as the
+/// GPU lays them out, for `rustc` to check its own layout against.
+pub(crate) fn parse_shared(
+    sources: &[Source<'_>],
+    cfg: &Cfg,
+    bindings: Option<build::Bindings>,
+) -> Result<(naga::Module, Vec<lower::SharedStruct>), SourceError> {
     let mut files = Vec::with_capacity(sources.len());
     for (index, source) in sources.iter().enumerate() {
         let file: syn::File = syn::parse_str(source.text).map_err(|e| SourceError {
@@ -87,7 +97,8 @@ pub(crate) fn parse_expecting(
         index: ctx.failed_source.unwrap_or(0),
         error,
     })?;
-    Ok(ctx.module)
+    let shared = lower::shared_structs(&ctx);
+    Ok((ctx.module, shared))
 }
 
 /// An [`Error`], and which of the sources handed to [`parse_all`] it came from.

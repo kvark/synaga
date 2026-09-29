@@ -562,3 +562,65 @@ fn the_generated_module_lists_every_shader() {
         "{generated}"
     );
 }
+
+#[test]
+fn the_layout_of_each_shared_struct_is_left_for_rustc_to_check() {
+    let dir = scratch("layout");
+    write(
+        &dir,
+        "params.rs",
+        r#"
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        pub struct Params { pub scale: Vec2, pub count: u32, secret: u32 }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Hidden { pub x: f32 }
+        #[repr(C)]
+        pub struct List { pub count: u32, pub items: [u32] }
+        "#,
+    );
+    write(
+        &dir,
+        "fill.rs",
+        r#"
+        use super::params::{Hidden, List, Params};
+        static params: Uniform<Params> = binding();
+        static hidden: Uniform<Hidden> = binding();
+        static list: StorageMut<List> = binding();
+        #[entry_point(compute, threads(1))]
+        fn fill() {
+            list.get_mut().items[0] = params.count + hidden.x as u32 + params.secret;
+        }
+        "#,
+    );
+    Shaders::new()
+        .dir(dir.join("shaders"))
+        .bindings(Bindings::Host)
+        .module_name("gpu.rs")
+        .emit_to(&dir.join("out"))
+        .expect("emit");
+    let checks = std::fs::read_to_string(dir.join("out/gpu_layout.rs")).expect("read checks");
+    assert!(
+        checks.contains("::core::mem::size_of::<self::params::Params>() == 16"),
+        "{checks}"
+    );
+    assert!(
+        checks.contains("::core::mem::offset_of!(self::params::Params, count) == 8"),
+        "{checks}"
+    );
+    // What the module listing the shaders cannot name, it cannot check.
+    assert!(!checks.contains("secret"), "{checks}");
+    assert!(!checks.contains("Hidden"), "{checks}");
+    // A struct ending in a runtime-sized array has no size, in Rust either;
+    // its sized fields still have offsets.
+    assert!(
+        !checks.contains("size_of::<self::params::List>"),
+        "{checks}"
+    );
+    assert!(
+        checks.contains("::core::mem::offset_of!(self::params::List, count) == 0"),
+        "{checks}"
+    );
+    assert!(!checks.contains("List, items"), "{checks}");
+}

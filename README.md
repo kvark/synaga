@@ -197,6 +197,20 @@ pub struct Globals {
 }
 ```
 
+The transpiler works out `rustc`'s layout from the types. To have `rustc`
+confirm it, for the target being built, the module that lists the shader
+modules says `synaga_shader::check_layout!()`. The build writes a `size_of`
+assertion for each shared struct and an `offset_of!` for each field that module
+can name, and a difference fails the build there:
+
+```rust,ignore
+// src/shaders/mod.rs
+pub mod common;
+pub mod sprite;
+
+synaga_shader::check_layout!();
+```
+
 With `synaga-shader`'s `bytemuck` feature the vectors and matrices are `Pod`, so
 such a struct can derive it and upload itself. They convert from arrays, a
 matrix column by column, and with the `mint` feature from mint's types, which

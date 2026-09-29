@@ -29,6 +29,8 @@ mod structure;
 mod texture;
 mod vector;
 
+pub(crate) use structure::{shared_structs, SharedStruct};
+
 use emit::item_kind;
 use env::{Env, Slot};
 use scope::{Lowered, Ns, Scope, State};
@@ -109,6 +111,9 @@ pub struct Context {
     /// The structs that derive `Default`. Any other `Default` is written by
     /// hand, where the shader cannot see it.
     pub(super) derived_defaults: HashSet<Handle<Type>>,
+    /// Where each `#[repr(C)]` struct is declared, and what of it the module
+    /// above can name, for `rustc` to check its layout there.
+    pub(super) origins: HashMap<Handle<Type>, structure::Origin>,
 }
 
 impl Context {
@@ -127,6 +132,7 @@ impl Context {
             host_reprs: HashMap::new(),
             host_layouts: HashMap::new(),
             derived_defaults: HashSet::new(),
+            origins: HashMap::new(),
         }
     }
 

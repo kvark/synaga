@@ -48,6 +48,7 @@ pub(super) fn lower_struct_item(
         }
     }
     let derives_default = derives_default(&item.attrs);
+    let visible = visible_above(&item.vis);
     let named = match item.fields {
         Fields::Named(fields) => fields,
         Fields::Unnamed(_) => return Err(Error::UnsupportedItem("tuple struct".into())),
@@ -60,7 +61,9 @@ pub(super) fn lower_struct_item(
     let mut member_tys = Vec::new();
     let mut member_names = Vec::new();
     let mut member_bindings = Vec::new();
+    let mut fields_visible = Vec::new();
     for field in named.named {
+        fields_visible.push(visible_above(&field.vis));
         let fname = field
             .ident
             .as_ref()
@@ -123,11 +126,103 @@ pub(super) fn lower_struct_item(
     // An interface struct's fields are bindings, so it has no bytes to share.
     if let Some(repr) = repr.filter(|_| bound == 0) {
         ctx.host_reprs.insert(handle, repr);
+        let module = ctx.scope.source_name(ctx.current).map(str::to_string);
+        ctx.origins.insert(
+            handle,
+            Origin {
+                module,
+                visible,
+                fields_visible,
+            },
+        );
     }
     if derives_default {
         ctx.derived_defaults.insert(handle);
     }
     Ok(handle)
+}
+
+/// Where a shared struct is declared: which module, and what of it the
+/// module above that one can name.
+pub(crate) struct Origin {
+    module: Option<String>,
+    visible: bool,
+    fields_visible: Vec<bool>,
+}
+
+/// Can the module above the one an item is in name it? That is where the
+/// layout checks go, since it is the module that lists the shader modules.
+fn visible_above(vis: &syn::Visibility) -> bool {
+    match vis {
+        syn::Visibility::Public(_) => true,
+        syn::Visibility::Restricted(restricted) => {
+            restricted.in_token.is_none()
+                && (restricted.path.is_ident("crate") || restricted.path.is_ident("super"))
+        }
+        syn::Visibility::Inherited => false,
+    }
+}
+
+/// A struct the host shares, as the GPU lays it out, for `rustc` to check
+/// its own layout against: `size_of` for the struct, `offset_of!` for each
+/// field the module above can name.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct SharedStruct {
+    /// The module the struct is in.
+    pub module: String,
+    pub name: String,
+    /// `None` for a struct that ends in a runtime-sized array, which has no
+    /// size in Rust either.
+    pub size: Option<u32>,
+    pub fields: Vec<(String, u32)>,
+}
+
+/// The shared structs a buffer holds, whose layout was checked here, and that
+/// the module above theirs can name.
+pub(crate) fn shared_structs(ctx: &Context) -> Vec<SharedStruct> {
+    let mut found: Vec<SharedStruct> = ctx
+        .host_layouts
+        .keys()
+        .filter_map(|&ty| {
+            let origin = ctx.origins.get(&ty).filter(|o| o.visible)?;
+            let TypeInner::Struct { members, span } = &ctx.module.types[ty].inner else {
+                return None;
+            };
+            let unsized_tail = members.last().is_some_and(|m| {
+                matches!(
+                    ctx.module.types[m.ty].inner,
+                    TypeInner::Array {
+                        size: naga::ArraySize::Dynamic,
+                        ..
+                    }
+                )
+            });
+            let fields = members
+                .iter()
+                .zip(&origin.fields_visible)
+                .filter(|&(member, &visible)| visible && !is_unsized(ctx, member.ty))
+                .filter_map(|(member, _)| Some((member.name.clone()?, member.offset)))
+                .collect();
+            Some(SharedStruct {
+                module: origin.module.clone()?,
+                name: ctx.module.types[ty].name.clone()?,
+                size: (!unsized_tail).then_some(*span),
+                fields,
+            })
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+fn is_unsized(ctx: &Context, ty: Handle<Type>) -> bool {
+    matches!(
+        ctx.module.types[ty].inner,
+        TypeInner::Array {
+            size: naga::ArraySize::Dynamic,
+            ..
+        }
+    )
 }
 
 /// Does an item with `attrs` derive `Default`?
