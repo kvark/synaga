@@ -165,7 +165,8 @@ p.pos += p.vel * delta;
 Other invocations run at the same time and may write the same memory, and the
 shader keeps them apart, as it has to in WGSL. `get_mut` hands out `&mut` from
 `&self`, which would be unsound if it ever returned on the CPU; it does not,
-so it is not `unsafe`.
+so it is not `unsafe`. [Resources and aliasing](#resources-and-aliasing) says
+what that means for a shader, and for running one on the CPU.
 
 Atomics are `AtomicU32` and `AtomicI32`, with the standard methods but no
 `Ordering`, since WGSL's atomics are relaxed and nothing stronger:
@@ -317,10 +318,110 @@ own names, for a source `rustc` never sees.
 
 `usize` is `u32`. A GPU index is 32-bit and WGSL has no `usize`, but `[T; N]`,
 `[T]` and the vectors index by it, so `arr[i as usize]` has to mean what it
-says.
+says. What the host shares cannot hold one, since the host's is as wide as a
+pointer: a `#[repr(C)]` struct or a buffer with a `usize` or an `isize` in it,
+through arrays and aliases, is refused with the fixed-width type to use.
 
 `discard()` never returns, so it may end a function whatever that function
 returns. A call that returns nothing can end a block, as in Rust.
+
+## What a shader means
+
+A shader is checked as Rust, so it means what the Rust means, as far as a GPU
+can do it. Where the GPU cannot, this says what happens instead.
+
+### Evaluation
+
+- `a && b` and `a || b` evaluate `b` only when `a` does not decide. A `b` that
+  calls a function, touches an atomic or indexes goes under an `if`; one that
+  only reads and computes is evaluated early, since nothing can tell, and
+  that saves a local.
+- `for i in a..b` and `a..=b` evaluate `a` and `b` once, before the loop. An
+  inclusive range runs for `b` and stops, even when `b` is the largest value
+  its type has. `for mut i in ..` gives the body a copy to change; the
+  iteration goes on regardless.
+- Operands, arguments and struct fields are evaluated left to right. A
+  function cannot call itself, directly or not.
+- `T::default()` is the zero value, so a struct has to derive `Default` for it,
+  and a `#[repr(u32)]` enum's `#[default]` variant has to be zero.
+
+### Numbers
+
+The GPU's integers wrap, and Rust's panic under overflow checks, which a debug
+build has on. Code that means to wrap says so, `hash.wrapping_mul(k)`, and
+wraps on both. The rest of what differs, operator by operator:
+
+| | GPU | Rust on the CPU |
+| --- | --- | --- |
+| `+`, `-`, `*` past the type's range | wraps | panics under overflow checks, wraps without |
+| `wrapping_add`, `_sub`, `_mul`, `_neg`, `_shl`, `_shr` | wraps | wraps |
+| `x / 0`, `x % 0` | `x`, and `0` | panics |
+| `i32::MIN / -1`, `i32::MIN % -1` | `i32::MIN`, and `0` | panics |
+| `x << n`, `x >> n` with `n >= 32` | depends on the backend | panics under overflow checks |
+| `-i32::MIN`, `i32::MIN.abs()` | `i32::MIN` | panics under overflow checks |
+| a float `as` an integer, out of range | the nearest integer a float can hold: `1e10 as i32` is 2147483520 | the nearest integer: 2147483647 |
+| a NaN `as` an integer | unspecified | 0 |
+| `i32` `as` `u32` and back | the same bits | the same bits |
+| an index out of bounds | what the host's Naga bounds-check policy says: kept in bounds, read as zero, or, by default, left to the driver | panics |
+| `x.round()` | refused: the GPU's rounds a half to the even neighbour, which is `round_ties_even()` | |
+| `0.0f32.signum()` | refused: the GPU's `sign(0.0)` is 0 | 1 |
+| `min`, `max` with a NaN | either operand | the one that is a number |
+
+`+`, `-` and `*` are correctly rounded on both, and so is a conversion that
+fits. Beyond those, WGSL allows error: 2.5 ULP for `/`, a few for the square
+roots, more for `exp`, `log` and `pow`, which is `exp2(y * log2(x))` and only
+defined for `x >= 0`, and an absolute 2^-11 for `sin` and `cos` on `[-π, π]`.
+`fma` may or may not round once. The CPU's are Rust's, which are closer. An
+ill-conditioned function turns those few ULP into more: Blade's GGX sampling
+at a roughness of 0.05 moves its density by percents for an ulp in the half
+vector it draws.
+
+The free functions keep WGSL's meanings on both sides, as they are named after
+WGSL's: `fract(x)` is `x - floor(x)`, `round(x)` takes a half to the even
+neighbour, `sign(0.0)` is 0, `abs(i32::MIN)` is `i32::MIN`, and
+`clamp(x, low, high)` is `min(max(x, low), high)`. The methods of those names
+are Rust's.
+
+### On the CPU
+
+`synaga-shader`'s vectors, matrices and builtins run on the CPU, each meaning
+there what it means in the shader, so a shader's pure functions are ordinary
+Rust functions: call them, test them, compare them with the GPU. Blade does,
+for its BRDF, sampling, hashing, packing, quaternions and camera, integers
+exactly and floats to within what the GPU's precision allows.
+
+What needs the GPU panics on the CPU: resources, textures and samplers, ray
+queries, barriers and `discard()`. Running those needs a runtime that runs a
+workgroup's invocations with their memory, which there is not yet. So a
+function that is to be tested on the CPU takes values, and the entry point
+that calls it does the reading and writing.
+
+### Resources and aliasing
+
+A resource is a `static` whose type says its address space. Reading one
+derefs to `&T`, and a shader reads through it: `camera.view` loads that field,
+not the whole struct. Writing goes through `get_mut()`, which returns `&mut T`
+from `&self`.
+
+That is not Rust's aliasing. On the GPU every invocation runs at once, and each
+holds what Rust would call an exclusive reference to the same buffer. Keeping
+their writes apart is the shader's job, as it is in WGSL: an element per
+invocation, a barrier between phases, or an atomic. Two things follow from the
+memory model rather than from Rust:
+
+- A store is as wide as its place. `particles.get_mut()[i].life -= dt` stores
+  one field; `particles.get_mut()[i] = p` stores the whole element, and
+  overwrites what another invocation wrote to a field of it meanwhile.
+- Atomics are relaxed, the only ordering WGSL has, so their methods take no
+  `Ordering` rather than one that would be ignored. On the CPU they are real
+  atomics, relaxed.
+
+`get_mut()` is sound in Rust only because it never returns on the CPU: that
+is why a resource cannot be read or written there. Running a shader's entry
+points on the CPU needs something else in its place, an access that carries
+the buffer, the offset and the permission, `slot.load()` and `slot.store(v)`,
+which a CPU runtime can check and schedule. That is not built. Until it is,
+the CPU runs a shader's pure functions, and the GPU the rest.
 
 ## The dialect in detail
 
