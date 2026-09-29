@@ -210,6 +210,12 @@ fn lower_unary(
     // `-` and `!` keep their operand's type, so where the result goes is
     // where the operand goes.
     let (inner, ty) = lower_expr_hinted(ctx, function, body, &unary.expr, env, hint)?;
+    // A set's `!` is its complement, which stays within the declared flags.
+    if matches!(unary.op, syn::UnOp::Not(_)) {
+        if let Some(all) = ctx.flags_of(ty).map(|info| info.all) {
+            return Ok((super::nominal::complement(function, body, inner, all)?, ty));
+        }
+    }
     let op = match unary.op {
         // Naga has no negation for matrices or unsigned integers.
         syn::UnOp::Neg(_) => match ctx.shape(ty).elem_kind() {
@@ -275,6 +281,14 @@ fn lower_binary(
             (left, left_ty, right, right_ty)
         };
 
+    // A set's `-` is the flags of the left that the right does not have.
+    if op == BinaryOperator::Subtract && ctx.flags_of(left_ty).is_some() {
+        if right_ty != left_ty {
+            return Err(Error::TypeMismatch);
+        }
+        let handle = super::nominal::difference(function, body, left, right)?;
+        return Ok((handle, left_ty));
+    }
     if shift {
         splat_shift(ctx, function, body, left_ty, &mut right, &mut right_ty)?;
     } else if op != BinaryOperator::Multiply {
@@ -338,6 +352,14 @@ fn lower_compound_assign(
     let (mut rhs, mut rhs_ty) = lower_expr_hinted(ctx, function, body, right, env, hint)?;
     let mut lhs = emit(function, body, Expression::Load { pointer })?;
     let mut lhs_ty = ty;
+    if op == BinaryOperator::Subtract && ctx.flags_of(ty).is_some() {
+        if rhs_ty != ty {
+            return Err(Error::TypeMismatch);
+        }
+        let value = super::nominal::difference(function, body, lhs, rhs)?;
+        body.push(Statement::Store { pointer, value }, Span::UNDEFINED);
+        return Ok((value, ty));
+    }
     if shift {
         splat_shift(ctx, function, body, lhs_ty, &mut rhs, &mut rhs_ty)?;
     } else {
@@ -450,7 +472,8 @@ fn lower_cast(
 ) -> Result<Typed, Error> {
     let target = ctx.lower_type(&cast.ty)?;
     let (value, value_ty) = lower_expr(ctx, function, body, &cast.expr, env)?;
-    if value_ty == target {
+    // `Mode::Depth as u32` changes only which Rust type the `u32` is.
+    if ctx.module.types[value_ty].inner == ctx.module.types[target].inner {
         return Ok((value, target));
     }
     // Component-wise conversion: scalar to scalar, or vector to same-size vector.

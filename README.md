@@ -205,6 +205,30 @@ as on the GPU, so any matrix can be shared; an array of `Vec3`, whose elements
 the GPU spaces 16 bytes apart, cannot. `examples/sprites` shares its uniforms
 this way.
 
+A `#[repr(u32)]` enum and a `bitflags!` set around a `u32` are a `u32` on the
+GPU, so a shared struct can hold them, and a shader compares and tests them as
+Rust does: `debug.mode == Mode::Depth`, `debug.draw.contains(Draw::SPACE)`.
+A set's `!` is its complement, which stays within the declared flags, and its
+`-` is the difference; neither is the `u32` operator. A set that derives
+`Pod` is declared on a newtype, as `bitflags` shows for any derive it lacks:
+
+```rust,ignore
+#[repr(transparent)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, bytemuck::Zeroable, bytemuck::Pod)]
+pub struct Draw(u32);
+
+bitflags::bitflags! {
+    impl Draw: u32 {
+        const SPACE = 1;
+        const RESTIR = 1 << 1;
+    }
+}
+```
+
+An enum cannot be `Pod`, since not every `u32` is one of its variants, so a
+struct that holds one derives `bytemuck::NoUninit`, which is all an upload
+needs.
+
 ### Textures and ray queries are methods
 
 Each operation lives on the types it applies to, so `rustc` turns away what
@@ -299,6 +323,10 @@ returns. A call that returns nothing can end a block, as in Rust.
   pointer with writes refused
 - `let p = &mut place;` and `let p = &place;` name a place, which is then read
   and written through `p`
+- `#[repr(u32)]` enums and `bitflags!` sets around a `u32`, as types and
+  values: `==`, `|`, `&`, `^`, a set's `!` and `-`, `contains`, `intersects`,
+  `is_empty`, `is_all`, `bits`, `Flags::empty()`, `Flags::all()`,
+  `Flags::from_bits_truncate(b)`, an enum's `#[default]` variant
 - `const NAME: T = …` (literals, vector/matrix constructors, other constants,
   `u32::MAX` and the rest of a primitive's own, `core::f32::consts`, `cfg!(..)`)
 - structs, their literals, with `..Default::default()` or `..other` for the rest,

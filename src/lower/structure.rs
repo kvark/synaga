@@ -20,6 +20,11 @@ pub(super) fn lower_struct_item(
         )));
     }
     let name = item.ident.to_string();
+    // `struct Flags(u32)` under `bitflags! { impl Flags: u32 { .. } }` is the
+    // set, which is its `u32` on the GPU.
+    if ctx.scope.flags.get(&name).is_some_and(|info| info.external) {
+        return Ok(ctx.nominal_type(&name)?.expect("a declared set"));
+    }
     let repr = host_repr(&item.attrs, &name)?;
     let derives_default = derives_default(&item.attrs);
     let named = match item.fields {
@@ -104,8 +109,8 @@ pub(super) fn lower_struct_item(
     Ok(handle)
 }
 
-/// Does a struct with `attrs` derive `Default`?
-fn derives_default(attrs: &[syn::Attribute]) -> bool {
+/// Does an item with `attrs` derive `Default`?
+pub(super) fn derives_default(attrs: &[syn::Attribute]) -> bool {
     attrs
         .iter()
         .filter(|a| a.path().is_ident("derive"))
@@ -137,7 +142,18 @@ pub(super) fn unseen_default(ctx: &Context, ty: Handle<Type>) -> Option<String> 
             }
             members.iter().find_map(|m| unseen_default(ctx, m.ty))
         }
-        _ => None,
+        // An enum's derived `Default` is its `#[default]` variant, which is
+        // zero only if its discriminant is. A set's is empty, which is.
+        _ => {
+            let name = || ctx.module.types[ty].name.clone().unwrap_or_default();
+            if let Some(info) = ctx.enum_of(ty) {
+                return (info.default != Some(0)).then(name);
+            }
+            if let Some(info) = ctx.flags_of(ty) {
+                return (!info.derives_default).then(name);
+            }
+            None
+        }
     }
 }
 

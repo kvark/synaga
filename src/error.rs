@@ -162,6 +162,12 @@ pub enum Error {
     Cycle(String),
     #[error("`{0}` is an entry point, which only the GPU calls")]
     CallToEntryPoint(String),
+    #[error("`{0}` is a `u32` on the GPU, so to be a type there it needs `#[repr(u32)]`")]
+    EnumRepr(String),
+    #[error("`{0}` is a `u32` on the GPU, so it needs `#[repr(transparent)]` around a `u32`")]
+    FlagsRepr(String),
+    #[error("`bitflags!` {0}")]
+    Bitflags(String),
 }
 
 impl Error {

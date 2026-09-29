@@ -83,9 +83,12 @@ pub(crate) struct Scope {
     sources: Vec<SourceScope>,
     pub entries: Vec<Entry>,
     by_name: HashMap<(Ns, String), Vec<usize>>,
-    /// `Mode::Variance` is the discriminant, as a `u32`. Shaders compare and
-    /// cast these; they do not pass the enum type itself to Naga.
+    /// `Mode::Variance` is the discriminant, as a `u32`.
     variants: HashMap<(String, String), u32>,
+    /// The enums, by name, which are a `u32` on the GPU.
+    pub enums: HashMap<String, super::nominal::EnumInfo>,
+    /// The `bitflags!` sets, by name, which are too.
+    pub flags: HashMap<String, super::nominal::FlagsInfo>,
 }
 
 impl Scope {
@@ -119,12 +122,24 @@ impl Scope {
                 if let Item::Enum(enumeration) = &item {
                     let variants =
                         enum_variants(enumeration).map_err(|error| IndexError { source, error })?;
+                    let info = super::nominal::enum_info(enumeration, &variants);
+                    let name = enumeration.ident.to_string();
                     for (variant, value) in variants {
-                        scope
-                            .variants
-                            .insert((enumeration.ident.to_string(), variant), value);
+                        scope.variants.insert((name.clone(), variant), value);
                     }
+                    scope.enums.insert(name, info);
                     continue;
+                }
+                // `bitflags!` declares sets, which are types the shader reads
+                // rather than items it lowers. Any other macro is an error when
+                // it is lowered.
+                if let Item::Macro(item_macro) = &item {
+                    if super::nominal::is_bitflags(&item_macro.mac) {
+                        let sets = super::nominal::parse_bitflags(&item_macro.mac)
+                            .map_err(|error| IndexError { source, error })?;
+                        scope.flags.extend(sets);
+                        continue;
+                    }
                 }
                 let name = item_name(&item);
                 if let Some(key) = &name {
@@ -151,7 +166,47 @@ impl Scope {
                 });
             }
         }
+        scope.find_flags_newtypes()?;
         Ok(scope)
+    }
+
+    /// `bitflags! { impl Flags: u32 { .. } }` puts the flags on a struct the
+    /// sources declare. Its `#[repr]` and derives are on that struct, which
+    /// has to be a `u32` and nothing else.
+    fn find_flags_newtypes(&mut self) -> Result<(), IndexError> {
+        for (name, info) in self.flags.iter_mut().filter(|(_, info)| info.external) {
+            let found = self.entries.iter().find_map(|entry| match &entry.item {
+                Some(Item::Struct(item)) if item.ident == name.as_str() => {
+                    Some((entry.source, item))
+                }
+                _ => None,
+            });
+            let Some((source, item)) = found else {
+                return Err(IndexError {
+                    source: 0,
+                    error: Error::Bitflags(format!(
+                        "`impl {name}: u32` is for a `struct {name}(u32)` the shader declares"
+                    )),
+                });
+            };
+            let is_u32 =
+                |ty: &syn::Type| matches!(ty, syn::Type::Path(p) if p.path.is_ident("u32"));
+            let newtype = match &item.fields {
+                syn::Fields::Unnamed(fields) => {
+                    fields.unnamed.len() == 1 && is_u32(&fields.unnamed[0].ty)
+                }
+                _ => false,
+            };
+            if !newtype {
+                return Err(IndexError {
+                    source,
+                    error: Error::FlagsRepr(name.clone()),
+                });
+            }
+            info.transparent = super::nominal::has_repr(&item.attrs, "transparent");
+            info.derives_default = super::structure::derives_default(&item.attrs);
+        }
+        Ok(())
     }
 
     fn source_named(&self, name: &str) -> Option<usize> {

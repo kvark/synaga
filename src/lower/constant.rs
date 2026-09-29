@@ -86,13 +86,27 @@ fn lower_const_expr(
         }
         Expr::Path(path) => {
             let segments = super::path_segments(&path.path);
-            if let [enumeration, variant] = segments.as_slice() {
-                let literal = match ctx.scope.enum_variant(enumeration, variant) {
-                    Some(value) => Some(naga::Literal::U32(value)),
-                    None => scalar_const(enumeration, variant),
+            if let [ty_name, item] = segments.as_slice() {
+                // A set's flag, or an enum's variant, is its own type when
+                // that type is a `u32` on the GPU.
+                let nominal = match ctx.scope.flags.get(ty_name) {
+                    Some(info) => info.flag(item).map(|value| (value, true)),
+                    None => ctx.scope.enum_variant(ty_name, item).map(|value| {
+                        let repr_u32 = ctx.scope.enums.get(ty_name).is_some_and(|e| e.repr_u32);
+                        (value, repr_u32)
+                    }),
                 };
-                if let Some(literal) = literal {
-                    let ty = ctx.intern_scalar(literal.scalar());
+                let typed = match nominal {
+                    Some((value, true)) => {
+                        Some((naga::Literal::U32(value), ctx.intern_named_u32(ty_name)))
+                    }
+                    Some((value, false)) => {
+                        Some((naga::Literal::U32(value), ctx.intern_scalar(Scalar::U32)))
+                    }
+                    None => scalar_const(ty_name, item)
+                        .map(|literal| (literal, ctx.intern_scalar(literal.scalar()))),
+                };
+                if let Some((literal, ty)) = typed {
                     let handle = ctx
                         .module
                         .global_expressions

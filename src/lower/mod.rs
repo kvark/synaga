@@ -20,6 +20,7 @@ mod expr;
 mod global;
 mod matrix;
 mod method;
+mod nominal;
 mod place;
 mod ray;
 mod scope;
@@ -560,6 +561,11 @@ impl Context {
     /// The type `path` names: a struct or alias the sources declare, or one of
     /// the structs Naga predeclares.
     pub(super) fn named_type(&mut self, path: &[String]) -> Result<Option<Handle<Type>>, Error> {
+        // An enum or a flags set is a `u32` that keeps its name. One declared
+        // as a newtype is also a struct item, which lowers to the same type.
+        if let Some(handle) = self.nominal_type(&last(path))? {
+            return Ok(Some(handle));
+        }
         if let Some(Lowered::Type(handle)) = self.resolve(Ns::Type, path)? {
             return Ok(Some(handle));
         }

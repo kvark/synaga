@@ -88,6 +88,11 @@ pub(super) fn lower_method_any(
     if name == "cast" {
         return lower_cast(ctx, function, body, receiver, call, hint).map(Some);
     }
+    if let Some(typed) =
+        super::nominal::lower_flags_method(ctx, function, body, receiver, &name, &args, env)?
+    {
+        return Ok(Some(typed));
+    }
     lower_value_method(ctx, function, body, receiver, &name, &args, env).map(Some)
 }
 
@@ -300,6 +305,26 @@ pub(super) fn lower_qualified_call(
     env: &mut Env,
 ) -> Result<Typed, Error> {
     let ty_name = &super::last(on.path);
+    // An enum's derived `Default` is its `#[default]` variant, whatever that
+    // variant's discriminant is.
+    if method == "default" && args.is_empty() {
+        let default = ctx.scope.enums.get(ty_name).and_then(|e| e.default);
+        if let Some(value) = default {
+            let ty = ctx
+                .nominal_type(ty_name)?
+                .ok_or_else(|| Error::EnumRepr(ty_name.clone()))?;
+            let handle = function.expressions.append(
+                Expression::Literal(naga::Literal::U32(value)),
+                naga::Span::UNDEFINED,
+            );
+            return Ok((handle, ty));
+        }
+    }
+    if let Some(typed) =
+        super::nominal::lower_flags_call(ctx, function, body, ty_name, method, args, env)?
+    {
+        return Ok(typed);
+    }
     // `T::default()` is how Rust spells a zero value, and WGSL's `T()` is the
     // same thing. Any type may have one, so this comes before the vector names.
     if method == "default" && args.is_empty() {
@@ -385,11 +410,10 @@ pub(super) fn lower_qualified_const(
     constant: &str,
 ) -> Result<Typed, Error> {
     let ty_name = &super::last(on.path);
-    let literal = match ctx.scope.enum_variant(ty_name, constant) {
-        Some(value) => Some(naga::Literal::U32(value)),
-        None => super::constant::scalar_const(ty_name, constant),
-    };
-    if let Some(literal) = literal {
+    if let Some(typed) = super::nominal::lower_const(ctx, function, ty_name, constant)? {
+        return Ok(typed);
+    }
+    if let Some(literal) = super::constant::scalar_const(ty_name, constant) {
         let ty = ctx.intern_scalar(literal.scalar());
         let handle = function
             .expressions
