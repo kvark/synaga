@@ -111,9 +111,9 @@ macro_rules! vector_ops {
         vector_ops!(@scalar_too Rem, rem, RemAssign, rem_assign, $name, $scalar);
     };
     (@group bitwise, $name:ty, $scalar:ty, $shift:ty) => {
-        vector_ops!(@lanewise BitAnd, bitand, BitAndAssign, bitand_assign, $name);
-        vector_ops!(@lanewise BitOr, bitor, BitOrAssign, bitor_assign, $name);
-        vector_ops!(@lanewise BitXor, bitxor, BitXorAssign, bitxor_assign, $name);
+        vector_ops!(@scalar_too BitAnd, bitand, BitAndAssign, bitand_assign, $name, $scalar);
+        vector_ops!(@scalar_too BitOr, bitor, BitOrAssign, bitor_assign, $name, $scalar);
+        vector_ops!(@scalar_too BitXor, bitxor, BitXorAssign, bitxor_assign, $name, $scalar);
     };
     (@group shift, $name:ty, $scalar:ty, $shift:ty) => {
         vector_ops!(@shift Shl, shl, ShlAssign, shl_assign, $name, $shift);
@@ -134,8 +134,9 @@ macro_rules! vector_ops {
         }
     };
 
-    // Arithmetic also works against a scalar, from either side: a shader
-    // writes both `v * 2.0` and `2.0 * v`.
+    // Arithmetic and bitwise operators also work against a scalar, from
+    // either side, as glam's do: a shader writes both `v * 2.0` and
+    // `2.0 * v`, and `bits & 0xFF`.
     (@scalar_too $trait:ident, $method:ident, $assign:ident, $assign_fn:ident,
      $name:ty, $scalar:ty) => {
         vector_ops!(@lanewise $trait, $method, $assign, $assign_fn, $name);
@@ -216,6 +217,9 @@ macro_rules! vector_math {
             /// The sum of the lane-wise products.
             #[inline]
             pub fn dot(self, rhs: Self) -> $scalar { unimplemented_on_cpu() }
+            /// The sum of the lanes.
+            #[inline]
+            pub fn element_sum(self) -> $scalar { unimplemented_on_cpu() }
         }
     };
     (@group signed, $name:ty, $scalar:ty) => {

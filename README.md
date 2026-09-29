@@ -261,14 +261,16 @@ has. Each means what the Rust method means. Where the GPU builtin of that name
 does something else, the difference is made up, as `x.fract()` is
 `x - x.trunc()`, or refused: `x.round()` takes a half away from zero in Rust and
 to the even neighbour on the GPU, so the shader says `x.round_ties_even()`.
+An operator between a vector and a scalar applies the scalar to every lane,
+from either side, as glam's do: `srgb / 12.92`, `1.0 - v`, `bits & 0xFF`.
 
 The rest of `core` a shader reaches for works too: `core::f32::consts::PI`,
 `u32::MAX`, `x.to_bits()` and `f32::from_bits(n)`, `n.rotate_left(k)`,
-`n.unsigned_abs()`, `mask.all()` on a `Vec3<bool>`, and `v.cast::<i32>()`, which
-converts every lane as `as` converts a scalar. A struct literal may end in
-`..Default::default()` or `..other`. `T::default()` is the zero value, so a
-struct has to derive `Default` for it: one written by hand would be in the
-host, where the transpiler cannot see what it returns.
+`n.unsigned_abs()`, `mask.all()` on a `Vec3<bool>`, `v.element_sum()`, and
+`v.cast::<i32>()`, which converts every lane as `as` converts a scalar. A
+struct literal may end in `..Default::default()` or `..other`. `T::default()`
+is the zero value, so a struct has to derive `Default` for it: one written by
+hand would be in the host, where the transpiler cannot see what it returns.
 
 ### Items, as Rust has them
 

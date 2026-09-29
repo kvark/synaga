@@ -219,6 +219,30 @@ fn lower_value_method(
             )?;
             Ok((handle, ctx.intern_scalar(Scalar::BOOL)))
         }
+        // `v.element_sum()`, as glam names it: the dot product with ones.
+        ("element_sum", []) => {
+            let Shape::Vector(size, scalar) = ctx.shape(base_ty) else {
+                return Err(Error::UnsupportedMethod(name));
+            };
+            let one = match scalar.kind {
+                naga::ScalarKind::Float => naga::Literal::F32(1.0),
+                naga::ScalarKind::Sint => naga::Literal::I32(1),
+                naga::ScalarKind::Uint => naga::Literal::U32(1),
+                _ => return Err(Error::UnsupportedMethod(name)),
+            };
+            let one = function
+                .expressions
+                .append(Expression::Literal(one), naga::Span::UNDEFINED);
+            let ones = emit(function, body, Expression::Splat { size, value: one })?;
+            let expr = Expression::Math {
+                fun: naga::MathFunction::Dot,
+                arg: base,
+                arg1: Some(ones),
+                arg2: None,
+                arg3: None,
+            };
+            Ok((emit(function, body, expr)?, ctx.intern_scalar(scalar)))
+        }
         (cmp, [rhs]) if compare_op(cmp).is_some() => {
             let op = compare_op(cmp).expect("checked above");
             let (left, left_ty) = (base, base_ty);

@@ -22,6 +22,15 @@ fn shift_vector_by_scalar() {
 }
 
 #[test]
+fn bitwise_vector_by_scalar() {
+    // As glam does, and as the arithmetic operators already did.
+    let wgsl = roundtrip("fn f(v: Vec4<u32>) -> Vec4<u32> { (v & 0xFF) | 1 }");
+    assert!(wgsl.contains("vec4(255u)"), "{wgsl}");
+    assert!(wgsl.contains("vec4(1u)"), "{wgsl}");
+    validate_only("fn f(v: Vec2<i32>) -> Vec2<i32> { 1 ^ v }");
+}
+
+#[test]
 fn shift_amount_must_be_unsigned() {
     let msg = reject("fn f(a: i32, b: i32) -> i32 { a << b }");
     assert!(msg.contains("shift"), "{msg}");

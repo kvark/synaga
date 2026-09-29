@@ -180,3 +180,15 @@ fn integer_methods_are_rusts_too() {
     let msg = reject("fn f(x: f32, n: u32) -> f32 { x.rotate_left(n) }");
     assert!(msg.contains("type mismatch"), "{msg}");
 }
+
+#[test]
+fn element_sum_is_a_dot_with_ones() {
+    same_module(
+        "fn f(v: Vec4) -> f32 { v.element_sum() }",
+        "fn f(v: Vec4) -> f32 { dot(v, Vec4::splat(1.0)) }",
+    );
+    same_module(
+        "fn f(v: Vec3<i32>) -> i32 { v.element_sum() }",
+        "fn f(v: Vec3<i32>) -> i32 { dot(v, Vec3::<i32>::splat(1)) }",
+    );
+}
