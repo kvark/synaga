@@ -182,6 +182,23 @@ macro_rules! vector_math {
             pub fn lerp(self, rhs: Self, s: $scalar) -> Self { unimplemented_on_cpu() }
         }
     };
+    (@group wrapping, $name:ty, $scalar:ty) => {
+        impl $name {
+            /// Lane-wise `+`, wrapping around on overflow, as the GPU's `+`
+            /// does, rather than panicking as Rust's does under overflow checks.
+            #[inline]
+            pub fn wrapping_add(self, rhs: Self) -> Self { unimplemented_on_cpu() }
+            /// Lane-wise `-`, wrapping around on overflow.
+            #[inline]
+            pub fn wrapping_sub(self, rhs: Self) -> Self { unimplemented_on_cpu() }
+            /// Lane-wise `*`, wrapping around on overflow.
+            #[inline]
+            pub fn wrapping_mul(self, rhs: Self) -> Self { unimplemented_on_cpu() }
+            /// Each lane negated, wrapping around on overflow: `0 - self`.
+            #[inline]
+            pub fn wrapping_neg(self) -> Self { unimplemented_on_cpu() }
+        }
+    };
     (@group bool, $name:ty, $scalar:ty) => {
         impl $name {
             /// Whether every lane is `true`.
@@ -446,7 +463,8 @@ for size in SIZES:
         if scalar in ("i32", "u32", "bool"):
             traits.append("not")
         w(f"vector_ops!({ty}, {scalar}, {vname(size, 'u32')}{''.join(', ' + t for t in traits)});")
-        groups = {"f32": ["ord", "float"], "i32": ["ord", "signed"], "u32": ["ord"], "bool": ["bool"]}
+        groups = {"f32": ["ord", "float"], "i32": ["ord", "signed", "wrapping"],
+                  "u32": ["ord", "wrapping"], "bool": ["bool"]}
         w(f"vector_math!({ty}, {scalar}{''.join(', ' + g for g in groups[scalar])});")
         if size == 3 and scalar == "f32":
             w(f"impl {ty} {{")

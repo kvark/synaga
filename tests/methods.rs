@@ -192,3 +192,43 @@ fn element_sum_is_a_dot_with_ones() {
         "fn f(v: Vec3<i32>) -> i32 { dot(v, Vec3::<i32>::splat(1)) }",
     );
 }
+
+#[test]
+fn wrapping_arithmetic_is_the_gpus_operator() {
+    // The GPU's integer operators wrap. Rust's panic on overflow when
+    // overflow checks are on, as they are in a debug build, so code that
+    // means to wrap, as a hash does, says so, and on the GPU it is the
+    // operator.
+    same_module(
+        "fn f(a: u32, b: u32) -> u32 { a.wrapping_add(b).wrapping_mul(0x9e3779b9).wrapping_sub(b) }",
+        "fn f(a: u32, b: u32) -> u32 { (a + b) * 0x9e3779b9u32 - b }",
+    );
+    same_module(
+        "fn f(a: Vec3<i32>, b: Vec3<i32>) -> Vec3<i32> { a.wrapping_mul(b).wrapping_neg() }",
+        "fn f(a: Vec3<i32>, b: Vec3<i32>) -> Vec3<i32> { -(a * b) }",
+    );
+    // A `u32` has no `-`; zero minus it wraps the same way.
+    same_module(
+        "fn f(n: u32) -> u32 { n.wrapping_neg() }",
+        "fn f(n: u32) -> u32 { u32::default() - n }",
+    );
+    let msg = reject("fn f(a: f32, b: f32) -> f32 { a.wrapping_add(b) }");
+    assert!(msg.contains("type mismatch"), "{msg}");
+    let msg = reject("fn f(a: u32, b: i32) -> u32 { a.wrapping_add(b) }");
+    assert!(msg.contains("type mismatch"), "{msg}");
+}
+
+#[test]
+fn a_wrapping_shift_takes_its_amount_modulo_the_width() {
+    // As Rust's does, whatever the backend makes of a shift by 32 or more.
+    same_module(
+        "fn f(x: u32, n: u32) -> u32 { x.wrapping_shl(n) }",
+        "fn f(x: u32, n: u32) -> u32 { x << (n & 31) }",
+    );
+    same_module(
+        "fn f(x: i32, n: u32) -> i32 { x.wrapping_shr(n) }",
+        "fn f(x: i32, n: u32) -> i32 { x >> (n & 31) }",
+    );
+    let msg = reject("fn f(x: u32, n: i32) -> u32 { x.wrapping_shl(n) }");
+    assert!(msg.contains("shift amount"), "{msg}");
+}

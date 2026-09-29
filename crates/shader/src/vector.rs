@@ -268,6 +268,23 @@ macro_rules! vector_math {
             pub fn lerp(self, rhs: Self, s: $scalar) -> Self { unimplemented_on_cpu() }
         }
     };
+    (@group wrapping, $name:ty, $scalar:ty) => {
+        impl $name {
+            /// Lane-wise `+`, wrapping around on overflow, as the GPU's `+`
+            /// does, rather than panicking as Rust's does under overflow checks.
+            #[inline]
+            pub fn wrapping_add(self, rhs: Self) -> Self { unimplemented_on_cpu() }
+            /// Lane-wise `-`, wrapping around on overflow.
+            #[inline]
+            pub fn wrapping_sub(self, rhs: Self) -> Self { unimplemented_on_cpu() }
+            /// Lane-wise `*`, wrapping around on overflow.
+            #[inline]
+            pub fn wrapping_mul(self, rhs: Self) -> Self { unimplemented_on_cpu() }
+            /// Each lane negated, wrapping around on overflow: `0 - self`.
+            #[inline]
+            pub fn wrapping_neg(self) -> Self { unimplemented_on_cpu() }
+        }
+    };
     (@group bool, $name:ty, $scalar:ty) => {
         impl $name {
             /// Whether every lane is `true`.
@@ -449,7 +466,7 @@ impl Vec2<i32> {
     }
 }
 vector_ops!(Vec2<i32>, i32, Vec2<u32>, arith, bitwise, shift, neg, not);
-vector_math!(Vec2<i32>, i32, ord, signed);
+vector_math!(Vec2<i32>, i32, ord, signed, wrapping);
 
 impl Vec2<u32> {
     /// Lane-wise `<`.
@@ -477,7 +494,7 @@ impl Vec2<u32> {
     }
 }
 vector_ops!(Vec2<u32>, u32, Vec2<u32>, arith, bitwise, shift, not);
-vector_math!(Vec2<u32>, u32, ord);
+vector_math!(Vec2<u32>, u32, ord, wrapping);
 
 vector_ops!(Vec2<bool>, bool, Vec2<u32>, bitwise, not);
 vector_math!(Vec2<bool>, bool, bool);
@@ -715,7 +732,7 @@ impl Vec3<i32> {
     }
 }
 vector_ops!(Vec3<i32>, i32, Vec3<u32>, arith, bitwise, shift, neg, not);
-vector_math!(Vec3<i32>, i32, ord, signed);
+vector_math!(Vec3<i32>, i32, ord, signed, wrapping);
 
 impl Vec3<u32> {
     /// Lane-wise `<`.
@@ -743,7 +760,7 @@ impl Vec3<u32> {
     }
 }
 vector_ops!(Vec3<u32>, u32, Vec3<u32>, arith, bitwise, shift, not);
-vector_math!(Vec3<u32>, u32, ord);
+vector_math!(Vec3<u32>, u32, ord, wrapping);
 
 vector_ops!(Vec3<bool>, bool, Vec3<u32>, bitwise, not);
 vector_math!(Vec3<bool>, bool, bool);
@@ -1231,7 +1248,7 @@ impl Vec4<i32> {
     }
 }
 vector_ops!(Vec4<i32>, i32, Vec4<u32>, arith, bitwise, shift, neg, not);
-vector_math!(Vec4<i32>, i32, ord, signed);
+vector_math!(Vec4<i32>, i32, ord, signed, wrapping);
 
 impl Vec4<u32> {
     /// Lane-wise `<`.
@@ -1259,7 +1276,7 @@ impl Vec4<u32> {
     }
 }
 vector_ops!(Vec4<u32>, u32, Vec4<u32>, arith, bitwise, shift, not);
-vector_math!(Vec4<u32>, u32, ord);
+vector_math!(Vec4<u32>, u32, ord, wrapping);
 
 vector_ops!(Vec4<bool>, bool, Vec4<u32>, bitwise, not);
 vector_math!(Vec4<bool>, bool, bool);

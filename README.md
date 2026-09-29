@@ -280,7 +280,8 @@ from either side, as glam's do: `srgb / 12.92`, `1.0 - v`, `bits & 0xFF`.
 
 The rest of `core` a shader reaches for works too: `core::f32::consts::PI`,
 `u32::MAX`, `x.to_bits()` and `f32::from_bits(n)`, `n.rotate_left(k)`,
-`n.unsigned_abs()`, `mask.all()` on a `Vec3<bool>`, `v.element_sum()`, and
+`n.unsigned_abs()`, `a.wrapping_mul(b)` and the other `wrapping_` operations,
+`mask.all()` on a `Vec3<bool>`, `v.element_sum()`, and
 `v.cast::<i32>()`, which converts every lane as `as` converts a scalar. A
 struct literal may end in `..Default::default()` or `..other`. `T::default()`
 is the zero value, so a struct has to derive `Default` for it: one written by

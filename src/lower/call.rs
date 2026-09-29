@@ -494,6 +494,14 @@ enum RustMath {
     /// round for `rotate_right`. WGSL takes a shift's amount modulo 32, which
     /// makes that right for every `n`.
     Rotate { left: bool },
+    /// `a.wrapping_mul(b)` and its siblings: the GPU's operator, which wraps
+    /// on overflow. Rust's plain operator panics there under overflow checks,
+    /// so code that means to wrap, as a hash does, says so.
+    Wrapping(naga::BinaryOperator),
+    /// `n.wrapping_neg()`: `-n`, or `0 - n` for a `u32`.
+    WrappingNeg,
+    /// `x.wrapping_shl(n)`: the amount taken modulo 32, as Rust takes it.
+    WrappingShift { left: bool },
 }
 
 fn rust_math(name: &str) -> Option<RustMath> {
@@ -516,6 +524,12 @@ fn rust_math(name: &str) -> Option<RustMath> {
         "unsigned_abs" => return Some(RustMath::UnsignedAbs),
         "rotate_left" => return Some(RustMath::Rotate { left: true }),
         "rotate_right" => return Some(RustMath::Rotate { left: false }),
+        "wrapping_add" => return Some(RustMath::Wrapping(naga::BinaryOperator::Add)),
+        "wrapping_sub" => return Some(RustMath::Wrapping(naga::BinaryOperator::Subtract)),
+        "wrapping_mul" => return Some(RustMath::Wrapping(naga::BinaryOperator::Multiply)),
+        "wrapping_neg" => return Some(RustMath::WrappingNeg),
+        "wrapping_shl" => return Some(RustMath::WrappingShift { left: true }),
+        "wrapping_shr" => return Some(RustMath::WrappingShift { left: false }),
         _ => return None,
     };
     Some(RustMath::Builtin(MathSpec { fun, argc, result }))
@@ -619,8 +633,11 @@ fn lower_special_math(
             kind == Some(Kind::Float)
         }
         (RustMath::UnsignedAbs, []) => kind == Some(Kind::Sint),
-        (RustMath::Rotate { .. }, [_]) => {
+        (RustMath::Rotate { .. } | RustMath::WrappingShift { .. }, [_]) => {
             matches!(shape, Shape::Scalar(s) if s == naga::Scalar::U32 || s == naga::Scalar::I32)
+        }
+        (RustMath::Wrapping(_), [_]) | (RustMath::WrappingNeg, []) => {
+            matches!(kind, Some(Kind::Sint | Kind::Uint))
         }
         _ => return Ok(None),
     };
@@ -703,6 +720,54 @@ fn lower_special_math(
                 true => (reinterpret(function, body, rotated, Kind::Sint)?, ty),
                 false => (rotated, ty),
             }
+        }
+        RustMath::Wrapping(op) => {
+            let hint = shape.int_hint();
+            let (rhs, rhs_ty) = lower_expr_hinted(ctx, function, body, args[0], env, hint)?;
+            if ctx.shape(rhs_ty) != shape {
+                return Err(Error::TypeMismatch);
+            }
+            (binary(function, body, op, value, rhs)?, ty)
+        }
+        RustMath::WrappingNeg => {
+            let negated = match kind {
+                Some(Kind::Sint) => emit(
+                    function,
+                    body,
+                    Expression::Unary {
+                        op: naga::UnaryOperator::Negate,
+                        expr: value,
+                    },
+                )?,
+                // A `u32` has no `-`: `0 - n` wraps the same way.
+                _ => {
+                    let zero = function
+                        .expressions
+                        .append(Expression::ZeroValue(ty), Span::UNDEFINED);
+                    binary(function, body, naga::BinaryOperator::Subtract, zero, value)?
+                }
+            };
+            (negated, ty)
+        }
+        RustMath::WrappingShift { left } => {
+            let u32_ = naga::Scalar::U32;
+            let (amount, amount_ty) =
+                lower_expr_hinted(ctx, function, body, args[0], env, Some(u32_))?;
+            if ctx.shape(amount_ty) != Shape::Scalar(u32_) {
+                return Err(Error::BadShiftType);
+            }
+            // WGSL takes the amount modulo 32 too, but as for a rotation,
+            // Naga writes some backends' shifts as ones that are undefined
+            // from 32 up.
+            let mask = function
+                .expressions
+                .append(Expression::Literal(naga::Literal::U32(31)), Span::UNDEFINED);
+            let amount = binary(function, body, naga::BinaryOperator::And, amount, mask)?;
+            let op = match left {
+                true => naga::BinaryOperator::ShiftLeft,
+                false => naga::BinaryOperator::ShiftRight,
+            };
+            (binary(function, body, op, value, amount)?, ty)
         }
         RustMath::Fract => {
             let whole = emit(function, body, math(MathFunction::Trunc, None))?;
