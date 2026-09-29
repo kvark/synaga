@@ -243,6 +243,9 @@ fn lower_binary(
     env: &mut Env,
     outer: Option<Scalar>,
 ) -> Result<Typed, Error> {
+    if matches!(op, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr) {
+        return lower_lazy(ctx, function, body, op, (left_expr, right_expr), env);
+    }
     let shift = is_shift(op);
     // Arithmetic, bitwise operators and shifts produce their operands' type,
     // so where the result goes says what the operands are too. A comparison's
@@ -308,6 +311,87 @@ fn lower_binary(
     let ty = bin_result_ty(ctx, op, left_ty, right_ty)?;
     let handle = emit(function, body, Expression::Binary { op, left, right })?;
     Ok((handle, ty))
+}
+
+/// `a && b` and `a || b`, which evaluate `b` only when `a` does not already
+/// decide, as Rust's lazy boolean operators do.
+///
+/// A right side that only computes is evaluated either way, as a plain Naga
+/// `&&`: nothing can tell, and the guarded form costs a local. Anything that
+/// acts, like a call or an atomic, is a statement, and anything that indexes
+/// may be out of bounds; either goes under an `if` on the left side.
+fn lower_lazy(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    op: BinaryOperator,
+    (left_expr, right_expr): (&Expr, &Expr),
+    env: &mut Env,
+) -> Result<Typed, Error> {
+    let (left, left_ty) = lower_expr(ctx, function, body, left_expr, env)?;
+    let mut right_block = Block::new();
+    let (right, right_ty) = lower_expr(ctx, function, &mut right_block, right_expr, env)?;
+    let ty = bin_result_ty(ctx, op, left_ty, right_ty)?;
+    let pure = right_block
+        .iter()
+        .all(|statement| matches!(statement, Statement::Emit(_)));
+    if pure && !indexes(right_expr) {
+        body.append(&mut right_block);
+        let handle = emit(function, body, Expression::Binary { op, left, right })?;
+        return Ok((handle, ty));
+    }
+    let local = function.local_variables.append(
+        naga::LocalVariable {
+            name: None,
+            ty,
+            init: None,
+        },
+        Span::UNDEFINED,
+    );
+    let pointer = function
+        .expressions
+        .append(Expression::LocalVariable(local), Span::UNDEFINED);
+    body.push(
+        Statement::Store {
+            pointer,
+            value: left,
+        },
+        Span::UNDEFINED,
+    );
+    right_block.push(
+        Statement::Store {
+            pointer,
+            value: right,
+        },
+        Span::UNDEFINED,
+    );
+    let (accept, reject) = match op {
+        BinaryOperator::LogicalAnd => (right_block, Block::new()),
+        _ => (Block::new(), right_block),
+    };
+    body.push(
+        Statement::If {
+            condition: left,
+            accept,
+            reject,
+        },
+        Span::UNDEFINED,
+    );
+    let value = emit(function, body, Expression::Load { pointer })?;
+    Ok((value, ty))
+}
+
+/// Does `expr` index anything, which could be out of bounds?
+fn indexes(expr: &Expr) -> bool {
+    struct Finder(bool);
+    impl<'ast> syn::visit::Visit<'ast> for Finder {
+        fn visit_expr_index(&mut self, _: &'ast syn::ExprIndex) {
+            self.0 = true;
+        }
+    }
+    let mut finder = Finder(false);
+    syn::visit::Visit::visit_expr(&mut finder, expr);
+    finder.0
 }
 
 fn lower_assign(
