@@ -217,3 +217,49 @@ fn a_range_evaluates_its_ends_once() {
         }
     }
 }
+
+#[test]
+fn an_inclusive_range_tests_the_counter_as_stored() {
+    // Naga's MSL backend writes `break if` after it has forgotten the names
+    // it gave what `continuing` computed, so it reads the counter again
+    // there, after the step. The condition has to mean the same either way:
+    // the counter as stored, against `end + 1`, not the value it stepped
+    // from against `end`.
+    let module = lower("fn f(n: u32) -> u32 { let mut t = 0u32; for i in 0..=n { t += i; } t }");
+    let f = function(&module, "f");
+    fn find(block: &naga::Block) -> Option<(&naga::Block, naga::Handle<Expression>)> {
+        block.iter().find_map(|statement| match statement {
+            Statement::Loop {
+                continuing,
+                break_if: Some(condition),
+                ..
+            } => Some((continuing, *condition)),
+            Statement::If { accept, reject, .. } => find(accept).or_else(|| find(reject)),
+            Statement::Block(inner) => find(inner),
+            _ => None,
+        })
+    }
+    let (continuing, condition) = find(&f.body).unwrap_or_else(|| panic!("{:#?}", f.body));
+    let Expression::Binary {
+        op: BinaryOperator::Equal,
+        left,
+        ..
+    } = f.expressions[condition]
+    else {
+        panic!("{:?}", f.expressions[condition]);
+    };
+    let Expression::Load { pointer } = f.expressions[left] else {
+        panic!("{:?}", f.expressions[left]);
+    };
+    // The load comes after the store it reads.
+    let position = |wanted: &dyn Fn(&Statement) -> bool| {
+        continuing
+            .iter()
+            .position(wanted)
+            .unwrap_or_else(|| panic!("{continuing:#?}"))
+    };
+    let stored = position(&|s| matches!(s, Statement::Store { pointer: p, .. } if *p == pointer));
+    let loaded =
+        position(&|s| matches!(s, Statement::Emit(range) if range.clone().any(|h| h == left)));
+    assert!(stored < loaded, "{continuing:#?}");
+}

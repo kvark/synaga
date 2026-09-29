@@ -531,22 +531,18 @@ fn lower_for(
     env.pop_scope();
 
     // `continuing { i += 1; }`, and for an inclusive range, leave once the
-    // iteration for `end` is done. The step after the last one may wrap,
-    // which is harmless: nothing reads the counter again.
+    // iteration for `end` is done: once the counter, as stored, is `end + 1`.
+    // That wraps round to the smallest value for the largest `end`, as the
+    // counter does.
+    //
+    // The condition reads the counter again after the store, rather than
+    // comparing the value it stepped from with `end`. The two mean the same,
+    // but Naga's MSL backend writes `break if` after it has forgotten the
+    // names it gave what `continuing` computed, and reads the counter anew
+    // there, which is only right if the condition was about the counter as
+    // stored.
     let mut continuing = Block::new();
     let step = emit(function, &mut continuing, Expression::Load { pointer })?;
-    let break_if = match inclusive {
-        true => Some(emit(
-            function,
-            &mut continuing,
-            Expression::Binary {
-                op: naga::BinaryOperator::Equal,
-                left: step,
-                right: bound,
-            },
-        )?),
-        false => None,
-    };
     let one = function
         .expressions
         .append(Expression::Literal(int_one(ctx, ty)), Span::UNDEFINED);
@@ -566,6 +562,33 @@ fn lower_for(
         },
         Span::UNDEFINED,
     );
+    let break_if = match inclusive {
+        true => {
+            let one = function
+                .expressions
+                .append(Expression::Literal(int_one(ctx, ty)), Span::UNDEFINED);
+            let past_end = emit(
+                function,
+                body,
+                Expression::Binary {
+                    op: naga::BinaryOperator::Add,
+                    left: bound,
+                    right: one,
+                },
+            )?;
+            let stored = emit(function, &mut continuing, Expression::Load { pointer })?;
+            Some(emit(
+                function,
+                &mut continuing,
+                Expression::Binary {
+                    op: naga::BinaryOperator::Equal,
+                    left: stored,
+                    right: past_end,
+                },
+            )?)
+        }
+        false => None,
+    };
 
     let looped = Statement::Loop {
         body: loop_body,
