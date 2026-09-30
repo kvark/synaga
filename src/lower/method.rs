@@ -54,6 +54,15 @@ pub(super) fn lower_method_any(
 
     let receiver = match super::place::lower_place(ctx, function, body, &call.receiver, env)? {
         Some(place) => {
+            // `emit_end.set(n)` writes a whole resource, which is what
+            // `*emit_end = n` would, if Rust could assign through a `static`.
+            if name == "set" && is_resource(function, &place) {
+                return lower_set(ctx, function, body, place, &args, env).map(|()| None);
+            }
+            if let Some(method) = user_method(ctx, place.ty, &name)? {
+                let receiver = Receiver::Place(place);
+                return lower_user_method(ctx, function, body, method, &name, receiver, &args, env);
+            }
             match ctx.module.types[place.ty].inner {
                 naga::TypeInner::Atomic(scalar) => {
                     return super::atomic::lower_atomic_method(
@@ -78,7 +87,14 @@ pub(super) fn lower_method_any(
             let ty = place.ty;
             (super::place::load(function, body, &place)?, ty)
         }
-        None => lower_expr(ctx, function, body, &call.receiver, env)?,
+        None => {
+            let value = lower_expr(ctx, function, body, &call.receiver, env)?;
+            if let Some(method) = user_method(ctx, value.1, &name)? {
+                let receiver = Receiver::Value(value);
+                return lower_user_method(ctx, function, body, method, &name, receiver, &args, env);
+            }
+            value
+        }
     };
     if super::texture::is_image(ctx, receiver.1) {
         return super::texture::lower_texture_method(
@@ -94,6 +110,173 @@ pub(super) fn lower_method_any(
         return Ok(Some(typed));
     }
     lower_value_method(ctx, function, body, receiver, &name, &args, env).map(Some)
+}
+
+/// What a method call's receiver turned out to be: storage, or a value.
+enum Receiver {
+    Place(super::place::Place),
+    Value(Typed),
+}
+
+/// The method `name` the sources define on `ty`, unless `ty` has one of that
+/// name of its own: a vector's `dot` is the vector's, as an inherent method
+/// comes before a trait's in Rust.
+fn user_method(
+    ctx: &mut Context,
+    ty: naga::Handle<naga::Type>,
+    name: &str,
+) -> Result<Option<super::Method>, Error> {
+    let own = match ctx.shape(ty) {
+        Shape::Other => ctx.flags_of(ty).is_some() && super::nominal::is_flags_method(name),
+        _ => is_value_method(name),
+    };
+    if own || super::texture::is_image(ctx, ty) {
+        return Ok(None);
+    }
+    ctx.find_method(ty, name)
+}
+
+/// A method of a vector, scalar or matrix, by its name alone.
+fn is_value_method(name: &str) -> bool {
+    swizzle_components(name).is_some()
+        || compare_op(name).is_some()
+        || super::call::is_math_method(name)
+        || matches!(
+            name,
+            "len"
+                | "extend"
+                | "truncate"
+                | "to_bits"
+                | "all"
+                | "any"
+                | "element_sum"
+                | "cast"
+                | "get_mut"
+                | "set"
+        )
+}
+
+/// `receiver.name(args)`, for a method the sources define.
+#[allow(clippy::too_many_arguments)]
+fn lower_user_method(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    method: super::Method,
+    name: &str,
+    receiver: Receiver,
+    args: &[&Expr],
+    env: &mut Env,
+) -> Result<Option<Typed>, Error> {
+    let Some(kind) = method.receiver else {
+        return Err(Error::AssociatedFunction(name.into()));
+    };
+    let first = match (kind, receiver) {
+        (super::ReceiverKind::Value, Receiver::Value((value, _))) => value,
+        (super::ReceiverKind::Value, Receiver::Place(place)) => {
+            super::place::load(function, body, &place)?
+        }
+        (super::ReceiverKind::Mut, Receiver::Place(place)) => {
+            if !place.writable {
+                return Err(Error::AssignToReadonly(place.root));
+            }
+            if place.space != naga::AddressSpace::Function {
+                return Err(Error::MutSelfNotLocal(name.into()));
+            }
+            place.pointer
+        }
+        (super::ReceiverKind::Mut, Receiver::Value(_)) => {
+            return Err(Error::MutSelfNotLocal(name.into()))
+        }
+    };
+    let callee = ctx.method_function(method.entry)?;
+    super::call::call_function(ctx, function, body, callee, Some(first), args, env)
+}
+
+/// `Material::from_metallic_roughness(..)`, `Self::new(..)`, or a method
+/// called through its type, `Quat::inverse(q)`: an associated function the
+/// sources define. `None` when the type has none of that name, and the
+/// builtins get their turn.
+pub(super) fn lower_user_assoc_call(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    on: &OnType,
+    name: &str,
+    args: &[&Expr],
+    env: &mut Env,
+) -> Result<Option<Option<Typed>>, Error> {
+    let Some(ty) = super::call::zero_value_type(ctx, on.path, on.turbofish, on.hint)? else {
+        return Ok(None);
+    };
+    // A vector's `splat` and `from` are its own.
+    if ctx.shape(ty) != Shape::Other && matches!(name, "splat" | "from" | "from_bits") {
+        return Ok(None);
+    }
+    let Some(method) = ctx.find_method(ty, name)? else {
+        return Ok(None);
+    };
+    let (first, rest) = match method.receiver {
+        None => (None, args),
+        Some(kind) => {
+            let [receiver, rest @ ..] = args else {
+                return Err(Error::WrongArgCount(name.into()));
+            };
+            let first = match kind {
+                super::ReceiverKind::Value => {
+                    let (value, value_ty) = lower_expr(ctx, function, body, receiver, env)?;
+                    if value_ty != ty {
+                        return Err(Error::TypeMismatch);
+                    }
+                    value
+                }
+                super::ReceiverKind::Mut => {
+                    super::call::pointer_arg(ctx, function, body, receiver, env, ty)?
+                }
+            };
+            (Some(first), rest)
+        }
+    };
+    let callee = ctx.method_function(method.entry)?;
+    super::call::call_function(ctx, function, body, callee, first, rest, env).map(Some)
+}
+
+/// Is `place` a resource itself, rather than a part of one or a local?
+fn is_resource(function: &Function, place: &super::place::Place) -> bool {
+    matches!(
+        function.expressions[place.pointer],
+        Expression::GlobalVariable(_)
+    )
+}
+
+/// `resource.set(value)`: a store of the whole of what the resource holds.
+fn lower_set(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    place: super::place::Place,
+    args: &[&Expr],
+    env: &mut Env,
+) -> Result<(), Error> {
+    let [value] = args else {
+        return Err(Error::WrongArgCount("set".into()));
+    };
+    if !place.writable {
+        return Err(Error::AssignToReadonly(place.root));
+    }
+    let hint = ctx.shape(place.ty).int_hint();
+    let (value, value_ty) = lower_expr_hinted(ctx, function, body, value, env, hint)?;
+    if value_ty != place.ty {
+        return Err(Error::TypeMismatch);
+    }
+    body.push(
+        naga::Statement::Store {
+            pointer: place.pointer,
+            value,
+        },
+        naga::Span::UNDEFINED,
+    );
+    Ok(())
 }
 
 /// `v.cast::<i32>()`: every lane converted, as `vec3<i32>(v)` converts them.
@@ -349,6 +532,12 @@ pub(super) fn lower_qualified_call(
     {
         return Ok(typed);
     }
+    if let Some(value) = super::ray::flags_call(ty_name, method) {
+        if !args.is_empty() {
+            return Err(Error::WrongArgCount(format!("{ty_name}::{method}")));
+        }
+        return Ok(u32_literal(ctx, function, value));
+    }
     // `T::default()` is how Rust spells a zero value, and WGSL's `T()` is the
     // same thing. Any type may have one, so this comes before the vector names.
     if method == "default" && args.is_empty() {
@@ -437,6 +626,9 @@ pub(super) fn lower_qualified_const(
     if let Some(typed) = super::nominal::lower_const(ctx, function, ty_name, constant)? {
         return Ok(typed);
     }
+    if let Some(value) = super::ray::typed_const(ty_name, constant) {
+        return Ok(u32_literal(ctx, function, value));
+    }
     if let Some(literal) = super::constant::scalar_const(ty_name, constant) {
         let ty = ctx.intern_scalar(literal.scalar());
         let handle = function
@@ -471,4 +663,13 @@ pub(super) fn lower_qualified_const(
         }
         _ => Err(Error::UnknownIdent(format!("{ty_name}::{constant}"))),
     }
+}
+
+/// `value` as a `u32` literal.
+fn u32_literal(ctx: &mut Context, function: &mut Function, value: u32) -> Typed {
+    let handle = function.expressions.append(
+        Expression::Literal(naga::Literal::U32(value)),
+        naga::Span::UNDEFINED,
+    );
+    (handle, ctx.intern_scalar(Scalar::U32))
 }

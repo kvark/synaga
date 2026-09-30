@@ -76,7 +76,7 @@ fn emitted_under(func: &naga::Function, wanted: &dyn Fn(&Expression) -> bool) ->
     paths(&func.body, &found)
 }
 
-const COUNTER: &str = "static counter: StorageMut<AtomicU32> = group(0).binding(0);";
+const COUNTER: &str = "static counter: StorageMut<Atomic<u32>> = group(0).binding(0);";
 
 #[test]
 fn and_acts_only_when_the_left_holds() {

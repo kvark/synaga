@@ -118,9 +118,10 @@ pub fn reset(global_invocation_id: Vec3<u32>, num_workgroups: Vec3<u32>) { .. }
 ```
 
 A bare value an entry point returns is a vertex shader's position and a
-fragment shader's first colour target, `location(0)`. `#[output(..)]` on the
-function says otherwise, `#[output(builtin(frag_depth))]`; it is on the
-function because Rust has no attributes on types.
+fragment shader's first colour target, `location(0)`, and nothing else. Any
+other result, a depth or a second colour target, is a struct whose fields say
+where they go. The function never says it: Rust has no attributes on types,
+and the result's binding belongs with the result.
 
 A struct whose fields are all bound derives `Io`, which is what lets `rustc`
 accept the attributes on its fields. It counts the fields as read, since the
@@ -160,7 +161,13 @@ particles.get_mut()[i].life -= delta;       // a write says so
 
 let p = &mut particles.get_mut()[i];        // or name the element
 p.pos += p.vel * delta;
+
+emit_end.set(count);                        // or write all of it
 ```
+
+`emit_end.set(count)` is `*emit_end.get_mut() = count`. `*emit_end = count`
+would be nicer, but it borrows the `static` mutably, which Rust refuses for one
+that is not `mut`; `set` takes `&self`, as `Cell::set` does.
 
 Other invocations run at the same time and may write the same memory, and the
 shader keeps them apart, as it has to in WGSL. `get_mut` hands out `&mut` from
@@ -168,8 +175,10 @@ shader keeps them apart, as it has to in WGSL. `get_mut` hands out `&mut` from
 so it is not `unsafe`. [Resources and aliasing](#resources-and-aliasing) says
 what that means for a shader, and for running one on the CPU.
 
-Atomics are `AtomicU32` and `AtomicI32`, with the standard methods but no
-`Ordering`, since WGSL's atomics are relaxed and nothing stronger:
+Atomics are `Atomic<u32>` and `Atomic<i32>`, with the standard methods but no
+`Ordering`, since WGSL's atomics are relaxed and nothing stronger. They are
+generic, as the vectors are, and not the standard `AtomicU32`, whose methods
+take the `Ordering`:
 `count.fetch_add(1)`, `lock.compare_exchange_weak(0, 1)`, which hands back a
 plain `{ old_value, exchanged }`. They take `&self`, as the standard ones do, so
 a buffer changed only through its atomics needs no `get_mut`. On the CPU they
@@ -190,13 +199,17 @@ Rust and 80 on the GPU; 8 bytes of padding at the end line them up
 
 ```rust,ignore
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
+#[derive(Shared)]
 pub struct Globals {
     pub mvp_transform: Mat4,
     pub sprite_size: Vec2,
     pub _pad: Vec2,
 }
 ```
+
+`#[derive(Shared)]` is what uploading one takes: `Clone`, `Copy`, a `Default`
+of all zeroes, which is the GPU's default too, and `bytemuck`'s `Zeroable` and
+`Pod`, checked as `bytemuck`'s own derive checks them.
 
 The transpiler works out `rustc`'s layout from the types. To have `rustc`
 confirm it, for the target being built, the module that lists the shader
@@ -212,8 +225,8 @@ pub mod sprite;
 synaga_shader::check_layout!();
 ```
 
-With `synaga-shader`'s `bytemuck` feature the vectors and matrices are `Pod`, so
-such a struct can derive it and upload itself. They convert from arrays, a
+`Shared` needs `synaga-shader`'s `bytemuck` feature, which makes the vectors
+and matrices `Pod`. They convert from arrays, a
 matrix column by column, and with the `mint` feature from mint's types, which
 most math crates convert to. A matrix column of three lanes takes four, in Rust
 as on the GPU, so any matrix can be shared; an array of `Vec3`, whose elements
@@ -266,7 +279,10 @@ texture.
 | `arrayLength(&buf.items)` | `buf.items.len()` |
 
 An array texture takes its layer after the coordinate, as WGSL does:
-`layers.sample_level(&s, uv, layer, 0.0)`.
+`layers.sample_level(&s, uv, layer, 0.0)`. A ray's flags are a set,
+`RayFlag::TERMINATE_ON_FIRST_HIT | RayFlag::CULL_NO_OPAQUE`, and what a query
+found is an enum, `hit.kind == RayQueryIntersection::None`: WGSL's
+`RAY_FLAG_*` and `RAY_QUERY_INTERSECTION_*`, typed.
 
 ### Math, as `f32` and glam name it
 
@@ -285,8 +301,9 @@ The rest of `core` a shader reaches for works too: `core::f32::consts::PI`,
 `mask.all()` on a `Vec3<bool>`, `v.element_sum()`, and
 `v.cast::<i32>()`, which converts every lane as `as` converts a scalar. A
 struct literal may end in `..Default::default()` or `..other`. `T::default()`
-is the zero value, so a struct has to derive `Default` for it: one written by
-hand would be in the host, where the transpiler cannot see what it returns.
+is the zero value, so a struct has to derive `Default` for it, or implement it
+in the shader: one written by hand in the host is one the transpiler cannot
+see.
 
 ### Items, as Rust has them
 
@@ -296,6 +313,32 @@ may hold one declared later. Sibling files reach each other the Rust ways —
 `brdf::sample(..)` or `crate::shaders::brdf::sample(..)` — and two modules may
 each have a helper of the same name. `type Color = Vec4;` works. A function
 cannot call itself, directly or not, since a shader cannot recurse.
+
+An `impl` gives a type associated functions and methods, and a trait gives
+them to a type from elsewhere, a vector included:
+
+```rust,ignore
+impl Material {
+    pub fn from_metallic_roughness(base: Vec3, metalness: f32, roughness: f32) -> Self {
+        Self { diffuse: base * (1.0 - metalness), roughness }
+    }
+    pub fn alpha(self) -> f32 { self.roughness * self.roughness }
+}
+
+pub trait Quaternion { fn inv(self) -> Self; }
+impl Quaternion for Vec4 {
+    fn inv(self) -> Self { (-self.xyz()).extend(self.w) }
+}
+```
+
+Each method is a function named after its type, `Material_alpha`. `self` and
+`&self` take a copy, which is all a read needs, and `&mut self` a pointer, so
+its receiver has to be a local: WGSL passes no pointer into a buffer. A
+method is lowered when a shader calls it, so an `impl` only the host uses,
+such as `Debug`, can sit beside the type. As in Rust, a type's own method
+comes before a trait's: a trait's `dot` on a `Vec3` is never the one `v.dot(w)`
+calls. A generic `impl` is left to the host, and `mut self` and a trait's
+default methods are not supported.
 
 ### Things Rust spells differently
 
@@ -307,6 +350,7 @@ cannot call itself, directly or not, since a shader cannot recurse.
 | `v.xyz`, `v.rgb` | `v.xyz()`, `v.rgb()` | one piece of memory cannot carry a hundred overlapping names (`v.x` is still a field) |
 | `vec3(x)`, `vec4(v, w)` | `Vec3::splat(x)`, `v.extend(w)` | a function cannot be overloaded on arity |
 | `a <= b` on vectors | `a.cmple(b)` | Rust's `<=` yields one `bool`, a shader's yields one per lane |
+| `all(a <= b)`, `any(a != b)` | `a <= b`, `a != b` | that one `bool` is every lane's, as `PartialOrd` and `PartialEq` are |
 | `vec3<f32>(v)` | `Vec3::from(v)` | a type is not a function, and `as` only converts primitives |
 | `T()` | `T::default()` | `T()` is a call, and a struct is not a function |
 
@@ -322,6 +366,14 @@ says. What the host shares cannot hold one, since the host's is as wide as a
 pointer: a `#[repr(C)]` struct or a buffer with a `usize` or an `isize` in it,
 through arrays and aliases, is refused with the fixed-width type to use.
 
+Comparing two vectors with an operator is one `bool`, true when it is true in
+every lane: `p >= Vec2::ZERO && p < extent` is a bounds check. `==` is every
+lane too, and `!=` its negation, some lane differing. So `!(a < b)` is not
+`a >= b`: it holds when some lane is not less, which is `a.cmpge(b).any()`, the
+test for being out of bounds. `a >= b` holds only when every lane is. Clippy's
+`neg_cmp_op_on_partial_ord` warns about `!(a < b)` for this reason, and
+`a.cmpge(b).any()` says the same without the negation.
+
 `discard()` never returns, so it may end a function whatever that function
 returns. A call that returns nothing can end a block, as in Rust.
 
@@ -332,6 +384,10 @@ can do it. Where the GPU cannot, this says what happens instead.
 
 ### Evaluation
 
+- A `match` takes the first arm that matches, as Rust does, though a
+  `switch` takes the case that is the value: an arm or a value an earlier arm
+  takes is dropped. A `break` in a `switch` would leave the `switch`, so a
+  `match` with an arm that breaks out of a loop is an `if` chain.
 - `a && b` and `a || b` evaluate `b` only when `a` does not decide. A `b` that
   calls a function, touches an atomic or indexes goes under an `if`; one that
   only reads and computes is evaluated early, since nothing can tell, and
@@ -435,6 +491,11 @@ the CPU runs a shader's pure functions, and the GPU the rest.
 - `let`, `let x: T;` assigned later, `if`/`else` as statement or value, `loop`,
   `while`, `for x in a..b` / `a..=b`, `break`, `continue`, `return`, tail
   expressions, `unsafe { .. }`
+- `match` on an integer, an enum, a flags set or a `bool`, as statement or
+  value: literal, `const`, variant and flag patterns, `|`, `_`, and a name that
+  binds the value
+- `impl` blocks: associated functions and `self`, `&self` and `&mut self`
+  methods, on a type of the shader's own or, through a trait, on a vector
 - `x = e` and compound assignment on any place: a local, a writable global, a
   field, a component, a matrix column
 - out-parameters: `&mut T` is WGSL's `ptr<function, T>`; `&T` is the same
@@ -456,9 +517,10 @@ the CPU runs a shader's pure functions, and the GPU the rest.
   bit-twiddling set and the packing set; `select(reject, accept, condition)` in
   WGSL's argument order; `all`, `any`, `isNan`, `isInf`; `bitcast::<T>(x)`
 - `workgroup_barrier()`, `storage_barrier()`, `discard()`
-- the predeclared `RAY_FLAG_*` and `RAY_QUERY_INTERSECTION_*` names
+- `RayFlag` and `RayQueryIntersection`, and WGSL's predeclared `RAY_FLAG_*` and
+  `RAY_QUERY_INTERSECTION_*` names they stand for
 
-Not yet: labeled loops, `break` values, `match`, methods on your own types,
+Not yet: labeled loops, `break` values, `match` guards and range patterns,
 generics, cooperative matrices, `f16`, `const` arithmetic (Naga wants constants
 already folded). Swizzles are values, so `v.xy = a` is rejected — as it is in
 WGSL. Assignment to function arguments is rejected.
@@ -549,8 +611,7 @@ struct VsOut {
 }
 ```
 
-An entry point returning a bound struct does not take `#[output(...)]`, and a
-struct argument whose fields carry no bindings is left for the host to fill
+A struct argument whose fields carry no bindings is left for the host to fill
 in — which is how Blade supplies vertex attributes, and needs
 `Bindings::Host`.
 

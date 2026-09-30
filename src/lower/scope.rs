@@ -57,6 +57,27 @@ pub(crate) struct Entry {
     /// context.
     pub item: Option<Item>,
     pub state: State,
+    /// The `impl` a method is in, as an index into [`Scope::impls`]. A method
+    /// is lowered when a shader calls it, not before, so an `impl` only the
+    /// host uses, such as `Debug`, can sit in a shader module.
+    pub owner: Option<usize>,
+}
+
+/// An `impl` block: the type its methods are on, and the methods.
+pub(crate) struct Impl {
+    pub source: usize,
+    /// The type as written, which is lowered when a method on it is looked
+    /// for, from the source the `impl` is in.
+    pub self_ty: syn::Type,
+    /// What the methods' functions are named after: `Material_alpha`.
+    pub type_name: String,
+    /// A trait's methods come after the type's own, as in Rust.
+    pub is_trait: bool,
+    /// Each method's entry, by name, and how it takes `self`.
+    pub methods: HashMap<String, (usize, Option<ReceiverKind>)>,
+    /// The type, once lowered. `Some(None)` for one that is not a shader
+    /// type, such as a host type an `impl From` converts from.
+    pub resolved: Option<Option<Handle<Type>>>,
 }
 
 impl Entry {
@@ -82,6 +103,10 @@ struct SourceScope {
 pub(crate) struct Scope {
     sources: Vec<SourceScope>,
     pub entries: Vec<Entry>,
+    pub impls: Vec<Impl>,
+    /// The name of every method that takes `&mut self`, whose receiver has to
+    /// be storage for the method to write through.
+    pub mut_self_methods: std::collections::HashSet<String>,
     by_name: HashMap<(Ns, String), Vec<usize>>,
     /// `Mode::Variance` is the discriminant, as a `u32`.
     variants: HashMap<(String, String), u32>,
@@ -186,6 +211,17 @@ impl Scope {
                         continue;
                     }
                 }
+                if let Item::Impl(item_impl) = item {
+                    scope
+                        .index_impl(source, item_impl, cfg)
+                        .map_err(|error| IndexError { source, error })?;
+                    continue;
+                }
+                // A trait declares what its `impl`s define, which is where the
+                // shader finds a method.
+                if let Item::Trait(_) = &item {
+                    continue;
+                }
                 if let Item::Type(alias) = &item {
                     scope
                         .aliases
@@ -213,11 +249,80 @@ impl Scope {
                     name,
                     item: Some(item),
                     state: State::Pending,
+                    owner: None,
                 });
             }
         }
         scope.find_flags_newtypes()?;
         Ok(scope)
+    }
+
+    /// Record an `impl` and give each of its methods an entry, to be lowered
+    /// when something calls it.
+    fn index_impl(&mut self, source: usize, item: syn::ItemImpl, cfg: &Cfg) -> Result<(), Error> {
+        // A generic `impl` is the host's: a shader has no generics to call
+        // its methods with.
+        if !item.generics.params.is_empty() {
+            return Ok(());
+        }
+        let type_name = match &*item.self_ty {
+            syn::Type::Path(path) => path
+                .path
+                .segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default(),
+            _ => "impl".into(),
+        };
+        let index = self.impls.len();
+        let mut methods = HashMap::new();
+        for impl_item in item.items {
+            // Constants, types and macros in an `impl` are the host's until a
+            // shader has a use for them.
+            let syn::ImplItem::Fn(method) = impl_item else {
+                continue;
+            };
+            if !cfg.keeps(&method.attrs)? {
+                continue;
+            }
+            let name = method.sig.ident.to_string();
+            let receiver = match method.sig.inputs.first() {
+                Some(syn::FnArg::Receiver(receiver)) if takes_mut_self(receiver) => {
+                    self.mut_self_methods.insert(name.clone());
+                    Some(ReceiverKind::Mut)
+                }
+                Some(syn::FnArg::Receiver(_)) => Some(ReceiverKind::Value),
+                _ => None,
+            };
+            let function = syn::ItemFn {
+                attrs: method.attrs,
+                vis: method.vis,
+                sig: method.sig,
+                block: Box::new(method.block),
+            };
+            if methods
+                .insert(name.clone(), (self.entries.len(), receiver))
+                .is_some()
+            {
+                return Err(Error::DuplicateFunction(format!("{type_name}::{name}")));
+            }
+            self.entries.push(Entry {
+                source,
+                name: None,
+                item: Some(Item::Fn(function)),
+                state: State::Pending,
+                owner: Some(index),
+            });
+        }
+        self.impls.push(Impl {
+            source,
+            self_ty: *item.self_ty,
+            type_name,
+            is_trait: item.trait_.is_some(),
+            methods,
+            resolved: None,
+        });
+        Ok(())
     }
 
     /// `bitflags! { impl Flags: u32 { .. } }` puts the flags on a struct the
@@ -288,6 +393,10 @@ impl Scope {
     /// type? `brdf::sample` is an item in a module; `vec3::splat` is a
     /// function on a type.
     pub fn is_module_path(&self, from: usize, path: &[String]) -> bool {
+        // A lone `self` is a method's receiver, not the start of `self::f`.
+        if path.len() < 2 {
+            return false;
+        }
         let rest = strip_relative(path);
         rest.len() >= 2 && self.module(from, &rest[rest.len() - 2]).is_some()
             || rest.len() < path.len()
@@ -398,6 +507,26 @@ impl Scope {
             [one] => Ok(Some(*one)),
             _ => Err(Error::AmbiguousName(name.clone())),
         }
+    }
+}
+
+/// How a method takes `self`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum ReceiverKind {
+    /// `self` or `&self`: a copy of the value, which is all a read needs.
+    Value,
+    /// `&mut self`: a pointer to the storage, which has to be a local.
+    Mut,
+}
+
+/// Does a method take `&mut self`, spelled that way or as `self: &mut Self`?
+pub(crate) fn takes_mut_self(receiver: &syn::Receiver) -> bool {
+    match (&receiver.reference, receiver.colon_token) {
+        (Some(_), _) => receiver.mutability.is_some(),
+        (None, Some(_)) => {
+            matches!(&*receiver.ty, syn::Type::Reference(r) if r.mutability.is_some())
+        }
+        (None, None) => false,
     }
 }
 

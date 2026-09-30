@@ -362,6 +362,30 @@ fn binary(
 
 /// `flags.contains(other)` and the rest of what a set answers, if the
 /// receiver is a set.
+/// Is `name` one of the methods `bitflags!` gives a set, which come before
+/// any the sources define?
+pub(super) fn is_flags_method(name: &str) -> bool {
+    matches!(
+        name,
+        "bits"
+            | "is_empty"
+            | "is_all"
+            | "contains"
+            | "intersects"
+            | "union"
+            | "intersection"
+            | "symmetric_difference"
+            | "difference"
+            | "complement"
+            | "insert"
+            | "remove"
+            | "toggle"
+            | "set"
+            | "iter"
+            | "iter_names"
+    )
+}
+
 pub(super) fn lower_flags_method(
     ctx: &mut Context,
     function: &mut Function,

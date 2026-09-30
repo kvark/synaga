@@ -171,6 +171,19 @@ macro_rules! writable {
             pub fn get_mut(&self) -> &mut T {
                 unimplemented_on_cpu()
             }
+
+            /// Write `value` over all of it: `emit_end.set(n)`.
+            ///
+            /// This is `*emit_end.get_mut() = n`. Rust cannot assign through
+            /// `*emit_end`, which would borrow a `static` mutably, so this is
+            /// the `Cell::set` of a resource.
+            #[inline]
+            pub fn set(&self, value: T)
+            where
+                T: Sized,
+            {
+                unimplemented_on_cpu()
+            }
         }
     };
 }

@@ -97,6 +97,11 @@ pub(super) fn lower_expr_hinted(
         Expr::Cast(cast) => lower_cast(ctx, function, body, cast, env),
         Expr::Assign(assign) => lower_assign(ctx, function, body, &assign.left, &assign.right, env),
         Expr::If(if_expr) => lower_if_expr(ctx, function, body, if_expr, env, hint),
+        Expr::Match(matched) => {
+            let position = super::switch::Position::Value(hint);
+            super::switch::lower_match(ctx, function, body, matched, env, position)?
+                .ok_or(Error::MissingBlockValue)
+        }
         Expr::Block(syn::ExprBlock { block, .. }) | Expr::Unsafe(syn::ExprUnsafe { block, .. }) => {
             env.push_scope();
             let tail = lower_block_hinted(ctx, function, body, block, env, hint)?;
@@ -239,9 +244,76 @@ fn lower_binary(
     function: &mut Function,
     body: &mut Block,
     op: BinaryOperator,
+    operands: (&Expr, &Expr),
+    env: &mut Env,
+    outer: Option<Scalar>,
+) -> Result<Typed, Error> {
+    lower_binary_as(
+        ctx,
+        function,
+        body,
+        op,
+        operands,
+        env,
+        outer,
+        Comparison::Rust,
+    )
+}
+
+/// What comparing two vectors produces.
+#[derive(Clone, Copy, PartialEq)]
+enum Comparison {
+    /// One `bool`, as Rust's operators give.
+    Rust,
+    /// One per lane, as WGSL's operators give.
+    Lanes,
+}
+
+/// `all(a < b)` and `any(a != b)`: WGSL's spelling of `a.cmplt(b).all()` and
+/// `a.cmpne(b).any()`, whose comparison is lane by lane. Rust cannot write
+/// it, since `all` takes lanes and Rust's `a < b` is one `bool`, so a source
+/// that says it is one `rustc` never saw, and it means what it means in WGSL.
+pub(super) fn lower_lanewise(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    expr: &Expr,
+    env: &mut Env,
+) -> Result<Option<Typed>, Error> {
+    let Expr::Binary(bin) = super::constant::strip_parens(expr) else {
+        return Ok(None);
+    };
+    let op = match map_compound_op(&bin.op) {
+        Some(_) => return Ok(None),
+        None => map_bin_op(&bin.op)?,
+    };
+    if whole_vector_comparison(op).is_none() {
+        return Ok(None);
+    }
+    let operands = (&*bin.left, &*bin.right);
+    lower_binary_as(
+        ctx,
+        function,
+        body,
+        op,
+        operands,
+        env,
+        None,
+        Comparison::Lanes,
+    )
+    .map(Some)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_binary_as(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    op: BinaryOperator,
     (left_expr, right_expr): (&Expr, &Expr),
     env: &mut Env,
     outer: Option<Scalar>,
+    comparison: Comparison,
 ) -> Result<Typed, Error> {
     if matches!(op, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr) {
         return lower_lazy(ctx, function, body, op, (left_expr, right_expr), env);
@@ -310,7 +382,36 @@ fn lower_binary(
     }
     let ty = bin_result_ty(ctx, op, left_ty, right_ty)?;
     let handle = emit(function, body, Expression::Binary { op, left, right })?;
+    // Rust compares two vectors to one `bool`: `a == b` when every lane is
+    // equal, `a < b` when every lane is less. The lane-wise forms are
+    // `a.cmpeq(b)` and the rest.
+    if let Some(fold) = whole_vector_comparison(op) {
+        if comparison == Comparison::Rust && matches!(ctx.shape(ty), Shape::Vector(..)) {
+            let handle = emit(
+                function,
+                body,
+                Expression::Relational {
+                    fun: fold,
+                    argument: handle,
+                },
+            )?;
+            return Ok((handle, ctx.intern_scalar(Scalar::BOOL)));
+        }
+    }
     Ok((handle, ty))
+}
+
+/// How a comparison of two vectors folds its lanes into Rust's one `bool`:
+/// `!=` holds if any lane differs, every other comparison if every lane holds.
+fn whole_vector_comparison(op: BinaryOperator) -> Option<naga::RelationalFunction> {
+    use BinaryOperator as Bo;
+    match op {
+        Bo::NotEqual => Some(naga::RelationalFunction::Any),
+        Bo::Equal | Bo::Less | Bo::LessEqual | Bo::Greater | Bo::GreaterEqual => {
+            Some(naga::RelationalFunction::All)
+        }
+        _ => None,
+    }
 }
 
 /// `a && b` and `a || b`, which evaluate `b` only when `a` does not already

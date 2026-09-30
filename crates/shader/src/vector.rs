@@ -25,9 +25,12 @@
 //! `v.xyz` has to be `v.xyz()`; `.r`/`.g`/`.b`/`.a` are methods for the same
 //! reason, since they would alias the `x`/`y`/`z`/`w` fields.
 //!
-//! Comparisons are methods too. `a < b` in a shader yields one bool per lane,
-//! and Rust's `PartialOrd` yields a single `bool`, so the lane-wise forms are
-//! spelled `cmplt`, `cmple`, and so on, as glam spells them.
+//! Comparisons come two ways. The lane-wise ones are methods, `a.cmplt(b)`
+//! and the rest, as glam spells them, because Rust's `<` has to give one
+//! `bool`. That `bool` holds when it holds in every lane: `a < b` is
+//! `a.cmplt(b).all()`, `a == b` is `a.cmpeq(b).all()`, and `a != b` is its
+//! negation, some lane differing. So `!(a < b)` is not `a >= b`: it is "some
+//! lane is not less", `a.cmpge(b).any()`, which is what a bounds check wants.
 //!
 //! So is the math, named as `f32` names it, and as glam does for what only a
 //! vector has. `cast` converts the lanes, as `as` converts a scalar:
@@ -590,6 +593,38 @@ impl Vec2<f32> {
         self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
+/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`
+/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane
+/// agrees, and `None` otherwise. So `a <= b` holds more often than
+/// `a < b || a == b`, which `PartialOrd` asks of it, as it does in nalgebra.
+impl PartialOrd for Vec2<f32> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        use core::cmp::Ordering::*;
+        match (self == other, self < other, self > other) {
+            (true, _, _) => Some(Equal),
+            (_, true, _) => Some(Less),
+            (_, _, true) => Some(Greater),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn lt(&self, other: &Self) -> bool {
+        self.cmplt(*other).all()
+    }
+    #[inline]
+    fn le(&self, other: &Self) -> bool {
+        self.cmple(*other).all()
+    }
+    #[inline]
+    fn gt(&self, other: &Self) -> bool {
+        self.cmpgt(*other).all()
+    }
+    #[inline]
+    fn ge(&self, other: &Self) -> bool {
+        self.cmpge(*other).all()
+    }
+}
 vector_ops!(Vec2<f32>, f32, Vec2<u32>, arith, neg);
 vector_math!(Vec2<f32>, f32, ord, float);
 
@@ -618,6 +653,38 @@ impl Vec2<i32> {
         self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
+/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`
+/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane
+/// agrees, and `None` otherwise. So `a <= b` holds more often than
+/// `a < b || a == b`, which `PartialOrd` asks of it, as it does in nalgebra.
+impl PartialOrd for Vec2<i32> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        use core::cmp::Ordering::*;
+        match (self == other, self < other, self > other) {
+            (true, _, _) => Some(Equal),
+            (_, true, _) => Some(Less),
+            (_, _, true) => Some(Greater),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn lt(&self, other: &Self) -> bool {
+        self.cmplt(*other).all()
+    }
+    #[inline]
+    fn le(&self, other: &Self) -> bool {
+        self.cmple(*other).all()
+    }
+    #[inline]
+    fn gt(&self, other: &Self) -> bool {
+        self.cmpgt(*other).all()
+    }
+    #[inline]
+    fn ge(&self, other: &Self) -> bool {
+        self.cmpge(*other).all()
+    }
+}
 vector_ops!(Vec2<i32>, i32, Vec2<u32>, arith, bitwise, shift, neg, not);
 vector_math!(Vec2<i32>, i32, ord, signed, wrapping);
 
@@ -644,6 +711,38 @@ impl Vec2<u32> {
     #[inline]
     pub fn cmpge(self, rhs: Self) -> Vec2<bool> {
         self.zip_lanes(rhs, |a, b| a >= b)
+    }
+}
+/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`
+/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane
+/// agrees, and `None` otherwise. So `a <= b` holds more often than
+/// `a < b || a == b`, which `PartialOrd` asks of it, as it does in nalgebra.
+impl PartialOrd for Vec2<u32> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        use core::cmp::Ordering::*;
+        match (self == other, self < other, self > other) {
+            (true, _, _) => Some(Equal),
+            (_, true, _) => Some(Less),
+            (_, _, true) => Some(Greater),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn lt(&self, other: &Self) -> bool {
+        self.cmplt(*other).all()
+    }
+    #[inline]
+    fn le(&self, other: &Self) -> bool {
+        self.cmple(*other).all()
+    }
+    #[inline]
+    fn gt(&self, other: &Self) -> bool {
+        self.cmpgt(*other).all()
+    }
+    #[inline]
+    fn ge(&self, other: &Self) -> bool {
+        self.cmpge(*other).all()
     }
 }
 vector_ops!(Vec2<u32>, u32, Vec2<u32>, arith, bitwise, shift, not);
@@ -881,6 +980,38 @@ impl Vec3<f32> {
         self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
+/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`
+/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane
+/// agrees, and `None` otherwise. So `a <= b` holds more often than
+/// `a < b || a == b`, which `PartialOrd` asks of it, as it does in nalgebra.
+impl PartialOrd for Vec3<f32> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        use core::cmp::Ordering::*;
+        match (self == other, self < other, self > other) {
+            (true, _, _) => Some(Equal),
+            (_, true, _) => Some(Less),
+            (_, _, true) => Some(Greater),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn lt(&self, other: &Self) -> bool {
+        self.cmplt(*other).all()
+    }
+    #[inline]
+    fn le(&self, other: &Self) -> bool {
+        self.cmple(*other).all()
+    }
+    #[inline]
+    fn gt(&self, other: &Self) -> bool {
+        self.cmpgt(*other).all()
+    }
+    #[inline]
+    fn ge(&self, other: &Self) -> bool {
+        self.cmpge(*other).all()
+    }
+}
 vector_ops!(Vec3<f32>, f32, Vec3<u32>, arith, neg);
 vector_math!(Vec3<f32>, f32, ord, float);
 impl Vec3<f32> {
@@ -920,6 +1051,38 @@ impl Vec3<i32> {
         self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
+/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`
+/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane
+/// agrees, and `None` otherwise. So `a <= b` holds more often than
+/// `a < b || a == b`, which `PartialOrd` asks of it, as it does in nalgebra.
+impl PartialOrd for Vec3<i32> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        use core::cmp::Ordering::*;
+        match (self == other, self < other, self > other) {
+            (true, _, _) => Some(Equal),
+            (_, true, _) => Some(Less),
+            (_, _, true) => Some(Greater),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn lt(&self, other: &Self) -> bool {
+        self.cmplt(*other).all()
+    }
+    #[inline]
+    fn le(&self, other: &Self) -> bool {
+        self.cmple(*other).all()
+    }
+    #[inline]
+    fn gt(&self, other: &Self) -> bool {
+        self.cmpgt(*other).all()
+    }
+    #[inline]
+    fn ge(&self, other: &Self) -> bool {
+        self.cmpge(*other).all()
+    }
+}
 vector_ops!(Vec3<i32>, i32, Vec3<u32>, arith, bitwise, shift, neg, not);
 vector_math!(Vec3<i32>, i32, ord, signed, wrapping);
 
@@ -946,6 +1109,38 @@ impl Vec3<u32> {
     #[inline]
     pub fn cmpge(self, rhs: Self) -> Vec3<bool> {
         self.zip_lanes(rhs, |a, b| a >= b)
+    }
+}
+/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`
+/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane
+/// agrees, and `None` otherwise. So `a <= b` holds more often than
+/// `a < b || a == b`, which `PartialOrd` asks of it, as it does in nalgebra.
+impl PartialOrd for Vec3<u32> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        use core::cmp::Ordering::*;
+        match (self == other, self < other, self > other) {
+            (true, _, _) => Some(Equal),
+            (_, true, _) => Some(Less),
+            (_, _, true) => Some(Greater),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn lt(&self, other: &Self) -> bool {
+        self.cmplt(*other).all()
+    }
+    #[inline]
+    fn le(&self, other: &Self) -> bool {
+        self.cmple(*other).all()
+    }
+    #[inline]
+    fn gt(&self, other: &Self) -> bool {
+        self.cmpgt(*other).all()
+    }
+    #[inline]
+    fn ge(&self, other: &Self) -> bool {
+        self.cmpge(*other).all()
     }
 }
 vector_ops!(Vec3<u32>, u32, Vec3<u32>, arith, bitwise, shift, not);
@@ -1446,6 +1641,38 @@ impl Vec4<f32> {
         self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
+/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`
+/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane
+/// agrees, and `None` otherwise. So `a <= b` holds more often than
+/// `a < b || a == b`, which `PartialOrd` asks of it, as it does in nalgebra.
+impl PartialOrd for Vec4<f32> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        use core::cmp::Ordering::*;
+        match (self == other, self < other, self > other) {
+            (true, _, _) => Some(Equal),
+            (_, true, _) => Some(Less),
+            (_, _, true) => Some(Greater),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn lt(&self, other: &Self) -> bool {
+        self.cmplt(*other).all()
+    }
+    #[inline]
+    fn le(&self, other: &Self) -> bool {
+        self.cmple(*other).all()
+    }
+    #[inline]
+    fn gt(&self, other: &Self) -> bool {
+        self.cmpgt(*other).all()
+    }
+    #[inline]
+    fn ge(&self, other: &Self) -> bool {
+        self.cmpge(*other).all()
+    }
+}
 vector_ops!(Vec4<f32>, f32, Vec4<u32>, arith, neg);
 vector_math!(Vec4<f32>, f32, ord, float);
 
@@ -1474,6 +1701,38 @@ impl Vec4<i32> {
         self.zip_lanes(rhs, |a, b| a >= b)
     }
 }
+/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`
+/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane
+/// agrees, and `None` otherwise. So `a <= b` holds more often than
+/// `a < b || a == b`, which `PartialOrd` asks of it, as it does in nalgebra.
+impl PartialOrd for Vec4<i32> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        use core::cmp::Ordering::*;
+        match (self == other, self < other, self > other) {
+            (true, _, _) => Some(Equal),
+            (_, true, _) => Some(Less),
+            (_, _, true) => Some(Greater),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn lt(&self, other: &Self) -> bool {
+        self.cmplt(*other).all()
+    }
+    #[inline]
+    fn le(&self, other: &Self) -> bool {
+        self.cmple(*other).all()
+    }
+    #[inline]
+    fn gt(&self, other: &Self) -> bool {
+        self.cmpgt(*other).all()
+    }
+    #[inline]
+    fn ge(&self, other: &Self) -> bool {
+        self.cmpge(*other).all()
+    }
+}
 vector_ops!(Vec4<i32>, i32, Vec4<u32>, arith, bitwise, shift, neg, not);
 vector_math!(Vec4<i32>, i32, ord, signed, wrapping);
 
@@ -1500,6 +1759,38 @@ impl Vec4<u32> {
     #[inline]
     pub fn cmpge(self, rhs: Self) -> Vec4<bool> {
         self.zip_lanes(rhs, |a, b| a >= b)
+    }
+}
+/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`
+/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane
+/// agrees, and `None` otherwise. So `a <= b` holds more often than
+/// `a < b || a == b`, which `PartialOrd` asks of it, as it does in nalgebra.
+impl PartialOrd for Vec4<u32> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        use core::cmp::Ordering::*;
+        match (self == other, self < other, self > other) {
+            (true, _, _) => Some(Equal),
+            (_, true, _) => Some(Less),
+            (_, _, true) => Some(Greater),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn lt(&self, other: &Self) -> bool {
+        self.cmplt(*other).all()
+    }
+    #[inline]
+    fn le(&self, other: &Self) -> bool {
+        self.cmple(*other).all()
+    }
+    #[inline]
+    fn gt(&self, other: &Self) -> bool {
+        self.cmpgt(*other).all()
+    }
+    #[inline]
+    fn ge(&self, other: &Self) -> bool {
+        self.cmpge(*other).all()
     }
 }
 vector_ops!(Vec4<u32>, u32, Vec4<u32>, arith, bitwise, shift, not);

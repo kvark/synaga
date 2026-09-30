@@ -74,6 +74,30 @@ fn a_shared_struct_is_its_bytes() {
 }
 
 #[test]
+fn one_derive_makes_a_struct_shared() {
+    #[repr(C)]
+    #[derive(Debug, PartialEq, Shared)]
+    struct Params {
+        tint: Vec4,
+        size: Vec2<u32>,
+        scale: f32,
+        count: u32,
+    }
+    // `Default` is all zeroes, which is the GPU's too.
+    let zero = Params::default();
+    assert_eq!(zero, bytemuck::Zeroable::zeroed());
+    assert_eq!(zero.tint, Vec4::ZERO);
+    let params = Params {
+        size: vec2(3, 4),
+        ..zero
+    };
+    let copy = params;
+    assert_eq!(bytemuck::bytes_of(&copy)[16..20], 3u32.to_ne_bytes());
+    fn shared<T: Shared>() {}
+    shared::<Params>();
+}
+
+#[test]
 fn a_three_lane_column_takes_four_as_on_the_gpu() {
     assert_eq!(size_of::<Mat3>(), 48);
     assert_eq!(size_of::<Mat4x3>(), 64);

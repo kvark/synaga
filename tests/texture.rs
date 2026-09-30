@@ -12,7 +12,6 @@ fn sample_a_texture() {
         static sprite_texture: texture_2d<f32> = ();
         static sprite_sampler: sampler = ();
         #[entry_point(fragment)]
-        #[output(location(0))]
         fn fs(#[location(0)] uv: vec2) -> vec4 {
             sprite_texture.sample_level(&sprite_sampler, uv, 0.0)
         }
@@ -32,7 +31,7 @@ fn plain_sample_picks_its_own_level() {
         r#"
         static t: texture_2d<f32> = ();
         static s: sampler = ();
-        #[entry_point(fragment)] #[output(location(0))]
+        #[entry_point(fragment)]
         fn fs(#[location(0)] uv: vec2) -> vec4 { t.sample(&s, uv) }
         "#,
     );
@@ -162,7 +161,6 @@ fn names_that_end_in_a_digit_keep_it() {
         static samp: sampler = ();
         fn w4(w: f32) -> vec4 { vec4(w, w, w, w) }
         #[entry_point(fragment)]
-        #[output(location(0))]
         fn fs(#[location(0)] uv: vec2) -> vec4 {
             t_specular_f0.sample_level(&samp, uv, 0.0) + w4(uv.x)
         }
@@ -183,7 +181,6 @@ fn every_sampling_method() {
         static cube: texture_cube<f32> = binding();
         static s: sampler = binding();
         #[entry_point(fragment)]
-        #[output(location(0))]
         fn fs(#[location(0)] uv: vec2) -> vec4 {
             t.sample(&s, uv)
                 + t.sample_bias(&s, uv, 0.5)

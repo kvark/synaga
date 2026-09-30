@@ -21,8 +21,11 @@ fn compound_add_assign() {
 }
 
 #[test]
-fn assign_as_expr_tail() {
-    validate_only("fn f(a: f32, b: f32) -> f32 { let x = a; x = b }");
+fn an_assignment_is_unit() {
+    // As in Rust: `x = b` is `()`, not `b`, so it cannot be what `f` returns.
+    let msg = reject("fn f(a: f32, b: f32) -> f32 { let x = a; x = b }");
+    assert!(msg.contains("without returning"), "{msg}");
+    validate_only("fn f(a: f32, b: f32) -> f32 { let x = a; x = b; x }");
 }
 
 #[test]

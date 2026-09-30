@@ -40,7 +40,6 @@ fn function_names(module: &naga::Module) -> Vec<String> {
 
 const TRIANGLE: &str = r#"
     #[entry_point(vertex)]
-    #[output(builtin(position))]
     fn vs(#[location(0)] pos: Vec3) -> Vec4 {
         vec4(pos, 1.0)
     }
@@ -48,7 +47,6 @@ const TRIANGLE: &str = r#"
 
 const SOLID: &str = r#"
     #[entry_point(fragment)]
-    #[output(location(0))]
     fn fs() -> Vec4 { vec4(1.0, 0.0, 0.0, 1.0) }
 "#;
 
@@ -115,7 +113,6 @@ fn a_helper_file_comes_along_through_use() {
         r#"
         use super::common::luminance;
         #[entry_point(fragment)]
-        #[output(location(0))]
         fn fs(#[location(0)] c: Vec4) -> Vec4 { vec4(vec3(luminance(c.xyz)), 1.0) }
         "#,
     );
@@ -124,7 +121,6 @@ fn a_helper_file_comes_along_through_use() {
         "path.rs",
         r#"
         #[entry_point(fragment)]
-        #[output(location(0))]
         fn fs(#[location(0)] c: Vec4) -> Vec4 { vec4(vec3(super::common::luminance(c.xyz)), 1.0) }
         "#,
     );
@@ -178,7 +174,6 @@ fn cfg_follows_the_build() {
         #[cfg(not(debug_assertions))]
         fn level() -> f32 { 0.0 }
         #[entry_point(fragment)]
-        #[output(location(0))]
         fn fs() -> Vec4 {
             if cfg!(feature = "red") { vec4(level(), 0.0, 0.0, 1.0) } else { Vec4::splat(level()) }
         }
@@ -259,7 +254,6 @@ fn host_bindings_accept_globals_with_none() {
         r#"
         static tint: Vec4 = ();
         #[entry_point(fragment)]
-        #[output(location(0))]
         fn fs() -> Vec4 { tint }
         "#,
     );
@@ -307,7 +301,6 @@ fn explicit_bindings_are_written_where_the_resource_is() {
         pub static albedo: Texture2D<f32> = group(MATERIAL).binding(0);
         pub static linear: Sampler = synaga_shader::group(MATERIAL).binding(1);
         #[entry_point(fragment)]
-        #[output(location(0))]
         pub fn fs(#[location(0)] uv: Vec2) -> Vec4 {
             *globals * albedo.sample(&linear, uv)
         }
@@ -350,7 +343,6 @@ fn a_vertex_struct_without_locations_needs_host_bindings() {
         use synaga_shader::*;
         pub struct Vertex { pub pos: Vec2 }
         #[entry_point(vertex)]
-        #[output(builtin(position))]
         pub fn vs(vertex: Vertex) -> Vec4 { vertex.pos.extend(0.0).extend(1.0) }
         "#,
     );
@@ -382,7 +374,6 @@ fn host_bindings_refuse_a_resource_that_says_where() {
         use synaga_shader::*;
         pub static tint: Uniform<Vec4> = group(0).binding(0);
         #[entry_point(fragment)]
-        #[output(location(0))]
         pub fn fs() -> Vec4 { *tint }
         "#,
     );

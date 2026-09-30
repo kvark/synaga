@@ -26,6 +26,7 @@ mod ray;
 mod scope;
 mod stmt;
 mod structure;
+mod switch;
 mod texture;
 mod vector;
 
@@ -33,6 +34,7 @@ pub(crate) use structure::{shared_structs, SharedStruct};
 
 use emit::item_kind;
 use env::{Env, Slot};
+pub(super) use scope::ReceiverKind;
 use scope::{Lowered, Ns, Scope, State};
 
 /// A lowered expression and the type it evaluates to. Every `lower_*` that
@@ -114,6 +116,24 @@ pub struct Context {
     /// Where each `#[repr(C)]` struct is declared, and what of it the module
     /// above can name, for `rustc` to check its layout there.
     pub(super) origins: HashMap<Handle<Type>, structure::Origin>,
+    /// What `Self` is, in a method being lowered.
+    pub(super) impl_self: Option<ImplSelf>,
+}
+
+/// The type an `impl` is for, while one of its methods is lowered.
+#[derive(Clone)]
+pub(super) struct ImplSelf {
+    pub ty: Handle<Type>,
+    /// The type's own name, which its methods' functions are named after.
+    pub name: String,
+}
+
+/// A method the sources define, found for a receiver's type.
+pub(super) struct Method {
+    /// Its entry, to lower it the first time it is called.
+    pub entry: usize,
+    /// How it takes `self`, if it does: it may be an associated function.
+    pub receiver: Option<ReceiverKind>,
 }
 
 impl Context {
@@ -133,6 +153,7 @@ impl Context {
             host_layouts: HashMap::new(),
             derived_defaults: HashSet::new(),
             origins: HashMap::new(),
+            impl_self: None,
         }
     }
 
@@ -149,7 +170,9 @@ impl Context {
             self.failed_source = Some(err.source);
             err.error
         })?;
+        // A method is lowered when something calls it.
         let (first, rest): (Vec<usize>, Vec<usize>) = (0..self.scope.entries.len())
+            .filter(|&i| self.scope.entries[i].owner.is_none())
             .partition(|&i| self.scope.entries[i].is_static_or_const());
         for index in first.into_iter().chain(rest) {
             self.ensure(index)?;
@@ -163,7 +186,21 @@ impl Context {
         match entry.state {
             State::Done(lowered) => return Ok(lowered),
             State::InProgress => {
-                let name = entry.name.clone().map(|(_, n)| n).unwrap_or_default();
+                let name = match (&entry.name, entry.owner) {
+                    (Some((_, name)), _) => name.clone(),
+                    // A method is named by its type.
+                    (None, Some(owner)) => {
+                        let owner = &self.scope.impls[owner];
+                        let method = owner
+                            .methods
+                            .iter()
+                            .find(|(_, &(e, _))| e == index)
+                            .map(|(name, _)| name.as_str())
+                            .unwrap_or_default();
+                        format!("{}::{method}", owner.type_name)
+                    }
+                    (None, None) => String::new(),
+                };
                 return Err(Error::Cycle(name));
             }
             State::Pending => {}
@@ -171,6 +208,7 @@ impl Context {
         entry.state = State::InProgress;
         let item = entry.item.take().expect("a pending entry keeps its item");
         let source = entry.source;
+        let owner = entry.owner;
         let (label, line) = item_location(&item);
 
         // Lowering one item can start another, so whatever belongs to the
@@ -178,10 +216,19 @@ impl Context {
         let current = std::mem::replace(&mut self.current, source);
         let addressed = std::mem::take(&mut self.addressed);
         let pending_space = self.pending_space.take();
-        let result = self.lower_item(item);
+        let impl_self = self.impl_self.take();
+        let result = match owner.map(|owner| self.impl_self_of(owner)) {
+            Some(Err(err)) => Err(err),
+            Some(Ok(self_ty)) => {
+                self.impl_self = Some(self_ty);
+                self.lower_item(item)
+            }
+            None => self.lower_item(item),
+        };
         self.current = current;
         self.addressed = addressed;
         self.pending_space = pending_space;
+        self.impl_self = impl_self;
 
         match result {
             Ok(lowered) => {
@@ -230,6 +277,73 @@ impl Context {
         match self.scope.resolve(self.current, ns, path)? {
             Some(index) => self.ensure(index).map(Some),
             None => Ok(None),
+        }
+    }
+
+    /// The type `impl` number `index` is for, lowered from its own source.
+    /// `None` when it is not a type a shader has, such as a host type.
+    fn impl_type(&mut self, index: usize) -> Option<Handle<Type>> {
+        if let Some(resolved) = self.scope.impls[index].resolved {
+            return resolved;
+        }
+        let source = self.scope.impls[index].source;
+        let self_ty = self.scope.impls[index].self_ty.clone();
+        let current = std::mem::replace(&mut self.current, source);
+        let impl_self = self.impl_self.take();
+        let pending_space = self.pending_space.take();
+        let resolved = self.lower_type(&self_ty).ok();
+        self.current = current;
+        self.impl_self = impl_self;
+        self.pending_space = pending_space;
+        self.scope.impls[index].resolved = Some(resolved);
+        resolved
+    }
+
+    fn impl_self_of(&mut self, index: usize) -> Result<ImplSelf, Error> {
+        let name = self.scope.impls[index].type_name.clone();
+        let ty = self
+            .impl_type(index)
+            .ok_or_else(|| Error::UnsupportedType(name.clone()))?;
+        Ok(ImplSelf { ty, name })
+    }
+
+    /// The method `name` on `ty`, from an `impl` in the sources. A type's own
+    /// methods come before a trait's, and two traits with one are ambiguous,
+    /// as in Rust.
+    pub(super) fn find_method(
+        &mut self,
+        ty: Handle<Type>,
+        name: &str,
+    ) -> Result<Option<Method>, Error> {
+        let candidates: Vec<usize> = (0..self.scope.impls.len())
+            .filter(|&i| self.scope.impls[i].methods.contains_key(name))
+            .collect();
+        let mut own = None;
+        let mut traits = Vec::new();
+        for index in candidates {
+            if self.impl_type(index) != Some(ty) {
+                continue;
+            }
+            let found = &self.scope.impls[index];
+            let method = found.methods[name];
+            match found.is_trait {
+                false => own = Some(method),
+                true => traits.push(method),
+            }
+        }
+        let (entry, receiver) = match (own, &traits[..]) {
+            (Some(method), _) | (None, &[method]) => method,
+            (None, []) => return Ok(None),
+            (None, _) => return Err(Error::AmbiguousName(name.into())),
+        };
+        Ok(Some(Method { entry, receiver }))
+    }
+
+    /// Lower method `entry` if it is not already, for a call to it.
+    pub(super) fn method_function(&mut self, entry: usize) -> Result<Handle<Function>, Error> {
+        match self.ensure(entry)? {
+            Lowered::Function(handle) => Ok(handle),
+            _ => Err(Error::UnsupportedItem("method".into())),
         }
     }
 
@@ -427,6 +541,9 @@ impl Context {
         if let Some(ty) = ray::special_struct(self, &name) {
             return Ok(ty);
         }
+        if ray::is_ray_word_type(&name) {
+            return Ok(self.intern_scalar(Scalar::U32));
+        }
 
         let type_arg = match &seg.arguments {
             syn::PathArguments::None => None,
@@ -450,18 +567,27 @@ impl Context {
             return Ok(ty);
         }
 
-        // `synaga_shader::AtomicU32` and its sibling, which are the standard
-        // atomics without an `Ordering`.
-        let atomic = match name.as_str() {
-            "AtomicU32" => Some(Scalar::U32),
-            "AtomicI32" => Some(Scalar::I32),
-            _ => None,
-        };
-        if let Some(scalar) = atomic {
-            if type_arg.is_some() {
-                return Err(Error::UnsupportedType(name));
+        // `Atomic<u32>` and `Atomic<i32>`, WGSL's `atomic<T>`.
+        if name == "Atomic" || name == "atomic" {
+            let scalar = match type_arg {
+                Some(inner) => lower_scalar_ident(inner)?,
+                None => return Err(Error::UnsupportedType(name)),
+            };
+            if scalar != Scalar::U32 && scalar != Scalar::I32 {
+                return Err(Error::UnsupportedType(format!(
+                    "{name}<{}>: an atomic holds a `u32` or an `i32`",
+                    match scalar.kind {
+                        ScalarKind::Float => "f32",
+                        _ => "bool",
+                    }
+                )));
             }
             return Ok(self.intern_handle_type(TypeInner::Atomic(scalar)));
+        }
+        // The standard atomics take an `Ordering` the GPU has no use for, so
+        // the shader's are their own type.
+        if name == "AtomicU32" || name == "AtomicI32" {
+            return Err(Error::StdAtomic(name));
         }
         // What `compare_exchange_weak` hands back: Naga's own struct, so its
         // fields are the ones the backends know.
@@ -567,6 +693,11 @@ impl Context {
     /// The type `path` names: a struct or alias the sources declare, or one of
     /// the structs Naga predeclares.
     pub(super) fn named_type(&mut self, path: &[String]) -> Result<Option<Handle<Type>>, Error> {
+        if let [only] = path {
+            if only == "Self" {
+                return Ok(self.impl_self.as_ref().map(|s| s.ty));
+            }
+        }
         // An enum or a flags set is a `u32` that keeps its name. One declared
         // as a newtype is also a struct item, which lowers to the same type.
         if let Some(handle) = self.nominal_type(&last(path))? {
@@ -644,13 +775,17 @@ impl Context {
         if info.stage.is_some() {
             return entry::lower_entry(self, item, info).map(|()| Lowered::EntryPoint);
         }
-        if info.workgroup_size.is_some() || info.return_binding.is_some() {
+        if info.workgroup_size.is_some() {
             return Err(Error::UnsupportedItem(
                 "entry-point attribute on a regular function".into(),
             ));
         }
 
-        let name = item.sig.ident.to_string();
+        // A method's function is named after its type too, as it is reached.
+        let name = match &self.impl_self {
+            Some(impl_self) => format!("{}_{}", impl_self.name, item.sig.ident),
+            None => item.sig.ident.to_string(),
+        };
         // A function with no return type produces nothing, as in Rust; calls to
         // it are statements.
         let result = match &item.sig.output {
@@ -674,7 +809,7 @@ impl Context {
         lower_signature(self, &mut function, &item.sig, &mut env)?;
         let mut body = Block::new();
         env.push_scope();
-        self.addressed = stmt::addressed_names(&item.block);
+        self.addressed = stmt::addressed_names(&item.block, &self.scope.mut_self_methods);
         stmt::lower_body(self, &mut function, &mut body, &item.block, &mut env)?;
         env.pop_scope();
         function.body = body;
@@ -934,7 +1069,42 @@ pub(super) fn lower_signature(
 ) -> Result<(), Error> {
     for arg in &sig.inputs {
         match arg {
-            FnArg::Receiver(_) => return Err(Error::Receiver),
+            FnArg::Receiver(receiver) => {
+                let self_ty = ctx.impl_self.as_ref().ok_or(Error::Receiver)?.ty;
+                if receiver.reference.is_none() && receiver.mutability.is_some() {
+                    return Err(Error::MutSelf);
+                }
+                let kind = match scope::takes_mut_self(receiver) {
+                    true => ReceiverKind::Mut,
+                    false => ReceiverKind::Value,
+                };
+                let ty = match kind {
+                    ReceiverKind::Mut => ctx.intern_handle_type(TypeInner::Pointer {
+                        base: self_ty,
+                        space: AddressSpace::Function,
+                    }),
+                    ReceiverKind::Value => self_ty,
+                };
+                let index = function.arguments.len() as u32;
+                function.arguments.push(FunctionArgument {
+                    name: Some("self".into()),
+                    ty,
+                    binding: None,
+                });
+                let expr = function
+                    .expressions
+                    .append(Expression::FunctionArgument(index), Span::UNDEFINED);
+                match kind {
+                    ReceiverKind::Mut => env.push_in(
+                        "self".into(),
+                        Slot::Ptr(expr),
+                        self_ty,
+                        true,
+                        AddressSpace::Function,
+                    ),
+                    ReceiverKind::Value => env.push("self".into(), Slot::Value(expr), self_ty),
+                }
+            }
             FnArg::Typed(pat_ty) => {
                 let name = match &*pat_ty.pat {
                     syn::Pat::Ident(ident)

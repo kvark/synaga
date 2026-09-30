@@ -55,7 +55,6 @@ fn struct_as_uniform() {
         static camera: Camera = ();
 
         #[entry_point(vertex)]
-        #[output(builtin(position))]
         fn vs_main(#[location(0)] pos: vec3) -> vec4 {
             camera.mvp * vec4(pos, 1.0)
         }

@@ -321,9 +321,12 @@ w('''//! Vector types.
 //! `v.xyz` has to be `v.xyz()`; `.r`/`.g`/`.b`/`.a` are methods for the same
 //! reason, since they would alias the `x`/`y`/`z`/`w` fields.
 //!
-//! Comparisons are methods too. `a < b` in a shader yields one bool per lane,
-//! and Rust's `PartialOrd` yields a single `bool`, so the lane-wise forms are
-//! spelled `cmplt`, `cmple`, and so on, as glam spells them.
+//! Comparisons come two ways. The lane-wise ones are methods, `a.cmplt(b)`
+//! and the rest, as glam spells them, because Rust's `<` has to give one
+//! `bool`. That `bool` holds when it holds in every lane: `a < b` is
+//! `a.cmplt(b).all()`, `a == b` is `a.cmpeq(b).all()`, and `a != b` is its
+//! negation, some lane differing. So `!(a < b)` is not `a >= b`: it is "some
+//! lane is not less", `a.cmpge(b).any()`, which is what a bounds check wants.
 //!
 //! So is the math, named as `f32` names it, and as glam does for what only a
 //! vector has. `cast` converts the lanes, as `as` converts a scalar:
@@ -527,6 +530,25 @@ for size in SIZES:
                 w(f"    /// Lane-wise `{doc}`.")
                 w("    #[inline]")
                 w(f"    pub fn {op}(self, rhs: Self) -> {vname(size, 'bool')} {{ self.zip_lanes(rhs, |a, b| a {doc} b) }}")
+            w("}")
+            w("/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`")
+            w("/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane")
+            w("/// agrees, and `None` otherwise. So `a <= b` holds more often than")
+            w("/// `a < b || a == b`, which `PartialOrd` asks of it, as it does in nalgebra.")
+            w(f"impl PartialOrd for {ty} {{")
+            w("    #[inline]")
+            w("    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {")
+            w("        use core::cmp::Ordering::*;")
+            w("        match (self == other, self < other, self > other) {")
+            w("            (true, _, _) => Some(Equal),")
+            w("            (_, true, _) => Some(Less),")
+            w("            (_, _, true) => Some(Greater),")
+            w("            _ => None,")
+            w("        }")
+            w("    }")
+            for op, method in [("lt", "cmplt"), ("le", "cmple"), ("gt", "cmpgt"), ("ge", "cmpge")]:
+                w("    #[inline]")
+                w(f"    fn {op}(&self, other: &Self) -> bool {{ self.{method}(*other).all() }}")
             w("}")
         # Operators are uniform per type, so they go through a macro rather
         # than 2,500 lines of impls that differ only in a name.

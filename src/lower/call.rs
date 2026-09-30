@@ -13,7 +13,7 @@ use crate::Error;
 
 /// The pointer for a `ptr<_, base>` parameter, from `&mut x`, `&x`, or a name
 /// that already stands for storage.
-fn pointer_arg(
+pub(super) fn pointer_arg(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
@@ -103,6 +103,7 @@ fn names_type(ctx: &mut Context, path: &[String]) -> Result<bool, Error> {
             name.as_str(),
             "f32" | "u32" | "i32" | "usize" | "isize" | "bool" | "ray_query" | "RayQuery"
         )
+        || super::ray::is_ray_word_type(&name)
         || ctx.named_type(path)?.is_some())
 }
 
@@ -242,6 +243,11 @@ pub(super) fn lower_call_any(
                 hint,
             };
             let args: Vec<&Expr> = call.args.iter().collect();
+            if let Some(result) =
+                super::method::lower_user_assoc_call(ctx, function, body, &on, &item, &args, env)?
+            {
+                return Ok(result);
+            }
             return super::method::lower_qualified_call(ctx, function, body, on, &item, &args, env)
                 .map(Some);
         }
@@ -363,8 +369,15 @@ fn lower_relational(
     let [arg] = call.args.iter().collect::<Vec<_>>()[..] else {
         return Err(Error::WrongArgCount(name.into()));
     };
-    let (argument, ty) = lower_expr_hinted(ctx, function, body, arg, env, None)?;
     use naga::RelationalFunction as Rf;
+    let lanewise = match fun {
+        Rf::All | Rf::Any => super::expr::lower_lanewise(ctx, function, body, arg, env)?,
+        _ => None,
+    };
+    let (argument, ty) = match lanewise {
+        Some(typed) => typed,
+        None => lower_expr_hinted(ctx, function, body, arg, env, None)?,
+    };
     // `all`/`any` fold a bool vector to one bool; `isNan`/`isInf` test floats
     // component-wise and keep the shape.
     let result = match (fun, ctx.shape(ty)) {
@@ -533,6 +546,11 @@ fn rust_math(name: &str) -> Option<RustMath> {
         _ => return None,
     };
     Some(RustMath::Builtin(MathSpec { fun, argc, result }))
+}
+
+/// Is `name` a math method, as `x.sqrt()` and `v.dot(w)` are?
+pub(super) fn is_math_method(name: &str) -> bool {
+    rust_math(name).is_some() || math_spec(name).is_some()
 }
 
 /// Why a method Rust has cannot be the GPU builtin of the same name, for the
@@ -881,6 +899,21 @@ fn lower_fn_call(
     env: &mut Env,
     callee: Handle<Function>,
 ) -> Result<Option<Typed>, Error> {
+    let args: Vec<&Expr> = call.args.iter().collect();
+    call_function(ctx, function, body, callee, None, &args, env)
+}
+
+/// A call to `callee`: `first`, a receiver already lowered, if there is one,
+/// then `args`.
+pub(super) fn call_function(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    callee: Handle<Function>,
+    first: Option<Handle<Expression>>,
+    args: &[&Expr],
+    env: &mut Env,
+) -> Result<Option<Typed>, Error> {
     let (name, expected, ret_ty): (String, Vec<_>, Option<_>) = {
         let func = &ctx.module.functions[callee];
         let expected = func.arguments.iter().map(|a| a.ty).collect();
@@ -892,11 +925,12 @@ fn lower_fn_call(
     };
     let name = name.as_str();
 
-    if expected.len() != call.args.len() {
+    let skip = usize::from(first.is_some());
+    if expected.len() != args.len() + skip {
         return Err(Error::WrongArgCount(name.into()));
     }
-    let mut arg_values = Vec::new();
-    for (arg, &want) in call.args.iter().zip(expected.iter()) {
+    let mut arg_values: Vec<_> = first.into_iter().collect();
+    for (&arg, &want) in args.iter().zip(expected.iter().skip(skip)) {
         // A pointer parameter takes the storage itself. `&mut x` borrows it;
         // a name that is already a pointer parameter passes straight through,
         // the way a Rust reborrow does.

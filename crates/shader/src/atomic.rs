@@ -1,10 +1,12 @@
-//! Atomics: `core::sync::atomic`'s types, minus what a GPU does not have.
+//! Atomics: [`Atomic<u32>`] and [`Atomic<i32>`], WGSL's `atomic<T>`.
 //!
 //! WGSL's atomics are relaxed and nothing stronger, so there is no `Ordering`
 //! to pass, and `compare_exchange_weak` hands back WGSL's pair of old value
-//! and outcome rather than a `Result`. Otherwise these are the standard types,
-//! and on the CPU they are exactly that: every method is a relaxed operation
-//! on a real atomic.
+//! and outcome rather than a `Result`. The methods are otherwise the ones
+//! `core::sync::atomic` has, and on the CPU they are exactly those: every one
+//! is a relaxed operation on a real atomic. The type is generic, as the
+//! vectors are, and is named apart from the standard ones so that neither is
+//! taken for the other.
 //!
 //! Every method takes `&self`, as the standard ones do. An atomic changes
 //! through a shared reference, so a buffer that is only ever updated through
@@ -18,8 +20,8 @@
 use core::fmt;
 use core::sync::atomic::{self, Ordering::Relaxed};
 
-/// What [`AtomicU32::compare_exchange_weak`] and its siblings hand back:
-/// WGSL's `__atomic_compare_exchange_result`.
+/// What [`Atomic::compare_exchange_weak`] hands back: WGSL's
+/// `__atomic_compare_exchange_result`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CompareExchange<T> {
     /// What the atomic held before the operation.
@@ -29,18 +31,44 @@ pub struct CompareExchange<T> {
     pub exchanged: bool,
 }
 
-macro_rules! atomic {
-    ($(#[$doc:meta])* $name:ident, $int:ty) => {
-        $(#[$doc])*
-        #[repr(transparent)]
-        #[derive(Default)]
-        pub struct $name(atomic::$name);
+/// A scalar an [`Atomic`] can hold: `u32` or `i32`.
+pub trait AtomicScalar: sealed::Sealed + Copy {
+    /// The standard atomic that holds one on the CPU.
+    #[doc(hidden)]
+    type Cell: Default + Send + Sync;
+}
 
-        impl $name {
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for u32 {}
+    impl Sealed for i32 {}
+}
+
+impl AtomicScalar for u32 {
+    type Cell = atomic::AtomicU32;
+}
+
+impl AtomicScalar for i32 {
+    type Cell = atomic::AtomicI32;
+}
+
+/// WGSL's `atomic<T>`: `Atomic<u32>` or `Atomic<i32>`.
+#[repr(transparent)]
+pub struct Atomic<T: AtomicScalar>(T::Cell);
+
+impl<T: AtomicScalar> Default for Atomic<T> {
+    fn default() -> Self {
+        Self(T::Cell::default())
+    }
+}
+
+macro_rules! atomic {
+    ($int:ty) => {
+        impl Atomic<$int> {
             /// An atomic holding `value`. Only the CPU makes one; on the GPU an
             /// atomic lives in a buffer or in workgroup memory.
             pub const fn new(value: $int) -> Self {
-                Self(atomic::$name::new(value))
+                Self(<$int as AtomicScalar>::Cell::new(value))
             }
 
             /// The value, once nothing else can reach the atomic.
@@ -128,13 +156,13 @@ macro_rules! atomic {
             }
         }
 
-        impl fmt::Debug for $name {
+        impl fmt::Debug for Atomic<$int> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 fmt::Debug::fmt(&self.load(), f)
             }
         }
 
-        impl From<$int> for $name {
+        impl From<$int> for Atomic<$int> {
             fn from(value: $int) -> Self {
                 Self::new(value)
             }
@@ -142,16 +170,8 @@ macro_rules! atomic {
     };
 }
 
-atomic!(
-    /// WGSL's `atomic<u32>`.
-    AtomicU32,
-    u32
-);
-atomic!(
-    /// WGSL's `atomic<i32>`.
-    AtomicI32,
-    i32
-);
+atomic!(u32);
+atomic!(i32);
 
 #[cfg(test)]
 mod tests {
@@ -159,7 +179,7 @@ mod tests {
 
     #[test]
     fn a_cpu_atomic_is_a_real_one() {
-        let a = AtomicU32::new(5);
+        let a = Atomic::<u32>::new(5);
         assert_eq!(a.fetch_add(3), 5);
         assert_eq!(a.fetch_sub(1), 8);
         assert_eq!(a.fetch_max(10), 7);
@@ -170,7 +190,7 @@ mod tests {
         assert_eq!(a.fetch_add(u32::MAX), 0, "adds wrap, as on a GPU");
         assert_eq!(a.load(), u32::MAX);
 
-        let b = AtomicI32::new(-1);
+        let b = Atomic::<i32>::new(-1);
         assert_eq!(b.fetch_and(6), -1);
         assert_eq!(b.fetch_or(1), 6);
         assert_eq!(b.fetch_xor(7), 7);
@@ -179,7 +199,7 @@ mod tests {
 
     #[test]
     fn compare_exchange_says_what_it_found() {
-        let a = AtomicU32::new(1);
+        let a = Atomic::<u32>::new(1);
         let failed = a.compare_exchange_weak(2, 3);
         assert_eq!(
             failed,

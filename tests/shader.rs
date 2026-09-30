@@ -51,7 +51,6 @@ const SHADER: &str = r#"
     }
 
     #[entry_point(fragment)]
-    #[output(location(0))]
     fn fs(v: VsOut) -> vec4 {
         let to_eye = normalize(camera.eye - v.world);
         let ndl = clamp(to_eye.y, 0.0, 1.0);

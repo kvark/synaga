@@ -181,6 +181,10 @@ fn default_is_zero_only_where_it_is_derived() {
     validate_only(&format!(
         "{nested} fn f(i: Inner) -> S {{ S {{ i, ..Default::default() }} }}"
     ));
+    // `Shared` derives a `Default` that is all zeroes.
+    let shared = "#[repr(C)] #[derive(Shared)] struct P { a: f32, b: Vec3 }";
+    let wgsl = roundtrip(&format!("{shared} fn f() -> P {{ P::default() }}"));
+    assert!(wgsl.contains("return P();"), "{wgsl}");
 }
 
 #[test]
@@ -197,6 +201,35 @@ fn usize_indexes_what_rust_insists_on_indexing_by_usize() {
         aliased.contains("i: u32") && aliased.contains("-> u32"),
         "{aliased}"
     );
+}
+
+#[test]
+fn set_writes_a_whole_resource() {
+    // `*emit_end = n` would borrow a `static` mutably, which Rust refuses, so
+    // a resource has `Cell`'s `set` for it.
+    let wgsl = roundtrip_unbound(
+        r#"
+        static emit_end: Workgroup<i32> = binding();
+        static totals: StorageMut<Vec2<u32>> = binding();
+        #[entry_point(compute, threads(64))]
+        fn emit(local_invocation_index: u32) {
+            if local_invocation_index == 0 {
+                emit_end.set(3);
+                totals.set(vec2(1, 2));
+            }
+            workgroup_barrier();
+            let read = *emit_end;
+        }
+        "#,
+    );
+    assert!(wgsl.contains("emit_end = 3i;"), "{wgsl}");
+    assert!(wgsl.contains("totals = vec2<u32>(1u, 2u);"), "{wgsl}");
+    let msg = reject("static tint: Uniform<Vec4> = binding(); fn f() { tint.set(Vec4::ONE); }");
+    assert!(msg.contains("read-only"), "{msg}");
+    // A part of a resource is written by assigning to it.
+    let msg =
+        reject("struct S { a: u32 } static s: StorageMut<S> = binding(); fn f() { s.a.set(1); }");
+    assert!(msg.contains("set"), "{msg}");
 }
 
 #[test]

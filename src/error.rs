@@ -20,6 +20,8 @@ pub enum Error {
     UnsupportedType(String),
     #[error("unsupported method `{0}`")]
     UnsupportedMethod(String),
+    #[error("`{0}` is the standard library's; a shader's atomic is `Atomic<u32>` or `Atomic<i32>`, whose methods take no `Ordering`")]
+    StdAtomic(String),
     #[error("`{0}()` means something else on the GPU: {1}")]
     DiffersOnGpu(String, &'static str),
     #[error("unsupported expression: {0}")]
@@ -34,8 +36,20 @@ pub enum Error {
     MissingReturnType(String),
     #[error("function `{0}` can finish without returning a value")]
     MissingReturn(String),
-    #[error("receiver arguments are not supported")]
+    #[error("`self` is only for a method in an `impl`")]
     Receiver,
+    #[error("`match` is on an integer, an enum, a flags set or a `bool`")]
+    MatchOn,
+    #[error("a `match` arm cannot have an `if` guard: test it inside the arm")]
+    MatchGuard,
+    #[error("a `match` pattern is a literal, a `const`, an enum variant or a flag, several with `|`, `_`, or a name to bind")]
+    MatchPattern,
+    #[error("`mut self` is not supported: take `self` and copy it into a `let mut`")]
+    MutSelf,
+    #[error("`{0}` takes no `self`: call it as `Type::{0}(..)`")]
+    AssociatedFunction(String),
+    #[error("`{0}` takes `&mut self`, which has to be a local: copy the value out, call it, and store it back")]
+    MutSelfNotLocal(String),
     #[error("pattern parameters are not supported")]
     PatternParam,
     #[error("`let` without initializer is not supported")]
@@ -148,10 +162,10 @@ pub enum Error {
     MixedStructBindings(String),
     #[error("`{0}` is `#[repr(C)]`, which says the host shares it, but {1}")]
     HostLayout(String, String),
-    #[error("`{0}::default()` is zero on the GPU, and in Rust too only if `{1}` derives `Default`, which it does not: derive it, or spell the value out")]
+    #[error("`{0}::default()` is zero on the GPU, and in Rust too only if `{1}` derives `Default`, which it does not: derive it, implement it in the shader, or spell the value out")]
     UnseenDefault(String, String),
-    #[error("entry point `{0}` returns a struct with field bindings; drop `#[output(...)]`")]
-    RedundantReturnBinding(String),
+    #[error("an entry point's bare return value is a vertex shader's position or a fragment shader's `location(0)`; anything else goes in a returned struct that derives `Io`, whose fields say where they go, rather than `#[output(..)]` on the function")]
+    OutputAttribute,
     #[error("`#[location]` field `{0}` is an integer, so it needs `#[flat]`")]
     MissingFlat(String),
     #[error("unsupported `cfg` predicate `{0}`")]

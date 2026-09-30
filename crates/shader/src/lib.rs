@@ -44,7 +44,7 @@
 //!
 //! ```ignore
 //! #[repr(C)]
-//! #[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
+//! #[derive(Shared)]
 //! pub struct Globals {
 //!     pub view_proj: Mat4,
 //!     pub sprite_size: Vec2,
@@ -52,8 +52,10 @@
 //! }
 //! ```
 //!
-//! With the `bytemuck` feature the vectors and matrices are `Pod`, so a shared
-//! struct can derive it. They convert from arrays, a matrix column by column,
+//! [`Shared`](derive@Shared) derives what uploading one takes: `Clone`,
+//! `Copy`, a `Default` of all zeroes, as the GPU's default is, and
+//! `bytemuck`'s `Zeroable` and `Pod`, which the `bytemuck` feature makes the
+//! vectors and matrices. They convert from arrays, a matrix column by column,
 //! and with the `mint` feature from mint's types, which most math crates
 //! convert to. `vec3(x, y, z)` and the other constructors work on the CPU too.
 //!
@@ -77,7 +79,8 @@
 //!
 //! And what it expresses better: texture and ray-query operations are methods
 //! on the types they apply to, math is methods named as `f32`'s are, and
-//! atomics are the standard ones without an `Ordering`.
+//! atomics, [`Atomic<u32>`] and [`Atomic<i32>`], have the standard methods
+//! without an `Ordering`.
 //!
 //! [synaga]: https://github.com/kvark/synaga
 
@@ -98,9 +101,60 @@ pub use atomic::*;
 pub use builtins::*;
 pub use matrix::*;
 pub use resource::*;
-pub use synaga_macros::{entry_point, Io};
+pub use synaga_macros::{entry_point, Io, Shared};
 pub use texture::*;
 pub use vector::*;
+
+/// A struct the host shares with a shader, which `#[derive(Shared)]`
+/// implements, with `Clone`, `Copy`, a zeroed `Default`, and `bytemuck`'s
+/// `Zeroable` and `Pod`.
+///
+/// ```
+/// use synaga_shader::*;
+/// #[repr(C)]
+/// #[derive(Shared)]
+/// struct Params {
+///     tint: Vec4,
+///     size: Vec2<u32>,
+///     _pad: Vec2<u32>,
+/// }
+/// assert_eq!(Params::default().tint, Vec4::ZERO);
+/// ```
+///
+/// A struct with padding in Rust cannot be, since padding is not data. The
+/// shader's own types leave none, and the GPU's gaps are the build's layout
+/// check to find, but a `u8` can:
+///
+/// ```compile_fail
+/// use synaga_shader::*;
+/// #[repr(C)]
+/// #[derive(Shared)]
+/// struct Padded {
+///     flag: u8,
+///     size: u32,
+/// }
+/// ```
+///
+/// and neither can one without `#[repr(C)]`, whose layout is `rustc`'s to
+/// choose:
+///
+/// ```compile_fail
+/// use synaga_shader::*;
+/// #[derive(Shared)]
+/// struct Loose {
+///     size: u32,
+/// }
+/// ```
+#[cfg(feature = "bytemuck")]
+pub trait Shared: bytemuck::Pod + Default {}
+
+/// What `#[derive(Shared)]` reaches for, from a crate that need not depend on
+/// `bytemuck` itself.
+#[cfg(feature = "bytemuck")]
+#[doc(hidden)]
+pub mod __private {
+    pub use bytemuck;
+}
 
 /// A struct of bound shader inputs or outputs. `#[derive(Io)]` implements it.
 pub trait Io {
@@ -124,25 +178,3 @@ pub fn unimplemented_on_cpu<T>() -> T {
          but not its resources, textures, ray queries or barriers"
     )
 }
-
-/// The ray flags and intersection kinds WGSL predeclares.
-pub mod ray {
-    pub const RAY_FLAG_NONE: u32 = 0;
-    pub const RAY_FLAG_FORCE_OPAQUE: u32 = 1;
-    pub const RAY_FLAG_FORCE_NO_OPAQUE: u32 = 2;
-    pub const RAY_FLAG_TERMINATE_ON_FIRST_HIT: u32 = 4;
-    pub const RAY_FLAG_SKIP_CLOSEST_HIT_SHADER: u32 = 8;
-    pub const RAY_FLAG_CULL_BACK_FACING: u32 = 16;
-    pub const RAY_FLAG_CULL_FRONT_FACING: u32 = 32;
-    pub const RAY_FLAG_CULL_OPAQUE: u32 = 64;
-    pub const RAY_FLAG_CULL_NO_OPAQUE: u32 = 128;
-    pub const RAY_FLAG_SKIP_TRIANGLES: u32 = 256;
-    pub const RAY_FLAG_SKIP_AABBS: u32 = 512;
-
-    pub const RAY_QUERY_INTERSECTION_NONE: u32 = 0;
-    pub const RAY_QUERY_INTERSECTION_TRIANGLE: u32 = 1;
-    pub const RAY_QUERY_INTERSECTION_GENERATED: u32 = 2;
-    pub const RAY_QUERY_INTERSECTION_AABB: u32 = 3;
-}
-
-pub use ray::*;

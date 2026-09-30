@@ -76,8 +76,26 @@ fn splat_scalar_add() {
 }
 
 #[test]
-fn vec_compare_bool_vector() {
-    validate_only("fn f(a: vec3, b: vec3) -> vec3<bool> { a < b }");
+fn comparing_two_vectors_is_one_bool() {
+    // As Rust's `PartialOrd` and `PartialEq` on them: every lane, or for `!=`
+    // any lane. The lane-wise forms are methods.
+    let wgsl = roundtrip(
+        r#"
+        fn inside(p: Vec2<i32>, extent: Vec2<i32>) -> bool { p >= Vec2::ZERO && p < extent }
+        fn outside(p: Vec2<i32>, extent: Vec2<i32>) -> bool { !(p < extent) }
+        fn same(a: Vec3, b: Vec3) -> bool { a == b }
+        fn differ(a: Vec3, b: Vec3) -> bool { a != b }
+        fn lanes(a: Vec3, b: Vec3) -> Vec3<bool> { a.cmplt(b) }
+        "#,
+    );
+    assert!(wgsl.contains("all((p >= vec2<i32>()))"), "{wgsl}");
+    assert!(wgsl.contains("all((p < extent))"), "{wgsl}");
+    assert!(wgsl.contains("all((a == b))"), "{wgsl}");
+    // Naga renames the later functions' parameters apart.
+    assert!(wgsl.contains("any((a_1 != b_1))"), "{wgsl}");
+    assert!(wgsl.contains("return (a_2 < b_2);"), "{wgsl}");
+    // A comparison that is one `bool` can be a condition.
+    validate_only("fn f(a: Vec3, b: Vec3) -> f32 { if a <= b { 1.0 } else { 0.0 } }");
 }
 
 #[test]

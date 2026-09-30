@@ -235,7 +235,8 @@ pub(super) fn derives_default(attrs: &[syn::Attribute]) -> bool {
             // A derive list that does not parse is `rustc`'s to report.
             let _ = attr.parse_nested_meta(|meta| {
                 let last = meta.path.segments.last();
-                found |= last.is_some_and(|s| s.ident == "Default");
+                // `Shared` derives a `Default` that is all zeroes.
+                found |= last.is_some_and(|s| s.ident == "Default" || s.ident == "Shared");
                 Ok(())
             });
             found

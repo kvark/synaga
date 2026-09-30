@@ -29,7 +29,6 @@ fn vertex_position() {
     let wgsl = roundtrip(
         r#"
         #[entry_point(vertex)]
-        #[output(builtin(position))]
         fn vs_main(#[location(0)] pos: vec3) -> vec4 {
             vec4(pos.x, pos.y, pos.z, 1.0)
         }
@@ -47,7 +46,6 @@ fn fragment_color() {
     validate_only(
         r#"
         #[entry_point(fragment)]
-        #[output(location(0))]
         fn fs_main(#[location(0)] color: vec4) -> vec4 {
             color
         }
@@ -60,7 +58,6 @@ fn vertex_with_index() {
     validate_only(
         r#"
         #[entry_point(vertex)]
-        #[output(builtin(position))]
         fn vs_main(#[builtin(vertex_index)] vid: u32) -> vec4 {
             vec4(0.0, 0.0, 0.0, 1.0)
         }
@@ -104,7 +101,6 @@ fn rejects_workgroup_on_vertex() {
     let msg = reject(
         r#"
         #[entry_point(vertex, threads(8))]
-        #[output(builtin(position))]
         fn vs_main() -> vec4 { vec4(0.0, 0.0, 0.0, 1.0) }
         "#,
     );
@@ -116,7 +112,6 @@ fn an_old_stage_attribute_is_named_not_ignored() {
     let msg = reject(
         r#"
         #[vertex]
-        #[output(builtin(position))]
         fn vs_main() -> vec4 { vec4(0.0, 0.0, 0.0, 1.0) }
         "#,
     );
@@ -240,18 +235,55 @@ fn only_a_builtin_the_stage_takes_goes_by_name() {
 fn a_bare_result_goes_where_its_stage_puts_one() {
     // A vertex shader has to produce its position, and a fragment shader's
     // first colour target is where a lone colour goes.
-    same_module(
-        "#[entry_point(vertex)] fn vs(vertex_index: u32) -> Vec4 { Vec4::ZERO }",
-        "#[entry_point(vertex)] #[output(builtin(position))] fn vs(vertex_index: u32) -> Vec4 { Vec4::ZERO }",
+    let module =
+        parse_str("#[entry_point(vertex)] fn vs(vertex_index: u32) -> Vec4 { Vec4::ZERO }")
+            .unwrap();
+    let binding = &module.entry_points[0]
+        .function
+        .result
+        .as_ref()
+        .unwrap()
+        .binding;
+    assert!(
+        matches!(
+            binding,
+            Some(naga::Binding::BuiltIn(naga::BuiltIn::Position { .. }))
+        ),
+        "{binding:?}"
     );
-    same_module(
-        "#[entry_point(fragment)] fn fs() -> Vec4 { Vec4::ONE }",
-        "#[entry_point(fragment)] #[output(location(0))] fn fs() -> Vec4 { Vec4::ONE }",
+    let module = parse_str("#[entry_point(fragment)] fn fs() -> Vec4 { Vec4::ONE }").unwrap();
+    let binding = &module.entry_points[0]
+        .function
+        .result
+        .as_ref()
+        .unwrap()
+        .binding;
+    assert!(
+        matches!(binding, Some(naga::Binding::Location { location: 0, .. })),
+        "{binding:?}"
     );
-    // Anything else says so.
-    let wgsl =
-        roundtrip("#[entry_point(fragment)] #[output(builtin(frag_depth))] fn fs() -> f32 { 0.5 }");
-    assert!(wgsl.contains("@builtin(frag_depth)"), "{wgsl}");
     let msg = reject("#[entry_point(compute, threads(1))] fn cs() -> u32 { 1 }");
     assert!(msg.contains("a compute entry point cannot"), "{msg}");
+}
+
+#[test]
+fn any_other_result_is_a_struct_of_bound_fields() {
+    let wgsl = roundtrip(
+        r#"
+        #[derive(Io)]
+        struct Depth { #[builtin(frag_depth)] depth: f32 }
+        #[entry_point(fragment)]
+        fn fs() -> Depth { Depth { depth: 0.5 } }
+        "#,
+    );
+    assert!(wgsl.contains("@builtin(frag_depth)"), "{wgsl}");
+    // The function never says where its result goes: that is its type's to say.
+    let msg =
+        reject("#[entry_point(fragment)] #[output(builtin(frag_depth))] fn fs() -> f32 { 0.5 }");
+    assert!(msg.contains("derives `Io`"), "{msg}");
+    let msg = reject(concat!(
+        "#[entry_point(fragment)] #[output(location(0))] ",
+        "fn fs() -> Vec4 { Vec4::ONE }"
+    ));
+    assert!(msg.contains("derives `Io`"), "{msg}");
 }

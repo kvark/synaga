@@ -39,6 +39,45 @@ pub(super) fn special_struct(ctx: &mut Context, name: &str) -> Option<Handle<Typ
     }
 }
 
+/// `RayFlag` and `RayQueryIntersection`: a set and an enum in Rust, and the
+/// `u32` that Naga's `RayDesc` and `RayIntersection` hold on the GPU.
+pub(super) fn is_ray_word_type(name: &str) -> bool {
+    matches!(name, "RayFlag" | "RayQueryIntersection")
+}
+
+/// `RayFlag::CULL_NO_OPAQUE` and `RayQueryIntersection::None`: a flag or a
+/// kind, by the name `synaga_shader` gives it.
+pub(super) fn typed_const(ty: &str, name: &str) -> Option<u32> {
+    use naga::{RayFlag, RayQueryIntersection as Kind};
+    let value = match (ty, name) {
+        ("RayFlag", "FORCE_OPAQUE") => RayFlag::FORCE_OPAQUE.bits(),
+        ("RayFlag", "FORCE_NO_OPAQUE") => RayFlag::FORCE_NO_OPAQUE.bits(),
+        ("RayFlag", "TERMINATE_ON_FIRST_HIT") => RayFlag::TERMINATE_ON_FIRST_HIT.bits(),
+        ("RayFlag", "SKIP_CLOSEST_HIT_SHADER") => RayFlag::SKIP_CLOSEST_HIT_SHADER.bits(),
+        ("RayFlag", "CULL_BACK_FACING") => RayFlag::CULL_BACK_FACING.bits(),
+        ("RayFlag", "CULL_FRONT_FACING") => RayFlag::CULL_FRONT_FACING.bits(),
+        ("RayFlag", "CULL_OPAQUE") => RayFlag::CULL_OPAQUE.bits(),
+        ("RayFlag", "CULL_NO_OPAQUE") => RayFlag::CULL_NO_OPAQUE.bits(),
+        ("RayFlag", "SKIP_TRIANGLES") => RayFlag::SKIP_TRIANGLES.bits(),
+        ("RayFlag", "SKIP_AABBS") => RayFlag::SKIP_AABBS.bits(),
+        ("RayQueryIntersection", "None") => Kind::None as u32,
+        ("RayQueryIntersection", "Triangle") => Kind::Triangle as u32,
+        ("RayQueryIntersection", "Generated") => Kind::Generated as u32,
+        ("RayQueryIntersection", "Aabb") => Kind::Aabb as u32,
+        _ => return None,
+    };
+    Some(value)
+}
+
+/// `RayFlag::empty()` and `RayFlag::all()`, which `bitflags!` gives the set.
+pub(super) fn flags_call(ty: &str, name: &str) -> Option<u32> {
+    match (ty, name) {
+        ("RayFlag", "empty") => Some(0),
+        ("RayFlag", "all") => Some(naga::RayFlag::all().bits()),
+        _ => None,
+    }
+}
+
 /// The predeclared ray flags and intersection kinds, which WGSL provides as
 /// bare names rather than as constants anyone declares.
 pub(super) fn predeclared_const(name: &str) -> Option<u32> {

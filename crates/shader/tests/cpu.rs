@@ -71,6 +71,31 @@ fn comparisons_are_per_lane() {
 }
 
 #[test]
+// Negating a comparison is the point here, which clippy warns about for any
+// type that is only partially ordered, as a vector is.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn an_operator_compares_every_lane() {
+    let p = vec2(3, -1);
+    let extent = vec2(4, 4);
+    assert!(p < extent && p <= extent && !(p >= Vec2::ZERO));
+    // `!(a < b)` is "some lane is not less", not `a >= b`.
+    let edge = vec2::<i32>(4, 2);
+    assert!(!(edge < extent) && !(edge >= extent));
+    assert_eq!(!(edge < extent), edge.cmpge(extent).any());
+    // Equality is every lane, and so is the order where the lanes agree.
+    assert!(vec3(1.0, 2.0, 3.0) == vec3(1.0, 2.0, 3.0));
+    assert!(vec3(1.0, 2.0, 3.0) != vec3(1.0, 2.0, 4.0));
+    use core::cmp::Ordering::*;
+    assert_eq!(vec2(1, 2).partial_cmp(&vec2(1, 2)), Some(Equal));
+    assert_eq!(vec2(1, 2).partial_cmp(&vec2(3, 4)), Some(Less));
+    assert_eq!(vec2(5, 6).partial_cmp(&vec2(3, 4)), Some(Greater));
+    assert_eq!(vec2(1, 6).partial_cmp(&vec2(3, 4)), None);
+    // A NaN lane is neither, as a NaN is.
+    let nan = vec2(f32::NAN, 0.0);
+    assert!(!(nan < Vec2::ONE) && !(nan >= Vec2::ONE) && nan != nan);
+}
+
+#[test]
 fn cast_converts_as_as_does() {
     // A float saturates into an integer, and NaN becomes zero.
     let v = vec4(-1.5, 2.9, 1e20, f32::NAN);

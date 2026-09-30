@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 synaga-shader = { path = "../../crates/shader", features = ["bytemuck"] }
-bytemuck = { version = "1", features = ["derive"] }
+bytemuck = "1"
 naga = { version = "30", features = ["deserialize"] }
 
 [build-dependencies]

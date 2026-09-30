@@ -1,4 +1,4 @@
-//! Atomics, spelled as `synaga_shader::AtomicU32` spells them: the standard
+//! Atomics, spelled as `synaga_shader::Atomic<u32>` spells them: the standard
 //! methods, without an `Ordering`, since WGSL's atomics are relaxed and
 //! nothing else.
 //!

@@ -6,7 +6,7 @@ use synaga_shader::*;
 /// checks that the GPU reads each field where Rust puts it: without `_pad`,
 /// the GPU's struct would be 8 bytes longer than Rust's.
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
+#[derive(Shared)]
 pub struct Globals {
     pub mvp_transform: Mat4,
     pub sprite_size: Vec2,

@@ -593,7 +593,7 @@ impl RayQuery {
 /// What to trace.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RayDesc {
-    pub flags: u32,
+    pub flags: RayFlag,
     pub cull_mask: u32,
     pub tmin: f32,
     pub tmax: f32,
@@ -604,7 +604,7 @@ pub struct RayDesc {
 /// What was found.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RayIntersection {
-    pub kind: u32,
+    pub kind: RayQueryIntersection,
     pub t: f32,
     pub instance_custom_data: u32,
     pub instance_index: u32,
@@ -615,4 +615,37 @@ pub struct RayIntersection {
     pub front_face: bool,
     pub object_to_world: crate::matrix::Mat4x3,
     pub world_to_object: crate::matrix::Mat4x3,
+}
+
+bitflags::bitflags! {
+    /// What a ray query skips, or takes as opaque: WGSL's `RAY_FLAG_*`, as a
+    /// set. `RayFlag::TERMINATE_ON_FIRST_HIT | RayFlag::CULL_NO_OPAQUE`.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+    pub struct RayFlag: u32 {
+        const FORCE_OPAQUE = 0x1;
+        const FORCE_NO_OPAQUE = 0x2;
+        const TERMINATE_ON_FIRST_HIT = 0x4;
+        const SKIP_CLOSEST_HIT_SHADER = 0x8;
+        const CULL_BACK_FACING = 0x10;
+        const CULL_FRONT_FACING = 0x20;
+        const CULL_OPAQUE = 0x40;
+        const CULL_NO_OPAQUE = 0x80;
+        const SKIP_TRIANGLES = 0x100;
+        const SKIP_AABBS = 0x200;
+    }
+}
+
+/// What a ray query found, if anything: WGSL's `RAY_QUERY_INTERSECTION_*`.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum RayQueryIntersection {
+    /// Nothing: the ray missed, or nothing was committed yet.
+    #[default]
+    None = 0,
+    /// A triangle.
+    Triangle = 1,
+    /// A procedural hit, which `generate_intersection` offered.
+    Generated = 2,
+    /// A box of procedural geometry, whose hit is the shader's to find.
+    Aabb = 3,
 }

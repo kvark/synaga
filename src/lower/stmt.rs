@@ -33,6 +33,10 @@ fn yields_value(expr: &Expr) -> bool {
             }
             None => false,
         },
+        Expr::Match(matched) => matched.arms.iter().any(|arm| yields_value(&arm.body)),
+        // An assignment is `()`, as a statement is.
+        Expr::Assign(_) => false,
+        Expr::Binary(bin) => !is_compound_assign(&bin.op),
         _ => true,
     }
 }
@@ -101,7 +105,7 @@ fn lower_returning_block(
     // `return`, as in `if c { return a; } else { b }`.
     let returns = |tail: &Expr| match tail {
         Expr::If(if_expr) => if_expr.else_branch.is_some(),
-        Expr::Block(_) | Expr::Unsafe(_) => true,
+        Expr::Block(_) | Expr::Unsafe(_) | Expr::Match(_) => true,
         other => yields_value(other),
     };
     match block.stmts.split_last() {
@@ -120,8 +124,8 @@ fn lower_returning_block(
 }
 
 /// An expression in tail position, returned: each branch of an `if` returns
-/// its own value.
-fn lower_returning_expr(
+/// its own value, and so does each arm of a `match`.
+pub(super) fn lower_returning_expr(
     ctx: &mut Context,
     function: &mut Function,
     body: &mut Block,
@@ -161,6 +165,14 @@ fn lower_returning_expr(
                 Span::UNDEFINED,
             );
             Ok(())
+        }
+        Expr::Match(matched) => {
+            let position = super::switch::Position::Return;
+            super::switch::lower_match(ctx, function, body, matched, env, position).map(|_| ())
+        }
+        // An arm may leave by a `return` of its own.
+        Expr::Return(_) | Expr::Break(_) | Expr::Continue(_) => {
+            lower_arm(ctx, function, body, expr, env, None).map(|_| ())
         }
         other => {
             let hint = return_hint(ctx, function);
@@ -228,6 +240,12 @@ pub(super) fn always_jumps(block: &Block) -> bool {
     match block.last() {
         Some(Statement::Return { .. } | Statement::Kill) => true,
         Some(Statement::If { accept, reject, .. }) => always_jumps(accept) && always_jumps(reject),
+        Some(Statement::Block(inner)) => always_jumps(inner),
+        // A case that falls through ends where the next one does, and one
+        // of them is the default.
+        Some(Statement::Switch { cases, .. }) => cases
+            .iter()
+            .all(|case| case.fall_through || always_jumps(&case.body)),
         // A loop nobody breaks out of never falls through.
         Some(Statement::Loop { body, break_if, .. }) => break_if.is_none() && !has_break(body),
         _ => false,
@@ -263,6 +281,10 @@ pub(super) fn lower_tail(
             super::method::lower_method_any(ctx, function, body, call, env, hint)
         }
         Expr::If(if_expr) => lower_if_any(ctx, function, body, if_expr, env, hint),
+        Expr::Match(matched) => {
+            let position = super::switch::Position::Value(hint);
+            super::switch::lower_match(ctx, function, body, matched, env, position)
+        }
         Expr::Block(syn::ExprBlock { block, .. }) | Expr::Unsafe(syn::ExprUnsafe { block, .. }) => {
             env.push_scope();
             let tail = lower_block_hinted(ctx, function, body, block, env, hint)?;
@@ -293,6 +315,37 @@ pub(super) fn check_return(function: &Function, ty: Handle<Type>) -> Result<(), 
     }
 }
 
+/// The body of a `match` arm: a value, or a jump, or a statement.
+pub(super) fn lower_arm(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    expr: &Expr,
+    env: &mut Env,
+    hint: Option<naga::Scalar>,
+) -> Result<Option<Typed>, Error> {
+    match expr {
+        Expr::Return(ret) => {
+            let value = match ret.expr.as_deref() {
+                Some(expr) => {
+                    let hint = return_hint(ctx, function);
+                    let (value, ty) = lower_expr_hinted(ctx, function, body, expr, env, hint)?;
+                    check_return(function, ty)?;
+                    Some(value)
+                }
+                None => None,
+            };
+            body.push(Statement::Return { value }, Span::UNDEFINED);
+            Ok(None)
+        }
+        other if !yields_value(other) => {
+            lower_stmt_expr(ctx, function, body, other, env)?;
+            Ok(None)
+        }
+        other => lower_tail(ctx, function, body, other, env, hint),
+    }
+}
+
 fn lower_stmt_expr(
     ctx: &mut Context,
     function: &mut Function,
@@ -302,6 +355,10 @@ fn lower_stmt_expr(
 ) -> Result<(), Error> {
     match expr {
         Expr::If(if_expr) => lower_if_stmt(ctx, function, body, if_expr, env),
+        Expr::Match(matched) => {
+            let position = super::switch::Position::Statement;
+            super::switch::lower_match(ctx, function, body, matched, env, position).map(|_| ())
+        }
         Expr::While(while_expr) => lower_while(ctx, function, body, while_expr, env),
         Expr::Loop(loop_expr) => lower_loop(ctx, function, body, loop_expr, env),
         Expr::Break(brk) => lower_break(body, brk),
@@ -783,21 +840,32 @@ fn bind_borrow(
 }
 
 /// `ray_query::default()`, the checkable spelling of an uninitialized query local.
-/// Names assigned, borrowed, or passed as storage anywhere in `block`.
-pub(super) fn addressed_names(block: &SynBlock) -> HashSet<String> {
-    let mut found = Addressed::default();
+/// Names assigned, borrowed, or passed as storage anywhere in `block`. A
+/// receiver of a method in `mut_self_methods` is one, since such a method
+/// may take `&mut self`.
+pub(super) fn addressed_names(
+    block: &SynBlock,
+    mut_self_methods: &HashSet<String>,
+) -> HashSet<String> {
+    let mut found = Addressed {
+        names: HashSet::new(),
+        mut_self_methods,
+    };
     found.visit_block(block);
     found.names
 }
 
-#[derive(Default)]
-struct Addressed {
+struct Addressed<'a> {
     names: HashSet<String>,
+    mut_self_methods: &'a HashSet<String>,
 }
 
-impl<'ast> Visit<'ast> for Addressed {
+impl<'ast> Visit<'ast> for Addressed<'_> {
     fn visit_expr(&mut self, expr: &'ast Expr) {
         match expr {
+            Expr::MethodCall(call) if self.mut_self_methods.contains(&call.method.to_string()) => {
+                note_root(&call.receiver, &mut self.names);
+            }
             Expr::Assign(assign) => note_root(&assign.left, &mut self.names),
             Expr::Binary(bin) if is_compound_assign(&bin.op) => {
                 note_root(&bin.left, &mut self.names);

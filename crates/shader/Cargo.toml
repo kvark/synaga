@@ -20,6 +20,8 @@ mint = ["dep:mint"]
 
 [dependencies]
 synaga-macros = { path = "../macros", version = "0.1.0" }
+# `RayFlag` is a set, as the host's flags are.
+bitflags = "2"
 serde = { version = "1", optional = true }
 bincode = { version = "2", default-features = false, features = ["std", "serde"], optional = true }
 bytemuck = { version = "1", optional = true }

@@ -13,7 +13,6 @@ use crate::Error;
 pub(super) struct StageInfo {
     pub stage: Option<ShaderStage>,
     pub workgroup_size: Option<[u32; 3]>,
-    pub return_binding: Option<Binding>,
 }
 
 pub(super) fn parse_fn_attrs(attrs: &[Attribute]) -> Result<StageInfo, Error> {
@@ -25,7 +24,9 @@ pub(super) fn parse_fn_attrs(attrs: &[Attribute]) -> Result<StageInfo, Error> {
             }
             parse_entry_point(attr, &mut info)?;
         } else if attr.path().is_ident("output") {
-            info.return_binding = Some(parse_binding_meta(attr)?);
+            // A bare return value is the stage's one default output, and
+            // anything else is a struct whose fields say where they go.
+            return Err(Error::OutputAttribute);
         } else if let Some(old) = ["vertex", "fragment", "compute", "workgroup_size"]
             .into_iter()
             .find(|old| attr.path().is_ident(old))
@@ -81,36 +82,6 @@ fn parse_threads(list: &syn::MetaList) -> Result<[u32; 3], Error> {
         }
     }
     Ok(size)
-}
-
-fn parse_binding_meta(attr: &Attribute) -> Result<Binding, Error> {
-    let meta: Meta = attr
-        .parse_args()
-        .map_err(|e| Error::UnsupportedBinding(e.to_string()))?;
-    match meta {
-        Meta::List(list) if list.path.is_ident("builtin") => {
-            let ident: syn::Ident = list
-                .parse_args()
-                .map_err(|e| Error::UnsupportedBinding(e.to_string()))?;
-            Ok(Binding::BuiltIn(map_builtin(&ident.to_string())?))
-        }
-        Meta::List(list) if list.path.is_ident("location") => {
-            let lit: LitInt = list
-                .parse_args()
-                .map_err(|e| Error::UnsupportedBinding(e.to_string()))?;
-            let location = lit
-                .base10_parse()
-                .map_err(|_| Error::UnsupportedBinding("location".into()))?;
-            Ok(Binding::Location {
-                location,
-                interpolation: None,
-                sampling: None,
-                blend_src: None,
-                per_primitive: false,
-            })
-        }
-        _ => Err(Error::UnsupportedBinding("return".into())),
-    }
 }
 
 /// Parse `#[location(N)]` / `#[builtin(name)]`, plus an optional `#[flat]`.
@@ -205,9 +176,10 @@ fn input_builtin(stage: ShaderStage, name: &str) -> Option<BuiltIn> {
     takes.then_some(builtin)
 }
 
-/// Where a bare value an entry point returns goes when it does not say: a
-/// vertex shader's is its position, the one thing it has to produce, and a
-/// fragment shader's is its first colour target.
+/// Where a bare value an entry point returns goes: a vertex shader's is its
+/// position, the one thing it has to produce, and a fragment shader's is its
+/// first colour target. Anything else is returned in a struct whose fields
+/// say where they go, so a function never carries its result's binding.
 fn default_output(stage: ShaderStage) -> Option<Binding> {
     match stage {
         ShaderStage::Vertex => Some(Binding::BuiltIn(BuiltIn::Position { invariant: false })),
@@ -333,18 +305,13 @@ pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> R
         ReturnType::Type(_, ty) => {
             let result_ty = ctx.lower_type(ty)?;
             if is_io_struct(ctx, result_ty) {
-                if info.return_binding.is_some() {
-                    return Err(Error::RedundantReturnBinding(name));
-                }
                 check_io_struct(ctx, result_ty, stage, false)?;
                 Some(FunctionResult {
                     ty: result_ty,
                     binding: None,
                 })
             } else {
-                let mut binding = info
-                    .return_binding
-                    .or_else(|| default_output(stage))
+                let mut binding = default_output(stage)
                     .ok_or_else(|| Error::ComputeReturnsValue(name.clone()))?;
                 apply_default_interpolation(ctx, result_ty, &mut binding);
                 check_interpolation(&binding, &name, stage, false)?;
@@ -401,7 +368,7 @@ pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> R
 
     let mut body = naga::Block::new();
     env.push_scope();
-    ctx.addressed = super::stmt::addressed_names(&item.block);
+    ctx.addressed = super::stmt::addressed_names(&item.block, &ctx.scope.mut_self_methods);
     super::stmt::lower_body(ctx, &mut function, &mut body, &item.block, &mut env)?;
     env.pop_scope();
     function.body = body;

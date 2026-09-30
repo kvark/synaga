@@ -21,9 +21,6 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, FnArg, ItemFn, LitInt, M
 /// Attributes on an entry point's parameters.
 const PARAM_ATTRS: &[&str] = &["location", "builtin", "flat", "interpolate", "invariant"];
 
-/// Attributes on an entry point itself, beside `#[entry_point]`.
-const FN_ATTRS: &[&str] = &["output"];
-
 fn strip(attrs: &mut Vec<syn::Attribute>, names: &[&str]) {
     attrs.retain(|attr| !names.iter().any(|name| attr.path().is_ident(name)));
 }
@@ -34,15 +31,17 @@ fn strip(attrs: &mut Vec<syn::Attribute>, names: &[&str]) {
 /// Its parameters may carry `#[location(N)]` and `#[builtin(name)]`, or be
 /// named after the builtin they are: `global_invocation_id: Vec3<u32>`. A
 /// bare value it returns is a vertex shader's position or a fragment shader's
-/// `location(0)`, unless `#[output(..)]` on the function says otherwise:
-/// `#[output(builtin(frag_depth))]`.
+/// `location(0)`. Anything else is returned in a struct that derives `Io`,
+/// whose fields say where they go.
 #[proc_macro_attribute]
 pub fn entry_point(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut item = parse_macro_input!(input as ItemFn);
     let args = parse_macro_input!(args with Punctuated::<Meta, Token![,]>::parse_terminated);
-    let error = check_stage(&args).err().map(|err| err.to_compile_error());
+    let error = check_stage(&args)
+        .and_then(|()| check_no_output(&item))
+        .err()
+        .map(|err| err.to_compile_error());
 
-    strip(&mut item.attrs, FN_ATTRS);
     for arg in &mut item.sig.inputs {
         match arg {
             FnArg::Typed(pat) => strip(&mut pat.attrs, PARAM_ATTRS),
@@ -58,6 +57,24 @@ pub fn entry_point(args: TokenStream, input: TokenStream) -> TokenStream {
         #item
     )
     .into()
+}
+
+/// `#[output(..)]` was once how a function said where its result goes. The
+/// result's type is where that belongs, and Rust has no attributes on types,
+/// so a result that is not the stage's default is a struct of bound fields.
+fn check_no_output(item: &ItemFn) -> syn::Result<()> {
+    match item
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("output"))
+    {
+        Some(attr) => Err(syn::Error::new_spanned(
+            attr,
+            "a bare return value is a vertex shader's position or a fragment shader's \
+             `location(0)`; return a struct that derives `Io` for anything else",
+        )),
+        None => Ok(()),
+    }
 }
 
 /// The stage comes first; a compute entry point also says its workgroup size.
@@ -199,4 +216,91 @@ fn check_io(item: &DeriveInput) -> syn::Result<Vec<&syn::Ident>> {
         names.extend(field.ident.as_ref());
     }
     Ok(names)
+}
+
+/// A struct the host fills in and uploads, which a shader reads as it is:
+/// `Clone`, `Copy`, a `Default` of all zeroes, which is the GPU's default
+/// too, and `bytemuck`'s `Zeroable` and `Pod`, in one derive.
+///
+/// The struct says `#[repr(C)]`, which is also what tells the build to check
+/// that the GPU reads each field where `rustc` puts it. `Pod` is checked as
+/// `bytemuck`'s derive checks it: every field is `Pod`, and there is no
+/// padding. It needs `synaga-shader`'s `bytemuck` feature.
+#[proc_macro_derive(Shared)]
+pub fn derive_shared(input: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(input as DeriveInput);
+    match expand_shared(&item) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+fn expand_shared(item: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    if !item.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &item.generics,
+            "a `Shared` struct cannot be generic",
+        ));
+    }
+    let Data::Struct(data) = &item.data else {
+        return Err(syn::Error::new_spanned(
+            &item.ident,
+            "`Shared` is for a struct",
+        ));
+    };
+    if !has_c_repr(&item.attrs) {
+        return Err(syn::Error::new_spanned(
+            &item.ident,
+            "a `Shared` struct needs `#[repr(C)]`, the layout the host and the GPU agree on",
+        ));
+    }
+    let name = &item.ident;
+    let fields: Vec<&syn::Type> = data.fields.iter().map(|field| &field.ty).collect();
+    let bytemuck = quote!(::synaga_shader::__private::bytemuck);
+    Ok(quote! {
+        impl ::core::clone::Clone for #name {
+            #[inline]
+            fn clone(&self) -> Self {
+                *self
+            }
+        }
+        impl ::core::marker::Copy for #name {}
+        impl ::core::default::Default for #name {
+            #[inline]
+            fn default() -> Self {
+                #bytemuck::Zeroable::zeroed()
+            }
+        }
+        // SAFETY: every field is `Pod`, so `Zeroable`, as checked below.
+        unsafe impl #bytemuck::Zeroable for #name {}
+        // SAFETY: `#[repr(C)]`, every field `Pod`, and no padding between or
+        // after them, all checked below.
+        unsafe impl #bytemuck::Pod for #name {}
+        impl ::synaga_shader::Shared for #name {}
+        const _: () = {
+            fn every_field_is_pod() {
+                fn pod<T: #bytemuck::Pod>() {}
+                #( pod::<#fields>(); )*
+            }
+            assert!(
+                ::core::mem::size_of::<#name>() == 0 #( + ::core::mem::size_of::<#fields>() )*,
+                "a `Shared` struct has no padding: add a field for it, as the build's layout check suggests",
+            );
+        };
+    })
+}
+
+/// `#[repr(C)]` or `#[repr(transparent)]`, with anything beside it.
+fn has_c_repr(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("repr"))
+        .any(|attr| {
+            let mut found = false;
+            let _ = attr.parse_nested_meta(|meta| {
+                found |= meta.path.is_ident("C") || meta.path.is_ident("transparent");
+                Ok(())
+            });
+            found
+        })
 }

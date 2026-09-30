@@ -264,6 +264,42 @@ fn ray_query_default_is_a_local() {
 }
 
 #[test]
+fn flags_and_kinds_are_typed() {
+    // `synaga_shader`'s spelling: a flags set and an enum, which are the
+    // `u32`s Naga's structs hold.
+    let module = trace(
+        r#"
+        static acc: AccelerationStructure = binding();
+        fn occluded(o: Vec3, d: Vec3) -> bool {
+            let flags = RayFlag::TERMINATE_ON_FIRST_HIT | RayFlag::CULL_NO_OPAQUE;
+            let mut rq = RayQuery::default();
+            rq.initialize(&acc, RayDesc {
+                flags, cull_mask: 0xFF, tmin: 0.0, tmax: 1.0, origin: o, dir: d,
+            });
+            rq.proceed();
+            rq.committed_intersection().kind != RayQueryIntersection::None
+        }
+        fn anything(o: Vec3, d: Vec3) -> RayQueryIntersection {
+            let mut rq = RayQuery::default();
+            rq.initialize(&acc, RayDesc {
+                flags: RayFlag::empty(), cull_mask: 0xFF, tmin: 0.0, tmax: 1.0, origin: o, dir: d,
+            });
+            rq.proceed();
+            let kind: RayQueryIntersection = rq.committed_intersection().kind;
+            kind
+        }
+        "#,
+    );
+    let flags = naga::valid::ValidationFlags::all() ^ naga::valid::ValidationFlags::BINDINGS;
+    let info = validate_with(&module, flags, naga::valid::Capabilities::RAY_QUERY).unwrap();
+    let wgsl = to_wgsl(&module, &info).unwrap_or_else(|err| panic!("{err}"));
+    // TERMINATE_ON_FIRST_HIT | CULL_NO_OPAQUE.
+    assert!(wgsl.contains("(4u | 128u)"), "{wgsl}");
+    assert!(wgsl.contains(".kind != 0u)"), "{wgsl}");
+    assert!(wgsl.contains("RayDesc(0u, 255u"), "{wgsl}");
+}
+
+#[test]
 fn wgsl_output_writes_a_ray_query_as_the_builtin() {
     // Naga's backend cannot print a ray query, so the calls come back as the
     // WGSL builtins and a frontend can read them again.

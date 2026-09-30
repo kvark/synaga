@@ -107,7 +107,6 @@ fn modules_reach_each_other_by_use_and_by_path() {
                 use super::math::*;
                 use super::light::{Sun as Light, strength};
                 #[entry_point(fragment)]
-                #[output(location(0))]
                 fn fs() -> vec4 {
                     let l = Light { dir: vec3(0.0, 1.0, 0.0) };
                     let k = square(strength(l)) + super::light::strength(l) + crate::shaders::math::square(2.0);

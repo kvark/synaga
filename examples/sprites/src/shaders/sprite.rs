@@ -7,7 +7,7 @@ use super::common::{globals, unpack_color};
 /// One sprite, as the host moves it and uploads it; only the host reads
 /// `velocity`.
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
+#[derive(Shared)]
 pub struct Locals {
     pub position: Vec2,
     pub velocity: Vec2,

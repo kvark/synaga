@@ -30,9 +30,11 @@ fn packing_functions() {
 
 #[test]
 fn relational_folds() {
+    // WGSL's `any(a < b)` compares lane by lane inside the fold, as in WGSL:
+    // `rustc` cannot write it, since its `a < b` is already one `bool`.
     let wgsl = roundtrip("fn f(v: vec3) -> bool { all(v > vec3(0.0)) || any(v < vec3(1.0)) }");
-    assert!(wgsl.contains("all("), "{wgsl}");
-    assert!(wgsl.contains("any("), "{wgsl}");
+    assert!(wgsl.contains("all((v > vec3(0f)))"), "{wgsl}");
+    assert!(wgsl.contains("any((v < vec3(1f)))"), "{wgsl}");
 }
 
 #[test]
@@ -84,7 +86,7 @@ fn rejects_a_binding_on_workgroup_memory() {
 fn discard_in_a_fragment_shader() {
     let wgsl = roundtrip_unbound(
         r#"
-        #[entry_point(fragment)] #[output(location(0))]
+        #[entry_point(fragment)]
         fn fs(#[location(0)] c: vec4) -> vec4 { if c.a < 0.5 { discard(); } c }
         "#,
     );
@@ -103,7 +105,6 @@ fn discard_can_end_a_function_that_returns() {
     validate_only(
         r#"
         #[entry_point(fragment)]
-        #[output(location(0))]
         fn fs(#[location(0)] a: f32) -> vec4 {
             if a < 0.5 { discard() }
             vec4::splat(a)
@@ -115,14 +116,14 @@ fn discard_can_end_a_function_that_returns() {
 
 #[test]
 fn atomics() {
-    // `synaga_shader::AtomicU32`: the standard methods, without an `Ordering`.
+    // `synaga_shader::Atomic<u32>`: the standard methods, without an `Ordering`.
     // They take `&self`, so a buffer changed only through its atomics needs
     // no `static mut`.
     let wgsl = roundtrip_unbound(
         r#"
-        struct Counters { hits: AtomicU32, low: AtomicI32 }
+        struct Counters { hits: Atomic<u32>, low: Atomic<i32> }
         static counters: StorageMut<Counters> = binding();
-        static scratch: Workgroup<AtomicU32> = binding();
+        static scratch: Workgroup<Atomic<u32>> = binding();
         #[entry_point(compute, threads(64))]
         fn cs() {
             counters.hits.fetch_add(1);
@@ -148,10 +149,20 @@ fn atomics() {
 }
 
 #[test]
+fn an_atomic_is_the_shaders_own_type() {
+    // The standard atomics take an `Ordering` the GPU has no use for, so a
+    // shader's are generic, as its vectors are.
+    let msg = reject("static counter: StorageMut<AtomicU32> = group(0).binding(0);");
+    assert!(msg.contains("`Atomic<u32>`"), "{msg}");
+    let msg = reject("static counter: StorageMut<Atomic<f32>> = group(0).binding(0);");
+    assert!(msg.contains("a `u32` or an `i32`"), "{msg}");
+}
+
+#[test]
 fn atomic_read_modify_write_yields_the_old_value() {
     let wgsl = roundtrip_unbound(
         r#"
-        static counter: StorageMut<AtomicU32> = binding();
+        static counter: StorageMut<Atomic<u32>> = binding();
         fn bump() -> u32 { counter.fetch_add(1) }
         "#,
     );
@@ -163,7 +174,7 @@ fn compare_exchange_hands_back_a_plain_pair() {
     // WGSL's `__atomic_compare_exchange_result`, not a `Result`.
     let wgsl = roundtrip_unbound(
         r#"
-        static lock: StorageMut<AtomicU32> = binding();
+        static lock: StorageMut<Atomic<u32>> = binding();
         fn try_lock() -> bool {
             let r: CompareExchange<u32> = lock.compare_exchange_weak(0, 1);
             r.exchanged && r.old_value == 0

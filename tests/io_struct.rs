@@ -18,7 +18,6 @@ const VS_FS: &str = r#"
     }
 
     #[entry_point(fragment)]
-    #[output(location(0))]
     fn fs(varying: VsOut) -> vec4 {
         vec4(varying.uv, 0.0, 1.0)
     }
@@ -103,12 +102,12 @@ fn rejects_half_bound_struct() {
 }
 
 #[test]
-fn rejects_redundant_output_attribute() {
+fn rejects_an_output_attribute_on_the_function() {
     let msg = reject(
         r#"
         struct VsOut { #[builtin(position)] pos: vec4 }
         #[entry_point(vertex)]
-        #[output(location(0))]
+        #[output(builtin(position))]
         fn vs() -> VsOut { VsOut { pos: vec4(0.0) } }
         "#,
     );
