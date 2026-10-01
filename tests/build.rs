@@ -728,7 +728,7 @@ fn the_written_module_carries_the_version_in_its_header() {
 }
 
 #[test]
-fn the_layout_file_has_the_shape_the_compiletest_assumes() {
+fn the_layout_file_asserts_what_rustc_has_to_agree_with() {
     let dir = scratch("layout_shape");
     write(
         &dir,
@@ -753,9 +753,10 @@ fn the_layout_file_has_the_shape_the_compiletest_assumes() {
         .expect("emit");
 
     let layout = std::fs::read_to_string(dir.join("out/shaders_layout.rs")).expect("read layout");
-    // `tests/ui.rs` checks the diagnostic these produce by spelling out the same
-    // body, since `trybuild` compiles plain files and not crates with build
-    // scripts. This is what keeps the two in step.
+    // The size, the alignment and each field's offset, spelled the way
+    // `check_layout!` includes them: `size_of` for the struct, `align_of`
+    // because a struct can have every offset right and the wrong alignment,
+    // and `offset_of!` for each field the module above can name.
     assert!(
         layout.contains("assert!(::core::mem::size_of::<self::params::Globals>() == 80,"),
         "{layout}"

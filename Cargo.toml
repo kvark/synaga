@@ -36,11 +36,3 @@ thiserror = "2"
 # is what `Shared` derives, and a shared struct cannot be compiled without it.
 synaga-shader = { path = "crates/shader", features = ["bytemuck"] }
 naga = { version = "30", features = ["deserialize"] }
-# Compiling the examples and checking the diagnostics they produce. The
-# generated layout assertions can only be seen failing by compiling something
-# that includes them, which is what these do.
-#
-# Held below the latest: 1.0.121 requires rustc 1.88, and this crate's MSRV is
-# 1.87. Raising this needs the `rust-version` above bumped first, or the `msrv`
-# CI job goes red.
-trybuild = "1.0.110"
