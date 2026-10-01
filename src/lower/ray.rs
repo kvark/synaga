@@ -6,7 +6,7 @@
 //!
 //! A query is a local the operations act on, as methods: `rq.proceed()`.
 
-use naga::{Block, Expression, Function, Handle, RayQueryFunction, Scalar, Span, Statement, Type};
+use naga::{Block, Expression, Function, Handle, RayQueryFunction, Scalar, Statement, Type};
 use syn::Expr;
 
 use super::emit::emit;
@@ -143,19 +143,20 @@ pub(super) fn lower_ray_method(
             // The result is its own expression kind, not an emitted one.
             let result = function
                 .expressions
-                .append(Expression::RayQueryProceedResult, Span::UNDEFINED);
+                .append(Expression::RayQueryProceedResult, ctx.span);
             body.push(
                 Statement::RayQuery {
                     query,
                     fun: RayQueryFunction::Proceed { result },
                 },
-                Span::UNDEFINED,
+                ctx.span,
             );
             return Ok(Some((result, ctx.intern_scalar(Scalar::BOOL))));
         }
         ("committed_intersection" | "candidate_intersection", []) => {
             let ty = ctx.module.generate_ray_intersection_type();
             let handle = emit(
+                ctx,
                 function,
                 body,
                 Expression::RayQueryGetIntersection {
@@ -178,7 +179,7 @@ pub(super) fn lower_ray_method(
         _ => return Err(Error::UnsupportedMethod(format!("{name} on a ray query"))),
     };
 
-    body.push(Statement::RayQuery { query, fun }, Span::UNDEFINED);
+    body.push(Statement::RayQuery { query, fun }, ctx.span);
     Ok(None)
 }
 

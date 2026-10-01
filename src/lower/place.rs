@@ -84,6 +84,7 @@ pub(super) fn lower_place(
                 return Ok(None);
             };
             let pointer = emit(
+                ctx,
                 function,
                 body,
                 Expression::AccessIndex {
@@ -106,6 +107,7 @@ pub(super) fn lower_place(
             };
             let pointer = match index_expr(ctx, function, body, &index.index, bound, env)? {
                 IndexKind::Constant(index) => emit(
+                    ctx,
                     function,
                     body,
                     Expression::AccessIndex {
@@ -114,6 +116,7 @@ pub(super) fn lower_place(
                     },
                 )?,
                 IndexKind::Dynamic(index) => emit(
+                    ctx,
                     function,
                     body,
                     Expression::Access {
@@ -233,11 +236,13 @@ pub(super) fn element(ctx: &mut Context, ty: Handle<Type>) -> Option<(Option<u32
 
 /// Read through a place, loading only the component asked for.
 pub(super) fn load(
+    ctx: &Context,
     function: &mut Function,
     body: &mut naga::Block,
     place: &Place,
 ) -> Result<Handle<Expression>, Error> {
     emit(
+        ctx,
         function,
         body,
         Expression::Load {

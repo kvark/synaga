@@ -19,7 +19,7 @@ mod lower;
 mod ray_wgsl;
 
 pub use cfg::Cfg;
-pub use error::Error;
+pub use error::{Error, Pos};
 pub use naga;
 
 use lower::Context;
@@ -133,6 +133,23 @@ impl ValidationError {
     /// The underlying Naga error, spans included.
     pub fn into_inner(self) -> naga::WithSpan<naga::valid::ValidationError> {
         *self.0
+    }
+
+    /// The positions in source files that Naga blames, narrowest first.
+    ///
+    /// Every expression, statement, global and type the lowering emits is
+    /// tagged with the span of the `syn` node it came from, so these are real
+    /// positions rather than `Span::UNDEFINED`. Each is a byte range in
+    /// whichever file that node was written in, which is what
+    /// [`crate::build`] uses to turn a validation failure into a
+    /// `file:line:column`. Empty when Naga blamed nothing in particular.
+    pub fn spans(&self) -> impl Iterator<Item = (naga::Span, &str)> {
+        self.0.spans().map(|(span, what)| (*span, what.as_str()))
+    }
+
+    /// The position Naga blames, if it blames one.
+    pub fn span(&self) -> Option<naga::Span> {
+        self.0.spans().next().map(|(span, _)| *span)
     }
 }
 

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use naga::{Block, Expression, Function, Handle, LocalVariable, Span, Statement, Type};
+use naga::{Block, Expression, Function, Handle, LocalVariable, Statement, Type};
 use syn::visit::{self, Visit};
 use syn::{BinOp, Block as SynBlock, Expr, Local, Pat, Stmt, Type as SynType};
 
@@ -162,7 +162,7 @@ pub(super) fn lower_returning_expr(
                     accept,
                     reject,
                 },
-                Span::UNDEFINED,
+                ctx.span,
             );
             Ok(())
         }
@@ -178,7 +178,7 @@ pub(super) fn lower_returning_expr(
             let hint = return_hint(ctx, function);
             if let Some((value, ty)) = lower_tail(ctx, function, body, other, env, hint)? {
                 check_return(function, ty)?;
-                body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
+                body.push(Statement::Return { value: Some(value) }, ctx.span);
             }
             Ok(())
         }
@@ -197,11 +197,11 @@ fn lower_stmts(
     let mut tail = None;
     for (i, stmt) in stmts.iter().enumerate() {
         let last = i + 1 == stmts.len();
-        match stmt {
-            Stmt::Local(local) => {
-                lower_local(ctx, function, body, local, env)?;
-                tail = None;
-            }
+        // Each statement marks itself, so an error inside a `let` says which
+        // `let` rather than which function.
+        let at = super::pos(stmt);
+        let result = match stmt {
+            Stmt::Local(local) => lower_local(ctx, function, body, local, env).map(|()| None),
             Stmt::Expr(Expr::Return(ret), _) => {
                 let value = match ret.expr.as_deref() {
                     Some(expr) => {
@@ -212,20 +212,20 @@ fn lower_stmts(
                     }
                     None => None,
                 };
-                body.push(Statement::Return { value }, Span::UNDEFINED);
-                tail = None;
+                body.push(Statement::Return { value }, super::naga_span(stmt));
+                Ok(None)
             }
             Stmt::Expr(expr, semi) => {
                 if last && semi.is_none() && yields_value(expr) {
-                    tail = lower_tail(ctx, function, body, expr, env, hint)?;
+                    lower_tail(ctx, function, body, expr, env, hint)
                 } else {
-                    lower_stmt_expr(ctx, function, body, expr, env)?;
-                    tail = None;
+                    lower_stmt_expr(ctx, function, body, expr, env).map(|()| None)
                 }
             }
-            Stmt::Item(_) => return Err(Error::UnsupportedStmt("item in block".into())),
-            Stmt::Macro(_) => return Err(Error::UnsupportedStmt("macro".into())),
-        }
+            Stmt::Item(_) => Err(Error::UnsupportedStmt("item in block".into())),
+            Stmt::Macro(_) => Err(Error::UnsupportedStmt("macro".into())),
+        };
+        tail = result.map_err(|err| err.at(at))?;
     }
     Ok(tail)
 }
@@ -335,7 +335,7 @@ pub(super) fn lower_arm(
                 }
                 None => None,
             };
-            body.push(Statement::Return { value }, Span::UNDEFINED);
+            body.push(Statement::Return { value }, ctx.span);
             Ok(None)
         }
         other if !yields_value(other) => {
@@ -361,14 +361,14 @@ fn lower_stmt_expr(
         }
         Expr::While(while_expr) => lower_while(ctx, function, body, while_expr, env),
         Expr::Loop(loop_expr) => lower_loop(ctx, function, body, loop_expr, env),
-        Expr::Break(brk) => lower_break(body, brk),
+        Expr::Break(brk) => lower_break(ctx, body, brk),
         Expr::ForLoop(for_expr) => lower_for(ctx, function, body, for_expr, env),
         // Some builtins write rather than produce, so they only make sense here.
         Expr::Call(call) => super::call::lower_call_stmt(ctx, function, body, call, env),
         Expr::MethodCall(call) => {
             super::method::lower_method_any(ctx, function, body, call, env, None).map(|_| ())
         }
-        Expr::Continue(cont) => lower_continue(body, cont),
+        Expr::Continue(cont) => lower_continue(ctx, body, cont),
         // `unsafe` is for `rustc`, and an older `get_mut` wanted it. The shader
         // has nothing to say about it.
         Expr::Block(syn::ExprBlock { block, .. }) | Expr::Unsafe(syn::ExprUnsafe { block, .. }) => {
@@ -402,14 +402,14 @@ fn lower_while(
     let mut accept = Block::new();
     let _ = lower_block(ctx, function, &mut accept, &while_expr.body, env)?;
     let mut reject = Block::new();
-    reject.push(Statement::Break, Span::UNDEFINED);
+    reject.push(Statement::Break, ctx.span);
     loop_body.push(
         Statement::If {
             condition,
             accept,
             reject,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     env.pop_scope();
     body.push(
@@ -418,7 +418,7 @@ fn lower_while(
             continuing: Block::new(),
             break_if: None,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     Ok(())
 }
@@ -443,7 +443,7 @@ fn lower_loop(
             continuing: Block::new(),
             break_if: None,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     Ok(())
 }
@@ -510,26 +510,27 @@ fn lower_for(
             ty,
             init: None,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     let pointer = function
         .expressions
-        .append(Expression::LocalVariable(counter), Span::UNDEFINED);
+        .append(Expression::LocalVariable(counter), ctx.span);
     body.push(
         Statement::Store {
             pointer,
             value: init,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
 
     let mut loop_body = Block::new();
-    let current = emit(function, &mut loop_body, Expression::Load { pointer })?;
+    let current = emit(ctx, function, &mut loop_body, Expression::Load { pointer })?;
     // `if !(i < end) { break; }`. An inclusive range stops in `continuing`
     // instead, once it has run for `end`: testing `i <= end` would need `i`
     // to step past `end`, which it cannot do when `end` is the largest value.
     if !inclusive {
         let condition = emit(
+            ctx,
             function,
             &mut loop_body,
             Expression::Binary {
@@ -539,14 +540,14 @@ fn lower_for(
             },
         )?;
         let mut reject = Block::new();
-        reject.push(Statement::Break, Span::UNDEFINED);
+        reject.push(Statement::Break, ctx.span);
         loop_body.push(
             Statement::If {
                 condition,
                 accept: Block::new(),
                 reject,
             },
-            Span::UNDEFINED,
+            ctx.span,
         );
     }
 
@@ -561,17 +562,17 @@ fn lower_for(
                     ty,
                     init: None,
                 },
-                Span::UNDEFINED,
+                ctx.span,
             );
             let binding = function
                 .expressions
-                .append(Expression::LocalVariable(local), Span::UNDEFINED);
+                .append(Expression::LocalVariable(local), ctx.span);
             loop_body.push(
                 Statement::Store {
                     pointer: binding,
                     value: current,
                 },
-                Span::UNDEFINED,
+                ctx.span,
             );
             env.push(name, Slot::Ptr(binding), ty);
         } else {
@@ -599,11 +600,12 @@ fn lower_for(
     // there, which is only right if the condition was about the counter as
     // stored.
     let mut continuing = Block::new();
-    let step = emit(function, &mut continuing, Expression::Load { pointer })?;
+    let step = emit(ctx, function, &mut continuing, Expression::Load { pointer })?;
     let one = function
         .expressions
-        .append(Expression::Literal(int_one(ctx, ty)), Span::UNDEFINED);
+        .append(Expression::Literal(int_one(ctx, ty)), ctx.span);
     let next = emit(
+        ctx,
         function,
         &mut continuing,
         Expression::Binary {
@@ -617,14 +619,15 @@ fn lower_for(
             pointer,
             value: next,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     let break_if = match inclusive {
         true => {
             let one = function
                 .expressions
-                .append(Expression::Literal(int_one(ctx, ty)), Span::UNDEFINED);
+                .append(Expression::Literal(int_one(ctx, ty)), ctx.span);
             let past_end = emit(
+                ctx,
                 function,
                 body,
                 Expression::Binary {
@@ -633,8 +636,9 @@ fn lower_for(
                     right: one,
                 },
             )?;
-            let stored = emit(function, &mut continuing, Expression::Load { pointer })?;
+            let stored = emit(ctx, function, &mut continuing, Expression::Load { pointer })?;
             Some(emit(
+                ctx,
                 function,
                 &mut continuing,
                 Expression::Binary {
@@ -653,11 +657,12 @@ fn lower_for(
         break_if,
     };
     if !inclusive {
-        body.push(looped, Span::UNDEFINED);
+        body.push(looped, ctx.span);
         return Ok(());
     }
     // An inclusive range with its end before its start runs no iterations.
     let nonempty = emit(
+        ctx,
         function,
         body,
         Expression::Binary {
@@ -667,14 +672,14 @@ fn lower_for(
         },
     )?;
     let mut accept = Block::new();
-    accept.push(looped, Span::UNDEFINED);
+    accept.push(looped, ctx.span);
     body.push(
         Statement::If {
             condition: nonempty,
             accept,
             reject: Block::new(),
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     Ok(())
 }
@@ -694,22 +699,22 @@ fn strip_parens(expr: &Expr) -> &Expr {
     }
 }
 
-fn lower_break(body: &mut Block, brk: &syn::ExprBreak) -> Result<(), Error> {
+fn lower_break(ctx: &Context, body: &mut Block, brk: &syn::ExprBreak) -> Result<(), Error> {
     if brk.label.is_some() {
         return Err(Error::LoopLabel);
     }
     if brk.expr.is_some() {
         return Err(Error::BreakValue);
     }
-    body.push(Statement::Break, Span::UNDEFINED);
+    body.push(Statement::Break, ctx.span);
     Ok(())
 }
 
-fn lower_continue(body: &mut Block, cont: &syn::ExprContinue) -> Result<(), Error> {
+fn lower_continue(ctx: &Context, body: &mut Block, cont: &syn::ExprContinue) -> Result<(), Error> {
     if cont.label.is_some() {
         return Err(Error::LoopLabel);
     }
-    body.push(Statement::Continue, Span::UNDEFINED);
+    body.push(Statement::Continue, ctx.span);
     Ok(())
 }
 
@@ -791,13 +796,13 @@ fn lower_local(
             ty,
             init: None,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     let pointer = function
         .expressions
-        .append(Expression::LocalVariable(local_var), Span::UNDEFINED);
+        .append(Expression::LocalVariable(local_var), ctx.span);
     if let Some(value) = value {
-        body.push(Statement::Store { pointer, value }, Span::UNDEFINED);
+        body.push(Statement::Store { pointer, value }, ctx.span);
     }
     env.push(name, Slot::Ptr(pointer), ty);
     Ok(())
@@ -991,7 +996,7 @@ fn lower_if_stmt(
             accept,
             reject,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     Ok(())
 }
@@ -1041,7 +1046,7 @@ fn lower_if_any(
                     accept,
                     reject,
                 },
-                Span::UNDEFINED,
+                ctx.span,
             );
             return Ok(None);
         }
@@ -1057,24 +1062,24 @@ fn lower_if_any(
             ty,
             init: None,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     let pointer = function
         .expressions
-        .append(Expression::LocalVariable(local), Span::UNDEFINED);
+        .append(Expression::LocalVariable(local), ctx.span);
     accept.push(
         Statement::Store {
             pointer,
             value: then_val,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     reject.push(
         Statement::Store {
             pointer,
             value: else_val,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     body.push(
         Statement::If {
@@ -1082,8 +1087,8 @@ fn lower_if_any(
             accept,
             reject,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
-    let loaded = emit(function, body, Expression::Load { pointer })?;
+    let loaded = emit(ctx, function, body, Expression::Load { pointer })?;
     Ok(Some((loaded, ty)))
 }

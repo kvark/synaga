@@ -1,6 +1,6 @@
 use naga::{
-    BinaryOperator, Block, Expression, Function, Handle, Literal, Scalar, ScalarKind, Span,
-    Statement, Type, UnaryOperator,
+    BinaryOperator, Block, Expression, Function, Handle, Literal, Scalar, ScalarKind, Statement,
+    Type, UnaryOperator,
 };
 use syn::{BinOp, Expr};
 
@@ -37,6 +37,20 @@ pub(super) fn lower_expr_hinted(
     env: &mut Env,
     hint: Option<Scalar>,
 ) -> Result<Typed, Error> {
+    lower_expr_inner(ctx, function, body, expr, env, hint).map_err(|err| err.at(super::pos(expr)))
+}
+
+fn lower_expr_inner(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    expr: &Expr,
+    env: &mut Env,
+    hint: Option<Scalar>,
+) -> Result<Typed, Error> {
+    // Everything emitted while lowering this expression is tagged with its
+    // span, which is what a Naga validation failure reports against.
+    ctx.span = super::naga_span(expr);
     match expr {
         Expr::Paren(inner) => lower_expr_hinted(ctx, function, body, &inner.expr, env, hint),
         Expr::Group(inner) => lower_expr_hinted(ctx, function, body, &inner.expr, env, hint),
@@ -73,7 +87,7 @@ pub(super) fn lower_expr_hinted(
             let ty = binding.ty;
             let expr = match binding.slot {
                 Slot::Value(handle) => handle,
-                Slot::Ptr(pointer) => emit(function, body, Expression::Load { pointer })?,
+                Slot::Ptr(pointer) => emit(ctx, function, body, Expression::Load { pointer })?,
             };
             Ok((expr, ty))
         }
@@ -82,7 +96,7 @@ pub(super) fn lower_expr_hinted(
             let value = eval_cfg(ctx, &mac.mac)?;
             let handle = function
                 .expressions
-                .append(Expression::Literal(Literal::Bool(value)), Span::UNDEFINED);
+                .append(Expression::Literal(Literal::Bool(value)), ctx.span);
             Ok((handle, ctx.intern_scalar(Scalar::BOOL)))
         }
         Expr::Lit(lit) => lower_lit(ctx, function, lit, hint),
@@ -113,7 +127,7 @@ pub(super) fn lower_expr_hinted(
             // A place loads just the component; anything else (a swizzle, a
             // field of a function argument) falls back to the value walk.
             if let Some(place) = lower_place(ctx, function, body, expr, env)? {
-                return Ok((place::load(function, body, &place)?, place.ty));
+                return Ok((place::load(ctx, function, body, &place)?, place.ty));
             }
             match expr {
                 Expr::Field(field) => lower_field(ctx, function, body, field, env),
@@ -134,7 +148,7 @@ pub(super) fn lower_expr_hinted(
 fn float_literal(ctx: &mut Context, function: &mut Function, value: f32) -> Typed {
     let handle = function
         .expressions
-        .append(Expression::Literal(Literal::F32(value)), Span::UNDEFINED);
+        .append(Expression::Literal(Literal::F32(value)), ctx.span);
     (handle, ctx.intern_scalar(Scalar::F32))
 }
 
@@ -152,7 +166,7 @@ fn lower_item_ref(
         // `Constant` is already a constant expression; emitting it would be wrong.
         let handle = function
             .expressions
-            .append(Expression::Constant(info.handle), Span::UNDEFINED);
+            .append(Expression::Constant(info.handle), ctx.span);
         return Ok((handle, info.ty));
     }
     // `PI`, after `use core::f32::consts::PI`.
@@ -161,10 +175,9 @@ fn lower_item_ref(
     }
     // WGSL predeclares the ray flags and intersection kinds as bare names.
     if let Some(value) = super::ray::predeclared_const(&name) {
-        let handle = function.expressions.append(
-            Expression::Literal(naga::Literal::U32(value)),
-            Span::UNDEFINED,
-        );
+        let handle = function
+            .expressions
+            .append(Expression::Literal(naga::Literal::U32(value)), ctx.span);
         return Ok((handle, ctx.intern_scalar(Scalar::U32)));
     }
     // A global reached through its module, `lighting::sun`, is bound by name
@@ -174,7 +187,7 @@ fn lower_item_ref(
             let ty = binding.ty;
             let expr = match binding.slot {
                 Slot::Value(handle) => handle,
-                Slot::Ptr(pointer) => emit(function, body, Expression::Load { pointer })?,
+                Slot::Ptr(pointer) => emit(ctx, function, body, Expression::Load { pointer })?,
             };
             return Ok((expr, ty));
         }
@@ -203,13 +216,13 @@ fn lower_unary(
     // already that value, so the star is the load.
     if matches!(unary.op, syn::UnOp::Deref(_)) {
         if let Some(place) = super::place::lower_place(ctx, function, body, &unary.expr, env)? {
-            return Ok((super::place::load(function, body, &place)?, place.ty));
+            return Ok((super::place::load(ctx, function, body, &place)?, place.ty));
         }
         let (inner, ty) = lower_expr(ctx, function, body, &unary.expr, env)?;
         let Some(base) = ctx.pointee(ty) else {
             return Err(Error::UnsupportedExpr("deref".into()));
         };
-        let handle = emit(function, body, Expression::Load { pointer: inner })?;
+        let handle = emit(ctx, function, body, Expression::Load { pointer: inner })?;
         return Ok((handle, base));
     }
     // `-` and `!` keep their operand's type, so where the result goes is
@@ -218,7 +231,10 @@ fn lower_unary(
     // A set's `!` is its complement, which stays within the declared flags.
     if matches!(unary.op, syn::UnOp::Not(_)) {
         if let Some(all) = ctx.flags_of(ty).map(|info| info.all) {
-            return Ok((super::nominal::complement(function, body, inner, all)?, ty));
+            return Ok((
+                super::nominal::complement(ctx, function, body, inner, all)?,
+                ty,
+            ));
         }
     }
     let op = match unary.op {
@@ -235,7 +251,7 @@ fn lower_unary(
         },
         _ => return Err(Error::UnsupportedExpr("unary".into())),
     };
-    let handle = emit(function, body, Expression::Unary { op, expr: inner })?;
+    let handle = emit(ctx, function, body, Expression::Unary { op, expr: inner })?;
     Ok((handle, ty))
 }
 
@@ -361,7 +377,7 @@ fn lower_binary_as(
         if right_ty != left_ty {
             return Err(Error::TypeMismatch);
         }
-        let handle = super::nominal::difference(function, body, left, right)?;
+        let handle = super::nominal::difference(ctx, function, body, left, right)?;
         return Ok((handle, left_ty));
     }
     if shift {
@@ -381,13 +397,14 @@ fn lower_binary_as(
         )?;
     }
     let ty = bin_result_ty(ctx, op, left_ty, right_ty)?;
-    let handle = emit(function, body, Expression::Binary { op, left, right })?;
+    let handle = emit(ctx, function, body, Expression::Binary { op, left, right })?;
     // Rust compares two vectors to one `bool`: `a == b` when every lane is
     // equal, `a < b` when every lane is less. The lane-wise forms are
     // `a.cmpeq(b)` and the rest.
     if let Some(fold) = whole_vector_comparison(op) {
         if comparison == Comparison::Rust && matches!(ctx.shape(ty), Shape::Vector(..)) {
             let handle = emit(
+                ctx,
                 function,
                 body,
                 Expression::Relational {
@@ -438,7 +455,7 @@ fn lower_lazy(
         .all(|statement| matches!(statement, Statement::Emit(_)));
     if pure && !indexes(right_expr) {
         body.append(&mut right_block);
-        let handle = emit(function, body, Expression::Binary { op, left, right })?;
+        let handle = emit(ctx, function, body, Expression::Binary { op, left, right })?;
         return Ok((handle, ty));
     }
     let local = function.local_variables.append(
@@ -447,24 +464,24 @@ fn lower_lazy(
             ty,
             init: None,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     let pointer = function
         .expressions
-        .append(Expression::LocalVariable(local), Span::UNDEFINED);
+        .append(Expression::LocalVariable(local), ctx.span);
     body.push(
         Statement::Store {
             pointer,
             value: left,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     right_block.push(
         Statement::Store {
             pointer,
             value: right,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     let (accept, reject) = match op {
         BinaryOperator::LogicalAnd => (right_block, Block::new()),
@@ -476,9 +493,9 @@ fn lower_lazy(
             accept,
             reject,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
-    let value = emit(function, body, Expression::Load { pointer })?;
+    let value = emit(ctx, function, body, Expression::Load { pointer })?;
     Ok((value, ty))
 }
 
@@ -510,7 +527,7 @@ fn lower_assign(
     if value_ty != ty {
         return Err(Error::TypeMismatch);
     }
-    body.push(Statement::Store { pointer, value }, Span::UNDEFINED);
+    body.push(Statement::Store { pointer, value }, ctx.span);
     Ok((value, ty))
 }
 
@@ -535,14 +552,14 @@ fn lower_compound_assign(
     };
     // Rust evaluates the right operand first.
     let (mut rhs, mut rhs_ty) = lower_expr_hinted(ctx, function, body, right, env, hint)?;
-    let mut lhs = emit(function, body, Expression::Load { pointer })?;
+    let mut lhs = emit(ctx, function, body, Expression::Load { pointer })?;
     let mut lhs_ty = ty;
     if op == BinaryOperator::Subtract && ctx.flags_of(ty).is_some() {
         if rhs_ty != ty {
             return Err(Error::TypeMismatch);
         }
-        let value = super::nominal::difference(function, body, lhs, rhs)?;
-        body.push(Statement::Store { pointer, value }, Span::UNDEFINED);
+        let value = super::nominal::difference(ctx, function, body, lhs, rhs)?;
+        body.push(Statement::Store { pointer, value }, ctx.span);
         return Ok((value, ty));
     }
     if shift {
@@ -562,6 +579,7 @@ fn lower_compound_assign(
         return Err(Error::TypeMismatch);
     }
     let value = emit(
+        ctx,
         function,
         body,
         Expression::Binary {
@@ -570,7 +588,7 @@ fn lower_compound_assign(
             right: rhs,
         },
     )?;
-    body.push(Statement::Store { pointer, value }, Span::UNDEFINED);
+    body.push(Statement::Store { pointer, value }, ctx.span);
     Ok((value, ty))
 }
 
@@ -644,7 +662,7 @@ fn lower_array_lit(
     }
     let base = base.expect("non-empty");
     let ty = ctx.intern_array(base, naga::ArraySize::Constant(len))?;
-    let handle = emit(function, body, Expression::Compose { ty, components })?;
+    let handle = emit(ctx, function, body, Expression::Compose { ty, components })?;
     Ok((handle, ty))
 }
 
@@ -668,6 +686,7 @@ fn lower_cast(
         _ => return Err(Error::UnsupportedCast(type_name(&cast.ty))),
     };
     let handle = emit(
+        ctx,
         function,
         body,
         Expression::As {
@@ -698,7 +717,7 @@ fn lower_lit(
     let (literal, ty) = const_literal(ctx, lit, hint)?;
     let handle = function
         .expressions
-        .append(Expression::Literal(literal), Span::UNDEFINED);
+        .append(Expression::Literal(literal), ctx.span);
     Ok((handle, ty))
 }
 

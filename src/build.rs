@@ -65,8 +65,10 @@ use syn::visit::Visit;
 use crate::{Cfg, Error, Source};
 
 /// The major version of the Naga this crate builds against, recorded in each
-/// module's header. Kept in step with `Cargo.toml` by a test.
-pub const NAGA_MAJOR: u8 = 30;
+/// module's header and asserted against
+/// [`synaga_shader::ir::NAGA_MAJOR`] in the file it generates. Kept in step
+/// with `Cargo.toml`, and with the shader crate, by tests.
+pub const NAGA_MAJOR: u8 = synaga_shader::ir::NAGA_MAJOR;
 
 /// The first bytes of each module: `SYNAGA`, the format, and the Naga major
 /// version. `synaga_shader::ir` reads the same.
@@ -92,7 +94,30 @@ pub enum Bindings {
 pub struct BuildError {
     /// The source file the failure belongs to, if it belongs to one.
     pub path: Option<PathBuf>,
+    /// Where in that file, for a failure Naga blamed on a span. A transpile
+    /// error carries its own position, which is finer.
+    pub at: Option<(usize, usize)>,
     pub kind: BuildErrorKind,
+}
+
+impl BuildError {
+    fn new(path: Option<PathBuf>, kind: BuildErrorKind) -> Self {
+        Self {
+            path,
+            at: None,
+            kind,
+        }
+    }
+
+    /// The position to print after the path, preferring the finer of the two.
+    fn location(&self) -> Option<(usize, usize)> {
+        if let BuildErrorKind::Transpile(err) = &self.kind {
+            if let Some(at) = err.location() {
+                return Some(at);
+            }
+        }
+        self.at
+    }
 }
 
 #[derive(Debug)]
@@ -106,6 +131,11 @@ pub enum BuildErrorKind {
     Emit(String),
     /// `OUT_DIR` was not set, so this is not running under Cargo.
     NotABuildScript,
+    /// Every fault found, one per line.
+    ///
+    /// A build script that stops at the first failure makes fixing a shader a
+    /// sequence of rebuilds, which is why a run reports all of them.
+    Many(Errors),
 }
 
 impl std::fmt::Display for BuildError {
@@ -114,10 +144,8 @@ impl std::fmt::Display for BuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(path) = &self.path {
             write!(f, "{}", path.display())?;
-            if let BuildErrorKind::Transpile(err) = &self.kind {
-                if let Some((line, column)) = err.location() {
-                    write!(f, ":{line}:{column}")?;
-                }
+            if let Some((line, column)) = self.location() {
+                write!(f, ":{line}:{column}")?;
             }
             write!(f, ": ")?;
         }
@@ -134,6 +162,7 @@ impl std::fmt::Display for BuildError {
             BuildErrorKind::NotABuildScript => {
                 write!(f, "OUT_DIR is not set; this belongs in a build script")
             }
+            BuildErrorKind::Many(errors) => write!(f, "{errors}"),
         }
     }
 }
@@ -164,6 +193,25 @@ pub struct Shader {
     pub name: String,
     /// What each entry point is called. The module keeps these names.
     pub entry_points: Vec<EntryPoint>,
+    /// The module itself, when [`Shaders::keep_modules`] asked for it.
+    ///
+    /// Holding every module costs a second copy of each, so it is off unless
+    /// asked for. A build script that wants to print or re-validate a shader
+    /// asks rather than decoding the bytes it just wrote. Read it with
+    /// [`Shader::module`].
+    pub(crate) module: Option<naga::Module>,
+}
+
+impl Shader {
+    /// The module itself, so a build script can print it, validate it again, or
+    /// hand it to a Naga backend without decoding the bytes it just wrote.
+    ///
+    /// `None` unless [`Shaders::keep_modules`] asked for it, which
+    /// [`Shaders::wgsl`] does: a script with no use for the module should not
+    /// pay to hold a second copy of every one.
+    pub fn module(&self) -> Option<&naga::Module> {
+        self.module.as_ref()
+    }
 }
 
 /// An entry point's name.
@@ -185,6 +233,14 @@ pub struct Shaders {
     bindings: Bindings,
     capabilities: naga::valid::Capabilities,
     cfg: Option<Cfg>,
+    /// Where to write the WGSL, under `OUT_DIR`, if it is wanted.
+    #[cfg(feature = "wgsl")]
+    wgsl: Option<PathBuf>,
+    /// Keep each module in [`Shader`], for a caller that wants to look at one.
+    keep_modules: bool,
+    /// Whether the crate includes the generated layout checks, which the build
+    /// script cannot see for itself.
+    layout_included: bool,
 }
 
 impl Default for Shaders {
@@ -204,6 +260,10 @@ impl Shaders {
             bindings: Bindings::Explicit,
             capabilities: naga::valid::Capabilities::empty(),
             cfg: None,
+            #[cfg(feature = "wgsl")]
+            wgsl: None,
+            keep_modules: false,
+            layout_included: false,
         }
     }
 
@@ -236,6 +296,59 @@ impl Shaders {
     /// Who assigns `@group` and `@binding`. See [`Bindings`].
     pub fn bindings(mut self, bindings: Bindings) -> Self {
         self.bindings = bindings;
+        self
+    }
+
+    /// Write each module beside its bytes as WGSL, in a `wgsl/` directory under
+    /// `out_dir`, and keep the modules so a caller can reach them.
+    ///
+    /// The IR is the product, but it is not readable. A shader whose module is
+    /// not what you expected is far easier to diagnose as text, and a `.wgsl`
+    /// next to the `.naga` is also something a test can compare against.
+    /// Requires the `wgsl` feature, which is off by default.
+    ///
+    /// ```no_run
+    /// synaga::build::Shaders::new().wgsl().run();
+    /// ```
+    #[cfg(feature = "wgsl")]
+    pub fn wgsl(mut self) -> Self {
+        self.wgsl = Some(std::path::PathBuf::from("wgsl"));
+        self.keep_modules = true;
+        self
+    }
+
+    /// The directory [`Shaders::wgsl`] writes into, under `OUT_DIR`.
+    ///
+    /// Needs the `wgsl` feature; without it there is no text to write.
+    #[cfg(feature = "wgsl")]
+    pub fn wgsl_dir(mut self, dir: impl AsRef<std::path::Path>) -> Self {
+        self.wgsl = Some(dir.as_ref().to_path_buf());
+        self.keep_modules = true;
+        self
+    }
+
+    /// The crate includes the generated layout checks, so the build script
+    /// should not warn about them.
+    ///
+    /// The include happens in the crate being built and the build script cannot
+    /// see it, so this is how a crate that has already added
+    /// `synaga_shader::check_layout!()` says so. Without it the build warns
+    /// whenever there are shared structs, which is the case where a missing
+    /// include means a uniform read from the wrong place.
+    pub fn layout_checks_included(mut self) -> Self {
+        self.layout_included = true;
+        self
+    }
+
+    /// Keep each module in the [`Shader`] this hands back, reachable with
+    /// [`Shader::module`].
+    ///
+    /// Off by default: holding every module is a second copy of each, which a
+    /// build script that only writes bytes has no use for. Useful for a
+    /// script that wants to report on what it built — how many entry points, how
+    /// many globals survived pruning, the WGSL of one that looks wrong.
+    pub fn keep_modules(mut self, keep: bool) -> Self {
+        self.keep_modules = keep;
         self
     }
 
@@ -274,10 +387,8 @@ impl Shaders {
 
     /// Compile, handing back what was written.
     pub fn emit(self) -> Result<Vec<Shader>, BuildError> {
-        let out_dir = std::env::var_os("OUT_DIR").ok_or(BuildError {
-            path: None,
-            kind: BuildErrorKind::NotABuildScript,
-        })?;
+        let out_dir = std::env::var_os("OUT_DIR")
+            .ok_or(BuildError::new(None, BuildErrorKind::NotABuildScript))?;
         self.emit_to(Path::new(&out_dir))
     }
 
@@ -286,20 +397,42 @@ impl Shaders {
     /// `emit` is what a build script wants; this is for testing the same path
     /// without one.
     pub fn emit_to(&self, out_dir: &Path) -> Result<Vec<Shader>, BuildError> {
-        let cfg = self.cfg.clone().unwrap_or_else(Cfg::from_cargo_env);
+        let cfg = self
+            .cfg
+            .clone()
+            .unwrap_or_else(Cfg::from_cargo_env_agreeing_with_rustc);
+        self.declare_rebuild_triggers();
 
-        // Anything added, removed or edited in the directory changes the
-        // output, so the directory itself is watched as well as each file.
-        println!("cargo::rerun-if-changed={}", self.dir.display());
-
-        let files = self.read_files()?;
+        let mut errors = Errors::default();
+        let files = self.read_files(&mut errors)?;
+        report_unreached(&files, &mut errors)?;
         let stems: Vec<&str> = files.iter().map(|f| f.stem.as_str()).collect();
         let mut shaders = Vec::new();
         let mut shared = BTreeSet::new();
+        // The reader is the host's own `naga`, reached through a dependency the
+        // build script does not control, and a mismatched pair decodes to a
+        // runtime panic at the first `decode()`. Asserted at compile time
+        // instead, where the error names the version rather than the bytes.
         let mut generated = String::from(
             "// Generated by synaga. Do not edit.\n\
              //\n\
-             // Each constant is a serialized Naga module; see `synaga_shader::ir`.\n",
+             // Each constant is a serialized Naga module; see `synaga_shader::ir`.\n\
+             //\n\
+             // A module is written by one Naga and read by another, which have to\n\
+             // agree on the format. `synaga_shader::ir::NAGA_MAJOR` is the one that\n\
+             // wrote these; the number below is the one the host reads with. A\n\
+             // difference is a build error here, rather than a panic on the first\n\
+             // `decode()`.\n\
+             const _: () = assert!(\n",
+        );
+        let _ = write!(
+            generated,
+            "    ::synaga_shader::ir::NAGA_MAJOR == {NAGA_MAJOR},\n\
+             \x20   \"synaga wrote these modules with Naga {NAGA_MAJOR}, but this crate's \
+             synaga-shader reads them with a different Naga major version; the synaga \
+             build-dependency and the synaga-shader dependency must be the same \
+             version, and their `naga`s the same major version\"\n\
+             );\n"
         );
 
         for (index, file) in files.iter().enumerate() {
@@ -311,14 +444,41 @@ impl Shaders {
                 bytes,
                 entry_points,
                 shared: structs,
-            } = self.compile(&files, &sources, &cfg)?;
+                module,
+                #[cfg_attr(not(feature = "wgsl"), allow(unused_variables))]
+                info,
+            } = match self.compile(&files, &sources, &cfg, &mut errors) {
+                Ok(compiled) => compiled,
+                // Recorded; the rest of the shaders still get a turn, so one
+                // build reports every fault rather than the first.
+                Err(_) => continue,
+            };
             shared.extend(structs);
+            // Used by the WGSL error path below, and the root of what a failure
+            // in this module belongs to.
+            #[cfg_attr(not(feature = "wgsl"), allow(unused_variables))]
+            let root = files[sources[0]].path.clone();
 
             let output_path = out_dir.join(format!("{}.naga", file.stem));
-            std::fs::write(&output_path, &bytes).map_err(|e| BuildError {
-                path: Some(output_path.clone()),
-                kind: BuildErrorKind::Io(e),
-            })?;
+            write_if_changed(&output_path, &bytes)
+                .map_err(|e| BuildError::new(Some(output_path.clone()), BuildErrorKind::Io(e)))?;
+
+            // The IR is what a host runs, but it is not readable. When asked,
+            // the same module is written as text beside it, which is what makes
+            // a surprising module diagnosable and testable.
+            #[cfg(feature = "wgsl")]
+            if let Some(dir) = &self.wgsl {
+                let text = crate::to_wgsl(&module, &info).map_err(|e| {
+                    BuildError::new(
+                        Some(root.clone()),
+                        BuildErrorKind::Emit(format!("cannot print this module as WGSL: {e}")),
+                    )
+                })?;
+                let target = out_dir.join(dir).join(format!("{}.wgsl", file.stem));
+                write_if_changed(&target, text.as_bytes())
+                    .map_err(|e| BuildError::new(Some(target.clone()), BuildErrorKind::Io(e)))?;
+            }
+            let _ = &module;
 
             let constant = constant_name(&file.stem);
             let _ = writeln!(
@@ -336,6 +496,7 @@ impl Shaders {
                 constant,
                 name: file.stem.clone(),
                 entry_points,
+                module: self.keep_modules.then_some(module),
             });
         }
 
@@ -354,50 +515,99 @@ impl Shaders {
         );
 
         let module_path = out_dir.join(&self.module_name);
-        std::fs::write(&module_path, generated).map_err(|e| BuildError {
-            path: Some(module_path.clone()),
-            kind: BuildErrorKind::Io(e),
-        })?;
+        write_if_changed(&module_path, generated.as_bytes())
+            .map_err(|e| BuildError::new(Some(module_path.clone()), BuildErrorKind::Io(e)))?;
 
         let layout_path = out_dir.join(layout_name(&self.module_name));
-        std::fs::write(&layout_path, layout_checks(&shared)).map_err(|e| BuildError {
-            path: Some(layout_path.clone()),
-            kind: BuildErrorKind::Io(e),
-        })?;
+        let layout = layout_checks(&shared);
+        write_if_changed(&layout_path, layout.as_bytes())
+            .map_err(|e| BuildError::new(Some(layout_path.clone()), BuildErrorKind::Io(e)))?;
+
+        // The layout checks are the one thing standing between a shader and a
+        // silently misread uniform, and nothing includes them unless the crate
+        // says `synaga_shader::check_layout!()`. Said out loud, since the
+        // transpiler's own check is a model of `rustc` and not `rustc`.
+        //
+        // Only when the build is not already failing: a tree with a dozen
+        // mistakes in it should hear what is wrong with its shaders before it
+        // hears what is wrong with the build script's own output.
+        //
+        // A build script cannot see whether the crate included the file — the
+        // include happens in the crate, not here — so a crate that has included
+        // it says so with [`Shaders::layout_checks_included`], and this goes
+        // quiet.
+        if !shared.is_empty() && errors.is_empty() && !self.layout_included {
+            println!(
+                "cargo::warning=synaga: {} shared struct(s) in {} have `rustc` layout checks in {}, which nothing has included — add `synaga_shader::check_layout!({:?});` to the module that lists the shader modules, or say `synaga::build::Shaders::new().layout_checks_included()` in this build script if it is already there, or the layout is checked only by synaga's own model of `rustc`",
+                shared.len(),
+                self.dir.display(),
+                layout_path.display(),
+                layout_name(&self.module_name),
+            );
+        }
+
+        // Reported once everything is built, so a shader that is broken for one
+        // reason is not also reported as unreached, and one run lists every
+        // fault in the tree rather than the first.
+        if !errors.is_empty() {
+            return Err(BuildError::new(None, BuildErrorKind::Many(errors)));
+        }
         Ok(shaders)
     }
 
-    /// Every `.rs` file in the directory but `mod.rs`, read and looked over,
-    /// in a stable order.
-    fn read_files(&self) -> Result<Vec<File>, BuildError> {
-        let dir_error = |e: std::io::Error| BuildError {
-            path: Some(self.dir.clone()),
-            kind: BuildErrorKind::Io(e),
-        };
-        let mut paths: Vec<PathBuf> = std::fs::read_dir(&self.dir)
-            .map_err(dir_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(dir_error)?
-            .into_iter()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|e| e == "rs"))
-            // `mod.rs` lists the shader modules for Rust; it is not one.
-            .filter(|path| path.file_name().is_some_and(|n| n != "mod.rs"))
-            .collect();
-        // Directory order is arbitrary; the generated file should not be.
-        paths.sort();
+    /// Everything the output depends on, declared to Cargo.
+    ///
+    /// Which files, which directory, and — the one that is easy to miss — the
+    /// `CARGO_CFG_*` variables the `cfg` comes from. A feature enabled or
+    /// disabled changes which items exist, and Cargo does not re-run a build
+    /// script for an environment variable unless the script says so.
+    fn declare_rebuild_triggers(&self) {
+        // Anything added, removed or edited under the directory changes the
+        // output. Cargo watches a directory path recursively.
+        println!("cargo::rerun-if-changed={}", self.dir.display());
+        // Whether `cfg` is left to Cargo decides what it holds, and the caller
+        // may have set it by hand instead — in which case nothing below applies.
+        if self.cfg.is_none() {
+            for (key, _) in std::env::vars() {
+                if key.starts_with("CARGO_CFG_") {
+                    println!("cargo::rerun-if-env-changed={key}");
+                }
+            }
+        }
+        // `#[cfg(test)]` is never in `CARGO_CFG_*`: Cargo tells a build script
+        // nothing about the profile's test run. Below.
+        println!("cargo::rerun-if-env-changed=PROFILE");
+    }
+
+    /// Every `.rs` file in the directory but `mod.rs`, read and looked over, in
+    /// a stable order, and any file nothing can read or parse reported.
+    fn read_files(&self, errors: &mut Errors) -> Result<Vec<File>, BuildError> {
+        let dir_error =
+            |e: std::io::Error| BuildError::new(Some(self.dir.clone()), BuildErrorKind::Io(e));
+        let paths = collect_paths(&self.dir, &dir_error)?;
 
         let mut files = Vec::with_capacity(paths.len());
         for path in paths {
             println!("cargo::rerun-if-changed={}", path.display());
-            let text = std::fs::read_to_string(&path).map_err(|e| BuildError {
-                path: Some(path.clone()),
-                kind: BuildErrorKind::Io(e),
-            })?;
-            let syntax: syn::File = syn::parse_str(&text).map_err(|e| BuildError {
-                path: Some(path.clone()),
-                kind: BuildErrorKind::Transpile(e.into()),
-            })?;
+            // A file that cannot be read or parsed is reported and skipped, so
+            // one broken file does not hide the state of the others.
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(e) => {
+                    errors.push(BuildError::new(Some(path), BuildErrorKind::Io(e)));
+                    continue;
+                }
+            };
+            let syntax: syn::File = match syn::parse_str(&text) {
+                Ok(syntax) => syntax,
+                Err(e) => {
+                    errors.push(BuildError::new(
+                        Some(path),
+                        BuildErrorKind::Transpile(e.into()),
+                    ));
+                    continue;
+                }
+            };
             let stem = path
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
@@ -417,17 +627,18 @@ impl Shaders {
 
     /// The serialized module, what each entry point is called, and what it
     /// shares with the host.
+    ///
+    /// `errors` collects what is wrong with this module, so one pass reports
+    /// every fault in it rather than the first.
     fn compile(
         &self,
         files: &[File],
         sources: &[usize],
         cfg: &Cfg,
+        errors: &mut Errors,
     ) -> Result<Compiled, BuildError> {
         let root = &files[sources[0]].path;
-        let at = |kind| BuildError {
-            path: Some(root.clone()),
-            kind,
-        };
+        let at = |kind| BuildError::new(Some(root.clone()), kind);
         let texts: Vec<Source> = sources
             .iter()
             .map(|&i| Source {
@@ -435,12 +646,22 @@ impl Shaders {
                 text: &files[i].text,
             })
             .collect();
-        let (mut module, shared) =
-            crate::parse_shared(&texts, cfg, Some(self.bindings)).map_err(|err| BuildError {
-                // Blame the file the failure is in, which need not be the shader.
-                path: Some(files[sources[err.index]].path.clone()),
-                kind: BuildErrorKind::Transpile(err.error),
-            })?;
+        let parsed = crate::parse_shared(&texts, cfg, Some(self.bindings));
+        let (mut module, shared) = match parsed {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                // One failure stops this module: without a module there is
+                // nothing to validate, and every later complaint would be about
+                // a module that was never built. What is wrong with the *other*
+                // shaders is still reported, by the caller.
+                let error = err.error;
+                let blamed = files[sources[err.index]].path.clone();
+                return Err(errors.push(BuildError::new(
+                    Some(blamed),
+                    BuildErrorKind::Transpile(error),
+                )));
+            }
+        };
 
         let flags = match self.bindings {
             Bindings::Explicit => naga::valid::ValidationFlags::all(),
@@ -448,16 +669,27 @@ impl Shaders {
                 naga::valid::ValidationFlags::all() ^ naga::valid::ValidationFlags::BINDINGS
             }
         };
-        crate::validate_with(&module, flags, self.capabilities)
-            .map_err(|err| at(BuildErrorKind::Validate(err)))?;
+        // Naga names what is wrong and its own chain says why; the span says
+        // where, as a byte range in one of the module's files, so it is turned
+        // back into a `file:line:column` before it is lost.
+        let check = |module: &naga::Module| {
+            crate::validate_with(module, flags, self.capabilities).map_err(|err| {
+                let (path, at) = where_of(err.span(), files, sources, root);
+                let mut error = BuildError::new(Some(path), BuildErrorKind::Validate(err));
+                error.at = at;
+                error
+            })
+        };
+        let info = check(&module).map_err(|error| errors.push(error))?;
 
         // Pruning needs a module already known to be valid. It drops the
         // validation info, so a pruned module is checked again.
-        if self.prune {
+        let info = if self.prune {
             naga::compact::compact(&mut module, naga::compact::KeepUnused::No);
-            crate::validate_with(&module, flags, self.capabilities)
-                .map_err(|err| at(BuildErrorKind::Validate(err)))?;
-        }
+            check(&module).map_err(|error| errors.push(error))?
+        } else {
+            info
+        };
 
         let mut bytes = HEADER.to_vec();
         bincode::serde::encode_into_std_write(&module, &mut bytes, bincode::config::standard())
@@ -466,8 +698,84 @@ impl Shaders {
             bytes,
             entry_points: entry_points(&module),
             shared,
+            module,
+            info,
         })
     }
+}
+
+/// What went wrong, across every module, so one build reports all of it.
+///
+/// A build script that stops at the first failure makes fixing a shader a
+/// sequence of rebuilds; a tree the size of Blade's has a dozen mistakes in it
+/// at a time. Each is reported on its own `cargo::error=` line, with the file
+/// and position it belongs to.
+#[derive(Debug, Default)]
+pub struct Errors(Vec<String>);
+
+impl Errors {
+    /// Keep `error` for the report and hand it back for the early return.
+    ///
+    /// A shader that is also a helper of another one is compiled into both, so
+    /// the same fault arrives twice; saying it once is the point of listing
+    /// them all.
+    fn push(&mut self, error: BuildError) -> BuildError {
+        let message = error.to_string();
+        if !self.0.contains(&message) {
+            self.0.push(message);
+        }
+        error
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Display for Errors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, error) in self.0.iter().enumerate() {
+            if i > 0 {
+                writeln!(f)?;
+            }
+            write!(f, "{error}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Which file a Naga span belongs to, and where in it.
+///
+/// A module is built from several files, and a span is a byte range in whichever
+/// one the node was written in. Each file is searched for a node covering the
+/// range, which is unambiguous because every span the lowering emits is the
+/// range of some `syn` node in one of them.
+fn where_of(
+    span: Option<naga::Span>,
+    files: &[File],
+    sources: &[usize],
+    root: &Path,
+) -> (PathBuf, Option<(usize, usize)>) {
+    let Some(range) = span.and_then(|span| span.to_range()) else {
+        return (root.to_path_buf(), None);
+    };
+    for &i in sources {
+        if let Some(at) = line_column(&files[i].text, range.clone()) {
+            return (files[i].path.clone(), Some(at));
+        }
+    }
+    (root.to_path_buf(), None)
+}
+
+/// The 1-based line and column of a byte range in `text`.
+fn line_column(text: &str, range: std::ops::Range<usize>) -> Option<(usize, usize)> {
+    if range.start >= text.len() {
+        return None;
+    }
+    let head = &text[..range.start];
+    let line = head.matches('\n').count() + 1;
+    let column = head.rsplit('\n').next().map(str::len).unwrap_or(0) + 1;
+    Some((line, column))
 }
 
 /// One shader, compiled.
@@ -477,6 +785,96 @@ struct Compiled {
     entry_points: Vec<EntryPoint>,
     /// The structs it shares with the host, as the GPU lays them out.
     shared: Vec<crate::lower::SharedStruct>,
+    /// The module itself, for a caller that wants to read or print it.
+    module: naga::Module,
+    /// Its validation info, which printing the module as WGSL needs.
+    info: naga::valid::ModuleInfo,
+}
+
+/// Write `bytes` to `path`, leaving the file alone if it already says that.
+///
+/// `OUT_DIR` outlives a single build, and rewriting a file whose contents did
+/// not change makes everything that tracks it by mtime — Cargo's own
+/// dependency tracking, a file watcher, an incremental build — do the work
+/// again for nothing.
+fn write_if_changed(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Ok(existing) = std::fs::read(path) {
+        if existing == bytes {
+            return Ok(());
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, bytes)
+}
+
+/// Report a file that no shader reaches.
+///
+/// A file nothing reaches is compiled by nothing: `rustc` checks it as a shader
+/// while its contents are in no module, which is exactly the gap this whole
+/// design exists to close. A helper meant only for the CPU is legitimate, but it
+/// belongs outside the shader directory, where nothing claims it is a shader.
+///
+/// A file that is an entry point of its own is never unreached, and neither is
+/// one whose failure has already been reported for another reason.
+fn report_unreached(files: &[File], errors: &mut Errors) -> Result<(), BuildError> {
+    if !files.iter().any(|file| file.has_entry_point) {
+        // Nothing is a shader, so every file is a helper and nothing is wrong.
+        return Ok(());
+    }
+    let stems: Vec<&str> = files.iter().map(|f| f.stem.as_str()).collect();
+    let mut reached = vec![false; files.len()];
+    for (index, file) in files.iter().enumerate() {
+        if !file.has_entry_point {
+            continue;
+        }
+        for reached_index in reachable(files, &stems, index) {
+            reached[reached_index] = true;
+        }
+    }
+    for (index, file) in files.iter().enumerate() {
+        if reached[index] {
+            continue;
+        }
+        errors.push(BuildError::new(
+            Some(file.path.clone()),
+            BuildErrorKind::Transpile(Error::UnreachedFile(
+                file.path.display().to_string(),
+                file.stem.clone(),
+            )),
+        ));
+    }
+    Ok(())
+}
+
+/// Every `.rs` file under `dir`, in a stable order.
+///
+/// Subdirectories are searched too, since a shader tree that grows past a
+/// screenful of files wants them. A file is a module named after its stem, so
+/// two files of one stem in different directories would be ambiguous; that is
+/// an error rather than a silent choice.
+fn collect_paths(
+    dir: &Path,
+    io_error: &dyn Fn(std::io::Error) -> BuildError,
+) -> Result<Vec<PathBuf>, BuildError> {
+    let entries = std::fs::read_dir(dir).map_err(io_error)?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(io_error)?.path();
+        if path.is_dir() {
+            paths.extend(collect_paths(&path, io_error)?);
+            continue;
+        }
+        if path.extension().is_some_and(|e| e == "rs")
+            // `mod.rs` lists the shader modules for Rust; it is not one.
+            && !path.file_name().is_some_and(|n| n == "mod.rs")
+        {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
 }
 
 /// A source file in the shader directory.
@@ -510,14 +908,26 @@ fn reachable(files: &[File], stems: &[&str], root: usize) -> Vec<usize> {
 }
 
 /// Does the file have a function marked `#[entry_point]`?
+///
+/// Nested `mod { .. }` counts, and it has to: an entry point inside one is not
+/// something the transpiler will compile, so treating the file as a shader with
+/// no entry point in it would skip it silently. Counting it here means the file
+/// is built, and the lowering refuses the `mod` by name.
 fn has_entry_point(file: &syn::File) -> bool {
-    file.items.iter().any(|item| match item {
-        syn::Item::Fn(func) => func
-            .attrs
-            .iter()
-            .any(|attr| attr.path().is_ident("entry_point")),
-        _ => false,
-    })
+    fn any(items: &[syn::Item]) -> bool {
+        items.iter().any(|item| match item {
+            syn::Item::Fn(func) => func
+                .attrs
+                .iter()
+                .any(|attr| attr.path().is_ident("entry_point")),
+            syn::Item::Mod(item_mod) => item_mod
+                .content
+                .as_ref()
+                .is_some_and(|(_, items)| any(items)),
+            _ => false,
+        })
+    }
+    any(&file.items)
 }
 
 /// Collects the names a file reaches other modules through. `a::b::c` uses
@@ -599,6 +1009,10 @@ pub fn layout_name(module_name: &str) -> String {
 /// `rustc`'s layout of each shared struct, asserted to be the GPU's: the
 /// layout check in the transpiler works out Rust's from the types, and this
 /// asks `rustc` itself, on the target being built.
+///
+/// The whole body sits in one `const _: ()`, so the file is a no-op when it is
+/// not included — which is why the build warns when there is something to check
+/// and nothing has included it.
 fn layout_checks(shared: &BTreeSet<crate::lower::SharedStruct>) -> String {
     let mut out = String::from(
         "// Generated by synaga. Do not edit.\n\
@@ -623,6 +1037,15 @@ fn layout_checks(shared: &BTreeSet<crate::lower::SharedStruct>) -> String {
                 s.module, s.name
             );
         }
+        // Alignment follows from the size and the offsets for every type a
+        // shader holds, but a `#[repr(C, align(N))]` can raise it on its own,
+        // and a struct nested in another is placed by it.
+        let _ = writeln!(
+            out,
+            "    assert!(::core::mem::align_of::<{path}>() == {}, \
+             \"`{}::{}` is aligned {} on the GPU\");",
+            s.align, s.module, s.name, s.align
+        );
         for (field, offset) in &s.fields {
             let _ = writeln!(
                 out,

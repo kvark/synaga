@@ -14,7 +14,7 @@ fn same_module(methods: &str, functions: &str) {
     let lower = |src: &str| {
         let module = synaga::parse_str(src).unwrap_or_else(|e| panic!("parse: {e}\n{src}"));
         synaga::validate(&module).unwrap_or_else(|e| panic!("validate: {e}\n{src}"));
-        format!("{module:#?}")
+        common::without_spans(&format!("{module:#?}"))
     };
     assert_eq!(lower(methods), lower(functions), "\n{methods}\n{functions}");
 }

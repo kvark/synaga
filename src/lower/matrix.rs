@@ -54,7 +54,7 @@ pub(super) fn lower_mat_ctor(
             .iter()
             .all(|&t| ctx.as_vector(t) == Some((rows, scalar)))
     {
-        let handle = emit(function, body, Expression::Compose { ty, components })?;
+        let handle = emit(ctx, function, body, Expression::Compose { ty, components })?;
         return Ok((handle, ty));
     }
 
@@ -72,6 +72,7 @@ pub(super) fn lower_mat_ctor(
             let start = col * col_width;
             let slice = components[start..start + col_width].to_vec();
             let col_handle = emit(
+                ctx,
                 function,
                 body,
                 Expression::Compose {
@@ -82,6 +83,7 @@ pub(super) fn lower_mat_ctor(
             columns_expr.push(col_handle);
         }
         let handle = emit(
+            ctx,
             function,
             body,
             Expression::Compose {

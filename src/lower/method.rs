@@ -79,13 +79,13 @@ pub(super) fn lower_method_any(
                     size: naga::ArraySize::Dynamic,
                     ..
                 } if name == "len" && args.is_empty() => {
-                    let handle = emit(function, body, Expression::ArrayLength(place.pointer))?;
+                    let handle = emit(ctx, function, body, Expression::ArrayLength(place.pointer))?;
                     return Ok(Some((handle, ctx.intern_scalar(Scalar::U32))));
                 }
                 _ => {}
             }
             let ty = place.ty;
-            (super::place::load(function, body, &place)?, ty)
+            (super::place::load(ctx, function, body, &place)?, ty)
         }
         None => {
             let value = lower_expr(ctx, function, body, &call.receiver, env)?;
@@ -174,7 +174,7 @@ fn lower_user_method(
     let first = match (kind, receiver) {
         (super::ReceiverKind::Value, Receiver::Value((value, _))) => value,
         (super::ReceiverKind::Value, Receiver::Place(place)) => {
-            super::place::load(function, body, &place)?
+            super::place::load(ctx, function, body, &place)?
         }
         (super::ReceiverKind::Mut, Receiver::Place(place)) => {
             if !place.writable {
@@ -274,7 +274,7 @@ fn lower_set(
             pointer: place.pointer,
             value,
         },
-        naga::Span::UNDEFINED,
+        ctx.span,
     );
     Ok(())
 }
@@ -302,6 +302,7 @@ fn lower_cast(
     };
     let scalar = turbofish.or(hint).unwrap_or(Scalar::F32);
     let handle = emit(
+        ctx,
         function,
         body,
         Expression::As {
@@ -338,10 +339,9 @@ fn lower_value_method(
             let Some((_, naga::ArraySize::Constant(len))) = ctx.as_array(base_ty) else {
                 return Err(Error::UnsupportedMethod(name));
             };
-            let handle = function.expressions.append(
-                Expression::Literal(naga::Literal::U32(len.get())),
-                naga::Span::UNDEFINED,
-            );
+            let handle = function
+                .expressions
+                .append(Expression::Literal(naga::Literal::U32(len.get())), ctx.span);
             Ok((handle, ctx.intern_scalar(Scalar::U32)))
         }
         ("extend", [value]) => {
@@ -360,6 +360,7 @@ fn lower_value_method(
             }
             let ty = ctx.intern_vector(wider, scalar);
             let handle = emit(
+                ctx,
                 function,
                 body,
                 Expression::Compose {
@@ -393,6 +394,7 @@ fn lower_value_method(
                 _ => naga::RelationalFunction::Any,
             };
             let handle = emit(
+                ctx,
                 function,
                 body,
                 Expression::Relational {
@@ -415,8 +417,8 @@ fn lower_value_method(
             };
             let one = function
                 .expressions
-                .append(Expression::Literal(one), naga::Span::UNDEFINED);
-            let ones = emit(function, body, Expression::Splat { size, value: one })?;
+                .append(Expression::Literal(one), ctx.span);
+            let ones = emit(ctx, function, body, Expression::Splat { size, value: one })?;
             let expr = Expression::Math {
                 fun: naga::MathFunction::Dot,
                 arg: base,
@@ -424,7 +426,7 @@ fn lower_value_method(
                 arg2: None,
                 arg3: None,
             };
-            Ok((emit(function, body, expr)?, ctx.intern_scalar(scalar)))
+            Ok((emit(ctx, function, body, expr)?, ctx.intern_scalar(scalar)))
         }
         (cmp, [rhs]) if compare_op(cmp).is_some() => {
             let op = compare_op(cmp).expect("checked above");
@@ -432,7 +434,7 @@ fn lower_value_method(
             let hint = ctx.shape(left_ty).int_hint();
             let (right, right_ty) = lower_expr_hinted(ctx, function, body, rhs, env, hint)?;
             let ty = bin_result_ty(ctx, op, left_ty, right_ty)?;
-            let handle = emit(function, body, Expression::Binary { op, left, right })?;
+            let handle = emit(ctx, function, body, Expression::Binary { op, left, right })?;
             Ok((handle, ty))
         }
         _ => {
@@ -468,7 +470,7 @@ fn bitcast(
         kind: to.kind,
         convert: None,
     };
-    Ok((emit(function, body, expr)?, ctx.intern_scalar(to)))
+    Ok((emit(ctx, function, body, expr)?, ctx.intern_scalar(to)))
 }
 
 /// The lane-wise comparisons, which Rust's operators cannot express.
@@ -520,10 +522,9 @@ pub(super) fn lower_qualified_call(
             let ty = ctx
                 .nominal_type(ty_name)?
                 .ok_or_else(|| Error::EnumRepr(ty_name.clone()))?;
-            let handle = function.expressions.append(
-                Expression::Literal(naga::Literal::U32(value)),
-                naga::Span::UNDEFINED,
-            );
+            let handle = function
+                .expressions
+                .append(Expression::Literal(naga::Literal::U32(value)), ctx.span);
             return Ok((handle, ty));
         }
     }
@@ -547,7 +548,7 @@ pub(super) fn lower_qualified_call(
             }
             let handle = function
                 .expressions
-                .append(Expression::ZeroValue(ty), naga::Span::UNDEFINED);
+                .append(Expression::ZeroValue(ty), ctx.span);
             return Ok((handle, ty));
         }
     }
@@ -582,7 +583,7 @@ pub(super) fn lower_qualified_call(
                 return Err(Error::TypeMismatch);
             }
             let ty = ctx.intern_vector(size, scalar);
-            let handle = emit(function, body, Expression::Splat { size, value })?;
+            let handle = emit(ctx, function, body, Expression::Splat { size, value })?;
             Ok((handle, ty))
         }
         // `vec4::from(v)` converts a vector's components, which a shader spells
@@ -598,6 +599,7 @@ pub(super) fn lower_qualified_call(
             let scalar = shorthand.unwrap_or(Scalar::F32);
             let ty = ctx.intern_vector(size, scalar);
             let handle = emit(
+                ctx,
                 function,
                 body,
                 Expression::As {
@@ -633,7 +635,7 @@ pub(super) fn lower_qualified_const(
         let ty = ctx.intern_scalar(literal.scalar());
         let handle = function
             .expressions
-            .append(Expression::Literal(literal), naga::Span::UNDEFINED);
+            .append(Expression::Literal(literal), ctx.span);
         return Ok((handle, ty));
     }
     let Some((size, shorthand)) = parse_vec_ident(ty_name) else {
@@ -645,7 +647,7 @@ pub(super) fn lower_qualified_const(
         "ZERO" => {
             let handle = function
                 .expressions
-                .append(Expression::ZeroValue(ty), naga::Span::UNDEFINED);
+                .append(Expression::ZeroValue(ty), ctx.span);
             Ok((handle, ty))
         }
         "ONE" => {
@@ -657,8 +659,8 @@ pub(super) fn lower_qualified_const(
             };
             let value = function
                 .expressions
-                .append(Expression::Literal(one), naga::Span::UNDEFINED);
-            let handle = emit(function, body, Expression::Splat { size, value })?;
+                .append(Expression::Literal(one), ctx.span);
+            let handle = emit(ctx, function, body, Expression::Splat { size, value })?;
             Ok((handle, ty))
         }
         _ => Err(Error::UnknownIdent(format!("{ty_name}::{constant}"))),
@@ -667,9 +669,8 @@ pub(super) fn lower_qualified_const(
 
 /// `value` as a `u32` literal.
 fn u32_literal(ctx: &mut Context, function: &mut Function, value: u32) -> Typed {
-    let handle = function.expressions.append(
-        Expression::Literal(naga::Literal::U32(value)),
-        naga::Span::UNDEFINED,
-    );
+    let handle = function
+        .expressions
+        .append(Expression::Literal(naga::Literal::U32(value)), ctx.span);
     (handle, ctx.intern_scalar(Scalar::U32))
 }

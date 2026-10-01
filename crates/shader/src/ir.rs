@@ -23,6 +23,15 @@
 /// The first six bytes of every module the build step writes.
 pub const MAGIC: &[u8; 6] = b"SYNAGA";
 
+/// The major version of the Naga whose modules this crate reads.
+///
+/// Every module records the Naga that wrote it, and the generated file asserts
+/// that the two agree — a build error naming both versions, rather than a panic
+/// at the first `decode` where the bytes stop making sense. A crate that
+/// depends on `synaga` as a build-dependency and on `synaga-shader` normally
+/// gets the same version of each, and this is what proves it did.
+pub const NAGA_MAJOR: u8 = 30;
+
 /// The layout after the header. Bumped when it changes.
 pub const FORMAT: u8 = 1;
 

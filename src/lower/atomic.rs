@@ -5,7 +5,7 @@
 //! An atomic is storage the operation changes, so the receiver is always a
 //! place: a field of a buffer, an element of one, or workgroup memory.
 
-use naga::{AtomicFunction, Block, Expression, Function, Scalar, Span, Statement};
+use naga::{AtomicFunction, Block, Expression, Function, Scalar, Statement};
 use syn::Expr;
 
 use super::emit::emit;
@@ -32,6 +32,7 @@ pub(super) fn lower_atomic_method(
     let fun = match (name, args) {
         ("load", []) => {
             let handle = emit(
+                ctx,
                 function,
                 body,
                 Expression::Load {
@@ -49,7 +50,7 @@ pub(super) fn lower_atomic_method(
                     pointer: place.pointer,
                     value,
                 },
-                Span::UNDEFINED,
+                ctx.span,
             );
             return Ok(None);
         }
@@ -64,7 +65,7 @@ pub(super) fn lower_atomic_method(
                     ty: result_ty,
                     comparison: true,
                 },
-                Span::UNDEFINED,
+                ctx.span,
             );
             body.push(
                 Statement::Atomic {
@@ -75,7 +76,7 @@ pub(super) fn lower_atomic_method(
                     value,
                     result: Some(result),
                 },
-                Span::UNDEFINED,
+                ctx.span,
             );
             return Ok(Some((result, result_ty)));
         }
@@ -111,7 +112,7 @@ pub(super) fn lower_atomic_method(
             ty,
             comparison: false,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     body.push(
         Statement::Atomic {
@@ -120,7 +121,7 @@ pub(super) fn lower_atomic_method(
             value,
             result: Some(result),
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     Ok(Some((result, ty)))
 }

@@ -13,7 +13,7 @@
 //! around the `match`. A `match` with an arm that breaks out of a loop is an
 //! `if` chain instead.
 
-use naga::{Block, Expression, Function, Handle, LocalVariable, Scalar, ScalarKind, Span};
+use naga::{Block, Expression, Function, Handle, LocalVariable, Scalar, ScalarKind};
 use naga::{Statement, SwitchCase, SwitchValue};
 use syn::visit::{self, Visit};
 use syn::{Expr, ExprMatch, Pat};
@@ -112,11 +112,11 @@ pub(super) fn lower_match(
                     ty: value_ty,
                     init: None,
                 },
-                Span::UNDEFINED,
+                ctx.span,
             );
             let pointer = function
                 .expressions
-                .append(Expression::LocalVariable(local), Span::UNDEFINED);
+                .append(Expression::LocalVariable(local), ctx.span);
             for (block, value) in &mut blocks {
                 match value {
                     Some((value, _)) => block.push(
@@ -124,7 +124,7 @@ pub(super) fn lower_match(
                             pointer,
                             value: *value,
                         },
-                        Span::UNDEFINED,
+                        ctx.span,
                     ),
                     // An arm without a value has to leave by a jump.
                     None if super::stmt::always_jumps(block) => {}
@@ -141,10 +141,10 @@ pub(super) fn lower_match(
         true => if_chain(ctx, function, selector, ty, bodies)?,
         false => switch(selector, bodies),
     };
-    body.push(statement, Span::UNDEFINED);
+    body.push(statement, ctx.span);
     match local {
         Some((pointer, ty)) => {
-            let value = emit(function, body, Expression::Load { pointer })?;
+            let value = emit(ctx, function, body, Expression::Load { pointer })?;
             Ok(Some((value, ty)))
         }
         None => Ok(None),
@@ -357,7 +357,7 @@ fn if_chain<'a, 'b: 'a>(
                 accept: block,
                 reject: std::mem::take(&mut reject),
             },
-            Span::UNDEFINED,
+            ctx.span,
         );
         rest = Some(condition_block);
     }
@@ -379,6 +379,7 @@ fn match_condition(
         let test = match (bool_ty, *value) {
             (true, SwitchValue::U32(1)) => selector,
             (true, _) => emit(
+                ctx,
                 function,
                 body,
                 Expression::Unary {
@@ -394,8 +395,9 @@ fn match_condition(
                 };
                 let literal = function
                     .expressions
-                    .append(Expression::Literal(literal), Span::UNDEFINED);
+                    .append(Expression::Literal(literal), ctx.span);
                 emit(
+                    ctx,
                     function,
                     body,
                     Expression::Binary {
@@ -409,6 +411,7 @@ fn match_condition(
         condition = Some(match condition {
             None => test,
             Some(left) => emit(
+                ctx,
                 function,
                 body,
                 Expression::Binary {

@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use naga::{Function, Handle, Type};
 use syn::{Item, UseTree};
 
+use super::pos;
 use crate::{Cfg, Error};
 
 /// Rust keeps types apart from values, so a struct and a function may share a
@@ -178,9 +179,10 @@ impl Scope {
                 ..Default::default()
             });
             for item in file.items {
-                let keep = cfg
-                    .keeps(item_attrs(&item))
-                    .map_err(|error| IndexError { source, error })?;
+                let keep = cfg.keeps(item_attrs(&item)).map_err(|error| IndexError {
+                    source,
+                    error: error.at(pos(&item)),
+                })?;
                 if !keep {
                     continue;
                 }
@@ -190,8 +192,10 @@ impl Scope {
                     continue;
                 }
                 if let Item::Enum(enumeration) = &item {
-                    let variants =
-                        enum_variants(enumeration).map_err(|error| IndexError { source, error })?;
+                    let variants = enum_variants(enumeration).map_err(|error| IndexError {
+                        source,
+                        error: error.at(pos(enumeration)),
+                    })?;
                     let info = super::nominal::enum_info(enumeration, &variants);
                     let name = enumeration.ident.to_string();
                     for (variant, value) in variants {
@@ -205,16 +209,25 @@ impl Scope {
                 // it is lowered.
                 if let Item::Macro(item_macro) = &item {
                     if super::nominal::is_bitflags(&item_macro.mac) {
-                        let sets = super::nominal::parse_bitflags(&item_macro.mac)
-                            .map_err(|error| IndexError { source, error })?;
+                        let sets =
+                            super::nominal::parse_bitflags(&item_macro.mac).map_err(|error| {
+                                IndexError {
+                                    source,
+                                    error: error.at(pos(item_macro)),
+                                }
+                            })?;
                         scope.flags.extend(sets);
                         continue;
                     }
                 }
                 if let Item::Impl(item_impl) = item {
+                    let at = pos(&item_impl);
                     scope
                         .index_impl(source, item_impl, cfg)
-                        .map_err(|error| IndexError { source, error })?;
+                        .map_err(|error| IndexError {
+                            source,
+                            error: error.at(at),
+                        })?;
                     continue;
                 }
                 // A trait declares what its `impl`s define, which is where the
@@ -226,6 +239,17 @@ impl Scope {
                     scope
                         .aliases
                         .insert(alias.ident.to_string(), (*alias.ty).clone());
+                }
+                // A `mod` declares a module the transpiler does not read: an
+                // entry point inside one would be a shader `rustc` checks and
+                // the build never compiles, with nothing to say so. Refused
+                // where it is written, since a silently absent shader is the
+                // one failure mode the whole design is built to avoid.
+                if let Item::Mod(item_mod) = &item {
+                    return Err(IndexError {
+                        source,
+                        error: module_error(item_mod).at(pos(item_mod)),
+                    });
                 }
                 let name = item_name(&item);
                 if let Some(key) = &name {
@@ -582,6 +606,52 @@ fn collect_use(tree: &UseTree, mut prefix: Vec<String>, scope: &mut SourceScope)
 
 /// Fieldless variants become `u32` discriminants. An omitted one is one past
 /// the previous, starting at zero, as in Rust.
+/// Does any `fn` among these items carry `#[entry_point]`, at any depth of
+/// nested `mod`? Used to tell a `mod { .. }` that would hide a shader from one
+/// that holds nothing the shader needs.
+fn has_entry_point(items: &[Item]) -> bool {
+    items.iter().any(|item| match item {
+        Item::Fn(f) => f
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("entry_point")),
+        Item::Mod(inner) => inner
+            .content
+            .as_ref()
+            .is_some_and(|(_, items)| has_entry_point(items)),
+        _ => false,
+    })
+}
+
+/// A `mod name;` or `mod name { .. }`, which the transpiler does not read.
+fn module_error(item: &syn::ItemMod) -> Error {
+    match &item.content {
+        // An inline `mod` may hold nothing the shader needs, in which case
+        // naming what is in there is enough to say what to do about it. Either
+        // way it is refused: saying nothing is how a shader ends up silently
+        // uncompiled, which is the one outcome the whole design avoids.
+        Some((_, items)) => Error::InlineModule(describe_items(items)),
+        None => Error::FileModule(item.ident.to_string()),
+    }
+}
+
+fn describe_items(items: &[Item]) -> String {
+    if has_entry_point(items) {
+        return "an `#[entry_point]`".into();
+    }
+    let names: Vec<String> = items
+        .iter()
+        .filter_map(|item| item_name(item).map(|(_, name)| name))
+        .take(3)
+        .collect();
+    match names.as_slice() {
+        [] => "nothing".into(),
+        [one] => format!("`{one}`"),
+        _ if items.len() > names.len() => format!("`{}` and more", names.join("`, `")),
+        _ => format!("`{}`", names.join("`, `")),
+    }
+}
+
 fn enum_variants(item: &syn::ItemEnum) -> Result<Vec<(String, u32)>, Error> {
     let mut next = 0u32;
     let mut variants = Vec::with_capacity(item.variants.len());

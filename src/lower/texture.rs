@@ -7,7 +7,7 @@
 
 use naga::{
     Block, Expression, Function, Handle, ImageClass, ImageDimension, ImageQuery, SampleLevel,
-    Scalar, ScalarKind, Span, Statement, StorageAccess, StorageFormat, Type, TypeInner, VectorSize,
+    Scalar, ScalarKind, Statement, StorageAccess, StorageFormat, Type, TypeInner, VectorSize,
 };
 use syn::Expr;
 
@@ -327,7 +327,7 @@ pub(super) fn lower_texture_method(
                 (ImageQuery::Size { .. }, Some(size)) => ctx.intern_vector(size, Scalar::U32),
                 _ => ctx.intern_scalar(Scalar::U32),
             };
-            let handle = emit(function, body, Expression::ImageQuery { image, query })?;
+            let handle = emit(ctx, function, body, Expression::ImageQuery { image, query })?;
             Ok(Some((handle, ty)))
         }
         TextureOp::Load => {
@@ -353,6 +353,7 @@ pub(super) fn lower_texture_method(
             expect_end(&mut args, name)?;
             let ty = load_result_ty(ctx, &info);
             let handle = emit(
+                ctx,
                 function,
                 body,
                 Expression::ImageLoad {
@@ -381,7 +382,7 @@ pub(super) fn lower_texture_method(
                     array_index,
                     value,
                 },
-                Span::UNDEFINED,
+                ctx.span,
             );
             Ok(None)
         }
@@ -437,6 +438,7 @@ fn lower_sample<'a>(
         sample_result_ty(ctx, info)
     };
     let handle = emit(
+        ctx,
         function,
         body,
         Expression::ImageSample {

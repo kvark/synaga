@@ -13,12 +13,12 @@
 //! or on a newtype the source declares itself (`impl Flags: u32`), which is
 //! how the newtype can derive `bytemuck::Pod` for the host.
 
-use naga::{BinaryOperator, Block, Expression, Function, Handle, Literal, Scalar, Span, Type};
+use naga::{BinaryOperator, Block, Expression, Function, Handle, Literal, Scalar, Type};
 use naga::{TypeInner, UnaryOperator};
 use syn::parse::{Parse, ParseStream};
 use syn::{Expr, Token};
 
-use super::emit::emit;
+use super::emit::{binary, emit};
 use super::env::Env;
 use super::expr::lower_expr_hinted;
 use super::{Context, Typed};
@@ -246,7 +246,7 @@ impl Context {
                 name: Some(name.into()),
                 inner: TypeInner::Scalar(Scalar::U32),
             },
-            Span::UNDEFINED,
+            self.span,
         )
     }
 
@@ -272,10 +272,10 @@ impl Context {
     }
 }
 
-fn literal(function: &mut Function, value: u32) -> Handle<Expression> {
+fn literal(ctx: &Context, function: &mut Function, value: u32) -> Handle<Expression> {
     function
         .expressions
-        .append(Expression::Literal(Literal::U32(value)), Span::UNDEFINED)
+        .append(Expression::Literal(Literal::U32(value)), ctx.span)
 }
 
 /// `Mode::Depth` and `Flags::SPACE`: the discriminant or the bits, as the
@@ -296,14 +296,14 @@ pub(super) fn lower_const(
     } else if let Some(value) = ctx.scope.enum_variant(ty_name, item) {
         if !ctx.scope.enums.get(ty_name).is_some_and(|e| e.repr_u32) {
             let ty = ctx.intern_scalar(Scalar::U32);
-            return Ok(Some((literal(function, value), ty)));
+            return Ok(Some((literal(ctx, function, value), ty)));
         }
         value
     } else {
         return Ok(None);
     };
     let ty = ctx.intern_named_u32(ty_name);
-    Ok(Some((literal(function, value), ty)))
+    Ok(Some((literal(ctx, function, value), ty)))
 }
 
 /// `Flags::empty()`, `Flags::all()` and the `from_bits` that cannot fail.
@@ -321,14 +321,14 @@ pub(super) fn lower_flags_call(
     };
     let ty = ctx.intern_named_u32(ty_name);
     let value = match (method, args) {
-        ("empty", []) => literal(function, 0),
-        ("all", []) => literal(function, all),
+        ("empty", []) => literal(ctx, function, 0),
+        ("all", []) => literal(ctx, function, all),
         ("from_bits_retain", [bits]) => bits_arg(ctx, function, body, bits, env)?,
         // The bits no flag declares are dropped, as Rust drops them.
         ("from_bits_truncate", [bits]) => {
             let bits = bits_arg(ctx, function, body, bits, env)?;
-            let mask = literal(function, all);
-            binary(function, body, BinaryOperator::And, bits, mask)?
+            let mask = literal(ctx, function, all);
+            binary(ctx, function, body, BinaryOperator::And, bits, mask)?
         }
         // `Flags::default()` is the zero value, where a derived `Default` is.
         _ => return Ok(None),
@@ -348,16 +348,6 @@ fn bits_arg(
         return Err(Error::TypeMismatch);
     }
     Ok(bits)
-}
-
-fn binary(
-    function: &mut Function,
-    body: &mut Block,
-    op: BinaryOperator,
-    left: Handle<Expression>,
-    right: Handle<Expression>,
-) -> Result<Handle<Expression>, Error> {
-    emit(function, body, Expression::Binary { op, left, right })
 }
 
 /// `flags.contains(other)` and the rest of what a set answers, if the
@@ -413,42 +403,57 @@ pub(super) fn lower_flags_method(
     let result = match name {
         "bits" if args.is_empty() => (value, ctx.intern_scalar(Scalar::U32)),
         "is_empty" if args.is_empty() => {
-            let zero = literal(function, 0);
-            (binary(function, body, Bo::Equal, value, zero)?, boolean)
+            let zero = literal(ctx, function, 0);
+            (
+                binary(ctx, function, body, Bo::Equal, value, zero)?,
+                boolean,
+            )
         }
         "is_all" if args.is_empty() => {
-            let mask = literal(function, all);
-            let held = binary(function, body, Bo::And, value, mask)?;
-            (binary(function, body, Bo::Equal, held, mask)?, boolean)
+            let mask = literal(ctx, function, all);
+            let held = binary(ctx, function, body, Bo::And, value, mask)?;
+            (binary(ctx, function, body, Bo::Equal, held, mask)?, boolean)
         }
         "contains" => {
             let other = other(ctx, function, body)?;
-            let held = binary(function, body, Bo::And, value, other)?;
-            (binary(function, body, Bo::Equal, held, other)?, boolean)
+            let held = binary(ctx, function, body, Bo::And, value, other)?;
+            (
+                binary(ctx, function, body, Bo::Equal, held, other)?,
+                boolean,
+            )
         }
         "intersects" => {
             let other = other(ctx, function, body)?;
-            let held = binary(function, body, Bo::And, value, other)?;
-            let zero = literal(function, 0);
-            (binary(function, body, Bo::NotEqual, held, zero)?, boolean)
+            let held = binary(ctx, function, body, Bo::And, value, other)?;
+            let zero = literal(ctx, function, 0);
+            (
+                binary(ctx, function, body, Bo::NotEqual, held, zero)?,
+                boolean,
+            )
         }
         "union" => {
             let other = other(ctx, function, body)?;
-            (binary(function, body, Bo::InclusiveOr, value, other)?, ty)
+            (
+                binary(ctx, function, body, Bo::InclusiveOr, value, other)?,
+                ty,
+            )
         }
         "intersection" => {
             let other = other(ctx, function, body)?;
-            (binary(function, body, Bo::And, value, other)?, ty)
+            (binary(ctx, function, body, Bo::And, value, other)?, ty)
         }
         "symmetric_difference" => {
             let other = other(ctx, function, body)?;
-            (binary(function, body, Bo::ExclusiveOr, value, other)?, ty)
+            (
+                binary(ctx, function, body, Bo::ExclusiveOr, value, other)?,
+                ty,
+            )
         }
         "difference" => {
             let other = other(ctx, function, body)?;
-            (difference(function, body, value, other)?, ty)
+            (difference(ctx, function, body, value, other)?, ty)
         }
-        "complement" if args.is_empty() => (complement(function, body, value, all)?, ty),
+        "complement" if args.is_empty() => (complement(ctx, function, body, value, all)?, ty),
         _ => return Err(Error::UnsupportedMethod(name.into())),
     };
     Ok(Some(result))
@@ -456,12 +461,14 @@ pub(super) fn lower_flags_method(
 
 /// `!flags`: the declared flags that are not set, as Rust's `complement`.
 pub(super) fn complement(
+    ctx: &Context,
     function: &mut Function,
     body: &mut Block,
     value: Handle<Expression>,
     all: u32,
 ) -> Result<Handle<Expression>, Error> {
     let flipped = emit(
+        ctx,
         function,
         body,
         Expression::Unary {
@@ -469,18 +476,21 @@ pub(super) fn complement(
             expr: value,
         },
     )?;
-    let mask = literal(function, all);
-    binary(function, body, BinaryOperator::And, flipped, mask)
+    let mask = literal(ctx, function, all);
+    binary(ctx, function, body, BinaryOperator::And, flipped, mask)
 }
 
 /// `a - b`: the flags of `a` that `b` does not have.
 pub(super) fn difference(
+    ctx: &Context,
     function: &mut Function,
     body: &mut Block,
     left: Handle<Expression>,
     right: Handle<Expression>,
 ) -> Result<Handle<Expression>, Error> {
+    let _span = ctx.span;
     let flipped = emit(
+        ctx,
         function,
         body,
         Expression::Unary {
@@ -488,5 +498,5 @@ pub(super) fn difference(
             expr: right,
         },
     )?;
-    binary(function, body, BinaryOperator::And, left, flipped)
+    binary(ctx, function, body, BinaryOperator::And, left, flipped)
 }
