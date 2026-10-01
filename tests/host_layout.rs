@@ -186,3 +186,29 @@ fn usize_still_indexes() {
          fn f(i: u32) -> u32 { let local = Local { i: i as usize }; items[local.i] }",
     );
 }
+
+#[test]
+fn a_transparent_newtype_is_checked_as_shared() {
+    // `Shared` accepts `#[repr(transparent)]`, so the transpiler has to read it
+    // as saying the host shares the struct too — otherwise the derive would make
+    // it a shared struct and the layout check would skip it.
+    // A `Vec3<f32>` is 12 bytes in Rust and takes 16 on the GPU, which shows as
+    // a size difference whether anything follows it or not.
+    let msg = reject(&uniform(
+        "#[repr(transparent)] #[derive(Clone, Copy)]
+         struct P { value: Vec3<f32> }",
+    ));
+    assert!(
+        msg.contains("is 12 bytes in Rust and 16 on the GPU"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn a_transparent_newtype_that_lines_up_is_accepted() {
+    // The same `repr`, where the field is where the GPU puts it.
+    validate_only_unbound(&uniform(
+        "#[repr(transparent)] #[derive(Clone, Copy)]
+         struct P { value: u32 }",
+    ));
+}

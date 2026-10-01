@@ -52,16 +52,61 @@ generated file of constants, one `Ir` per shader named after its file, and
 `ALL` listing them. The bytes are the module in [bincode], behind an
 eight-byte header naming the format and the Naga major version that wrote it.
 `decode` produces whatever `naga::Module` you name, so your own copy of Naga
-reads it; that copy has to be the same major version.
+reads it; that copy has to be the same major version. The generated file
+asserts that version against `synaga_shader::ir::NAGA_MAJOR` as it compiles, so
+a `synaga` build-dependency and a `synaga-shader` dependency that disagree is a
+build error naming both numbers rather than a panic at the first `decode()`.
+
+The generated code says `::synaga_shader::…`, so the host crate has to depend on
+the package `synaga-shader` under that name — a `rename` is not enough, since
+the path in the generated file is fixed.
 
 Cargo re-runs the build when a shader changes, and a shader that does not
 compile fails the build the way a Rust error would:
 
 ```text
-error: sprites@0.1.0: src/shaders/tonemap.rs:20:1: `fn tonemap`: operator `-` does not apply to these operand types
+error: sprites@0.1.0: src/shaders/tonemap.rs:20:14: `fn tonemap`: operator `-` does not apply to these operand types
 ```
 
 `examples/sprites` is this, working.
+
+### Seeing what was built
+
+The IR is what a host runs, and it is not readable. Two things make a surprising
+module diagnosable:
+
+```rust,ignore
+// build.rs — write each module beside its bytes, as WGSL.
+synaga::build::Shaders::new().wgsl().run();
+```
+
+That writes `$OUT_DIR/wgsl/<name>.wgsl` next to each `<name>.naga`, and keeps
+each module on the [`Shader`] the build returns, so a build script can report on
+what it built — how many entry points, what survived pruning, the WGSL of the one
+that looks wrong — without decoding the bytes it just wrote. `keep_modules()`
+does the same without the text, and `Shader::module` is `None` unless one of
+them asked.
+
+A failure names the file, the line and the column:
+
+```text
+error: src/shaders/tonemap.rs:20:14: `fn tonemap`: operator `-` does not apply to these operand types
+```
+
+The position is the expression that failed rather than the item around it, and a
+failure in something a shader `use`s names that file. Every expression,
+statement, global and type in the module carries the byte range of the `syn` node
+it came from, so a Naga validation failure names a line too. One build reports
+every fault in the tree, not the first:
+
+```text
+error: src/shaders/a.rs:3:18: `fn fs`: unsupported expression: literal
+src/shaders/b.rs:1:1: `fn fs`: unknown function `also_not_a_function`
+```
+
+The first is the expression that failed. The second is the entry point's own
+line, since nothing inside the body had a position yet — a name that does not
+resolve fails before any expression does.
 
 [bincode]: https://docs.rs/bincode
 
@@ -190,11 +235,12 @@ A struct the host fills in and uploads is the shader's own, rather than a copy
 kept the same by hand. `#[repr(C)]` says the host shares it, and the build
 checks, for each such struct a buffer holds, that the GPU reads every field
 where `rustc` puts it. That is the one thing that can go silently wrong, and the
-error says how to put it right:
+error names the line it is written on and says how to put it right:
 
 ```text
-`Globals` is `#[repr(C)]`, which says the host shares it, but it is 72 bytes in
-Rust and 80 on the GPU; 8 bytes of padding at the end line them up
+src/shaders/common.rs:3:1: `static g`: `G` is `#[repr(C)]`, which says the host
+shares it, but `b` is at byte 4 in Rust and 16 on the GPU; 12 bytes of padding
+before it line them up
 ```
 
 ```rust,ignore
@@ -232,6 +278,19 @@ most math crates convert to. A matrix column of three lanes takes four, in Rust
 as on the GPU, so any matrix can be shared; an array of `Vec3`, whose elements
 the GPU spaces 16 bytes apart, cannot. `examples/sprites` shares its uniforms
 this way.
+
+`check_layout!` is what makes this a build error rather than a runtime surprise,
+so it is worth noticing if you have not added it. When a module has shared
+structs and nothing has included the layout file, the build script says so:
+
+```text
+warning: synaga: 2 shared struct(s) in src/shaders have `rustc` layout checks in
+…/shaders_layout.rs, which nothing has included — add
+`synaga_shader::check_layout!("shaders_layout.rs");` to the module that lists
+the shader modules, or the layout is checked only by synaga's own model of `rustc`
+```
+
+The checks cover `size_of`, `align_of` and each field's `offset_of!`.
 
 A `#[repr(u32)]` enum and a `bitflags!` set around a `u32` are a `u32` on the
 GPU, so a shared struct can hold them, and a shader compares and tests them as
@@ -525,6 +584,29 @@ generics, cooperative matrices, `f16`, `const` arithmetic (Naga wants constants
 already folded). Swizzles are values, so `v.xy = a` is rejected — as it is in
 WGSL. Assignment to function arguments is rejected.
 
+### What the transpiler will not read
+
+A shader is checked by `rustc` as ordinary Rust, so anything `rustc` accepts is
+in the dialect as far as the type checker is concerned. The transpiler reads
+less than that, and where it reads less it says so rather than quietly building a
+smaller module — a shader missing from an output is the one failure this design
+exists to prevent.
+
+- **A file nothing reaches is an error.** `rustc` checks every file in the
+  directory as a shader, and a file no `#[entry_point]` pulls in is in no module
+  at all. Move it out of the directory, or reach it with `use super::…`.
+- **`mod { .. }` is refused.** An `#[entry_point]` inside one would be a shader
+  nothing ever compiles. Its items go in a file of their own.
+- **`mod name;` is refused.** Every source is a module named after its file, so
+  there is no separate file to pull in.
+- **The directory is searched recursively**, so `shaders/brdf/ggx.rs` is a module
+  named `ggx` reached as `use super::ggx::*`. Two files of one stem in different
+  directories would be ambiguous, and the reachability scan treats them as one.
+
+`#[cfg(...)]` and `cfg!(...)` hold or not as they do for `rustc`, including
+`#[cfg(test)]`, which Cargo does not pass to a build script and which is
+recovered from the profile it does.
+
 ### Typing
 
 Operand rules follow Naga's, so a program the frontend accepts is a module its
@@ -610,6 +692,22 @@ struct VsOut {
     #[location(1)] #[flat] material: u32,
 }
 ```
+
+When the default is not the one you want, say so in WGSL's own spelling rather
+than through a synonym the reader has to learn:
+
+```rust,ignore
+#[derive(Clone, Copy, Io)]
+struct VsOut {
+    #[builtin(position)] #[invariant] clip: Vec4,
+    #[location(0)] #[interpolate(linear, centroid)] weight: f32,
+    #[location(1)] #[interpolate(flat, first)] id: u32,
+}
+```
+
+`#[interpolate(mode)]` takes the mode alone, defaulting the sampling to
+`center`. A position can also say `#[builtin(position_invariant)]`, which is
+what WGSL calls it.
 
 A struct argument whose fields carry no bindings is left for the host to fill
 in — which is how Blade supplies vertex attributes, and needs

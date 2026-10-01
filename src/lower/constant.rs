@@ -5,7 +5,7 @@
 //! the shader. So these are lowered by a small separate walk rather than by
 //! `lower_expr`, which builds runtime expressions.
 
-use naga::{Constant, Expression, Handle, Scalar, Span, Type};
+use naga::{Constant, Expression, Handle, Scalar, Type};
 use syn::{Expr, ItemConst};
 
 use super::{parse_mat_ident, parse_vec_ident, Context, Shape};
@@ -35,7 +35,7 @@ pub(super) fn lower_const_item(ctx: &mut Context, item: ItemConst) -> Result<usi
             ty,
             init,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     ctx.consts.push(ConstInfo {
         handle,
@@ -63,7 +63,7 @@ fn lower_const_expr(
             let handle = ctx
                 .module
                 .global_expressions
-                .append(Expression::Literal(literal), Span::UNDEFINED);
+                .append(Expression::Literal(literal), ctx.span);
             Ok((handle, ty))
         }
         // Naga wants constants already folded, so `-1.0` negates the literal
@@ -81,7 +81,7 @@ fn lower_const_expr(
             let handle = ctx
                 .module
                 .global_expressions
-                .append(Expression::Literal(negated), Span::UNDEFINED);
+                .append(Expression::Literal(negated), ctx.span);
             Ok((handle, ty))
         }
         Expr::Path(path) => {
@@ -110,7 +110,7 @@ fn lower_const_expr(
                     let handle = ctx
                         .module
                         .global_expressions
-                        .append(Expression::Literal(literal), Span::UNDEFINED);
+                        .append(Expression::Literal(literal), ctx.span);
                     return Ok((handle, ty));
                 }
             }
@@ -118,10 +118,10 @@ fn lower_const_expr(
                 let value = ctx
                     .float_const(&segments)
                     .ok_or_else(|| Error::UnknownIdent(super::last(&segments)))?;
-                let handle = ctx.module.global_expressions.append(
-                    Expression::Literal(naga::Literal::F32(value)),
-                    Span::UNDEFINED,
-                );
+                let handle = ctx
+                    .module
+                    .global_expressions
+                    .append(Expression::Literal(naga::Literal::F32(value)), ctx.span);
                 return Ok((handle, ctx.intern_scalar(Scalar::F32)));
             };
             let info = &ctx.consts[index];
@@ -129,17 +129,17 @@ fn lower_const_expr(
             let expr = ctx
                 .module
                 .global_expressions
-                .append(Expression::Constant(handle), Span::UNDEFINED);
+                .append(Expression::Constant(handle), ctx.span);
             Ok((expr, ty))
         }
         Expr::Call(call) => lower_const_ctor(ctx, call, hint),
         // `cfg!(debug_assertions)`, settled by what the build was told.
         Expr::Macro(mac) if mac.mac.path.is_ident("cfg") => {
             let value = super::expr::eval_cfg(ctx, &mac.mac)?;
-            let handle = ctx.module.global_expressions.append(
-                Expression::Literal(naga::Literal::Bool(value)),
-                Span::UNDEFINED,
-            );
+            let handle = ctx
+                .module
+                .global_expressions
+                .append(Expression::Literal(naga::Literal::Bool(value)), ctx.span);
             Ok((handle, ctx.intern_scalar(Scalar::BOOL)))
         }
         other => Err(Error::UnsupportedConstExpr(super::emit::expr_kind(other))),
@@ -252,7 +252,7 @@ fn lower_const_ctor(
                     size,
                     value: components[0],
                 },
-                Span::UNDEFINED,
+                ctx.span,
             );
             return Ok((handle, ty));
         }
@@ -262,7 +262,7 @@ fn lower_const_ctor(
         let handle = ctx
             .module
             .global_expressions
-            .append(Expression::Compose { ty, components }, Span::UNDEFINED);
+            .append(Expression::Compose { ty, components }, ctx.span);
         return Ok((handle, ty));
     }
 
@@ -278,6 +278,6 @@ fn lower_const_ctor(
     let handle = ctx
         .module
         .global_expressions
-        .append(Expression::Compose { ty, components }, Span::UNDEFINED);
+        .append(Expression::Compose { ty, components }, ctx.span);
     Ok((handle, ty))
 }

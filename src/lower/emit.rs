@@ -1,17 +1,41 @@
-use naga::{proc::Emitter, Block, Expression, Function, Handle, Span};
+//! Putting an expression or a statement into the block being lowered.
+//!
+//! Both carry the span of whatever `syn` node is being lowered, which is what
+//! Naga's own front ends do and what lets a validation failure name a line.
+//! The span comes from [`Context::span`], which the entry points into the
+//! lowering set as they descend, rather than from a parameter here — threading
+//! it through every call would put a span argument on every one of them and
+//! still be wrong at the call sites that have no `syn` node to hand.
 
+use naga::{proc::Emitter, BinaryOperator, Block, Expression, Function, Handle};
+
+use super::Context;
 use crate::Error;
 
 pub(super) fn emit(
+    ctx: &Context,
     function: &mut Function,
     body: &mut Block,
     expr: Expression,
 ) -> Result<Handle<Expression>, Error> {
     let mut emitter = Emitter::default();
     emitter.start(&function.expressions);
-    let handle = function.expressions.append(expr, Span::UNDEFINED);
+    let handle = function.expressions.append(expr, ctx.span);
     body.extend(emitter.finish(&function.expressions));
     Ok(handle)
+}
+
+/// A binary operation, which enough of the lowering needs that it has its own
+/// name rather than a spelled-out `emit` at each call.
+pub(super) fn binary(
+    ctx: &Context,
+    function: &mut Function,
+    body: &mut Block,
+    op: BinaryOperator,
+    left: Handle<Expression>,
+    right: Handle<Expression>,
+) -> Result<Handle<Expression>, Error> {
+    emit(ctx, function, body, Expression::Binary { op, left, right })
 }
 
 pub(super) fn item_kind(item: &syn::Item) -> String {

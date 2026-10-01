@@ -84,12 +84,20 @@ fn parse_threads(list: &syn::MetaList) -> Result<[u32; 3], Error> {
     Ok(size)
 }
 
-/// Parse `#[location(N)]` / `#[builtin(name)]`, plus an optional `#[flat]`.
+/// Parse `#[location(N)]` / `#[builtin(name)]`, plus an optional `#[flat]`,
+/// `#[interpolate(..)]` and `#[invariant]`.
 ///
 /// Used for both entry-point arguments and the fields of an I/O struct.
+///
+/// Each of the three is Naga's own spelling for something this dialect can
+/// already say, and each is implemented rather than ignored: the derive
+/// declares them so `rustc` accepts them, and silently dropping one here would
+/// let `rustc` check a shader the GPU does not get.
 pub(super) fn parse_io_binding(attrs: &[Attribute]) -> Result<Option<Binding>, Error> {
     let mut found = None;
     let mut flat = false;
+    let mut interpolate: Option<(Interpolation, Sampling)> = None;
+    let mut invariant = false;
     for attr in attrs {
         if attr.path().is_ident("builtin") || attr.path().is_ident("location") {
             if found.is_some() {
@@ -98,6 +106,10 @@ pub(super) fn parse_io_binding(attrs: &[Attribute]) -> Result<Option<Binding>, E
             found = Some(parse_plain_binding(attr)?);
         } else if attr.path().is_ident("flat") {
             flat = true;
+        } else if attr.path().is_ident("invariant") {
+            invariant = true;
+        } else if attr.path().is_ident("interpolate") {
+            interpolate = Some(parse_interpolate(attr)?);
         }
     }
     if flat {
@@ -108,7 +120,58 @@ pub(super) fn parse_io_binding(attrs: &[Attribute]) -> Result<Option<Binding>, E
             _ => return Err(Error::UnsupportedBinding("flat".into())),
         }
     }
+    if let Some((mode, sampling)) = interpolate {
+        match &mut found {
+            Some(Binding::Location {
+                interpolation: slot,
+                sampling: sample,
+                ..
+            }) => {
+                *slot = Some(mode);
+                *sample = Some(sampling);
+            }
+            // `interpolate` says how a location varies, and a builtin is either
+            // interpolated by the hardware or not at all.
+            _ => return Err(Error::UnsupportedBinding("interpolate".into())),
+        }
+    }
+    if invariant {
+        match &mut found {
+            Some(Binding::BuiltIn(BuiltIn::Position { invariant: on })) => *on = true,
+            // `@invariant` on anything but a position is WGSL's own error, and
+            // the commonest mistake is putting it on a `#[location]`.
+            _ => return Err(Error::UnsupportedBinding("invariant".into())),
+        }
+    }
     Ok(found)
+}
+
+/// `#[interpolate(linear, center)]`: the first argument is the mode and the
+/// second the sampling, as WGSL spells it.
+fn parse_interpolate(attr: &Attribute) -> Result<(Interpolation, Sampling), Error> {
+    let bad = || Error::UnsupportedBinding("interpolate".into());
+    let args = attr
+        .parse_args_with(
+            syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
+        )
+        .map_err(|_| bad())?;
+    let name = |i: usize| -> Option<String> { args.get(i).map(|ident| ident.to_string()) };
+    let mode = match name(0).as_deref() {
+        Some("perspective") => Interpolation::Perspective,
+        Some("linear") => Interpolation::Linear,
+        Some("flat") => Interpolation::Flat,
+        _ => return Err(bad()),
+    };
+    // The sampling is optional: WGSL allows one argument and defaults it.
+    let sampling = match name(1).as_deref() {
+        None => Sampling::Center,
+        Some("center") => Sampling::Center,
+        Some("centroid") => Sampling::Centroid,
+        Some("sample") => Sampling::Sample,
+        Some("first") => Sampling::First,
+        _ => return Err(bad()),
+    };
+    Ok((mode, sampling))
 }
 
 fn parse_plain_binding(attr: &Attribute) -> Result<Binding, Error> {
@@ -116,7 +179,22 @@ fn parse_plain_binding(attr: &Attribute) -> Result<Binding, Error> {
         let ident: syn::Ident = attr
             .parse_args()
             .map_err(|e| Error::UnsupportedBinding(e.to_string()))?;
-        Ok(Binding::BuiltIn(map_builtin(&ident.to_string())?))
+        let name = ident.to_string();
+        // `#[builtin(position)]` is `invariant` by name here rather than by a
+        // second attribute, which is how WGSL spells it and what a reader of a
+        // WGSL shader expects to see.
+        let (name, invariant) = match name.strip_suffix("_invariant") {
+            Some(stem) => (stem.to_string(), true),
+            None => (name, false),
+        };
+        let mut builtin = map_builtin(&name)?;
+        if invariant {
+            match &mut builtin {
+                BuiltIn::Position { invariant: on } => *on = true,
+                _ => return Err(Error::UnsupportedBinding("invariant".into())),
+            }
+        }
+        Ok(Binding::BuiltIn(builtin))
     } else if attr.path().is_ident("location") {
         let lit: LitInt = attr
             .parse_args()
@@ -196,6 +274,11 @@ fn default_output(stage: ShaderStage) -> Option<Binding> {
 
 /// Only vertex outputs and fragment inputs are interpolated, so only they need
 /// an interpolation mode.
+///
+/// A vertex *input* and a fragment *output* are not interpolated: they are
+/// written once by one invocation and read once by one. The default is
+/// applied to them anyway, matching Naga's own WGSL frontend, which prints
+/// nothing for it where it does not apply.
 fn needs_interpolation(stage: ShaderStage, is_input: bool) -> bool {
     matches!(
         (stage, is_input),

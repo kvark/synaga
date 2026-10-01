@@ -1,16 +1,36 @@
+/// A position in a source file, 1-based, as `syn` reports one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pos {
+    pub line: usize,
+    pub column: usize,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
     Syn(#[from] syn::Error),
     /// Where in the source the error below came from.
     ///
-    /// Attached per item, which is as fine-grained as the lowering gets: it
-    /// names the `fn` or `struct` and the line it opens on, so a failure in a
-    /// build step points somewhere rather than just failing.
-    #[error("{item} on line {line}: {source}")]
+    /// Attached per item, which is the coarsest position the lowering has: it
+    /// names the `fn` or `struct` and where it opens. An error raised inside an
+    /// expression carries a [`Pos`] of its own, which is finer.
+    #[error("{item} on line {line}:{column}: {source}")]
     At {
         item: String,
         line: usize,
+        column: usize,
+        #[source]
+        source: Box<Error>,
+    },
+    /// A failure at one exact expression or statement, which is the position
+    /// the lowering reached when it gave up.
+    ///
+    /// Unlike [`Error::At`] this is raised where the problem is rather than at
+    /// the item around it, so `location` prefers the innermost of the two.
+    #[error("{source}")]
+    Pos {
+        line: usize,
+        column: usize,
         #[source]
         source: Box<Error>,
     },
@@ -168,8 +188,14 @@ pub enum Error {
     OutputAttribute,
     #[error("`#[location]` field `{0}` is an integer, so it needs `#[flat]`")]
     MissingFlat(String),
-    #[error("unsupported `cfg` predicate `{0}`")]
+    #[error("unsupported `cfg` predicate `{0}`; `all`, `any`, and a one-armed `not` over name or `name = \"value\"` predicates are understood")]
     UnsupportedCfg(String),
+    #[error("a shader's sources are read one at a time, so `mod {{ .. }}` holds nothing of the shader: an `#[entry_point]` inside one would be a shader `rustc` checks and the build never compiles, with nothing to say so. Move {0} into a file of its own and reach it with `use super::..`")]
+    InlineModule(String),
+    #[error("`mod {0};` names a file the transpiler does not read: every source is a module named after its own file, and shaders reach each other with `use super::..`. Write what it holds in `{0}.rs` itself")]
+    FileModule(String),
+    #[error("`{0}` is in the shader directory but no shader reaches it, so nothing compiles it: `rustc` checks it as a shader while its contents are in no module. Have a shader reach it with `use super::{1}::*`, or move it out of the shader directory")]
+    UnreachedFile(String, String),
     #[error("`{0}` could mean items in more than one module; import the one you mean")]
     AmbiguousName(String),
     #[error("`{0}` depends on itself; a shader cannot recurse, and a type cannot contain itself")]
@@ -187,18 +213,47 @@ pub enum Error {
 }
 
 impl Error {
+    /// Attach `pos` unless the error already says where it is.
+    ///
+    /// The lowering marks the expression it is working on, so the first
+    /// position to arrive is the innermost one and is the one worth keeping;
+    /// an item's own position is added afterwards as the fallback.
+    pub(crate) fn at(self, pos: Pos) -> Error {
+        match self {
+            Error::At { .. } | Error::Pos { .. } | Error::Syn(_) => self,
+            other => Error::Pos {
+                line: pos.line,
+                column: pos.column,
+                source: Box::new(other),
+            },
+        }
+    }
+
     /// Where in the source this happened, as a 1-based line and column.
     ///
-    /// A parse error knows both; a lowering error knows the line of the item
-    /// it came from. Anything the lowering raises outside an item knows
-    /// neither.
+    /// The innermost position wins: a failure inside a `for` expression's
+    /// range reports the range, not the function it sits in. A parse error
+    /// knows its own position, and an error the lowering raised outside any
+    /// expression knows neither.
     pub fn location(&self) -> Option<(usize, usize)> {
         match self {
             Error::Syn(err) => {
                 let start = err.span().start();
                 Some((start.line, start.column + 1))
             }
-            Error::At { line, .. } => Some((*line, 1)),
+            Error::Pos { line, column, .. } => Some((*line, *column)),
+            // An item wraps whatever it raised, and a position inside that is
+            // finer, so it wins over where the item opens. The wrapper is never
+            // nested, so this does not recurse.
+            Error::At {
+                line,
+                column,
+                source,
+                ..
+            } => match source.location() {
+                Some(finer) => Some(finer),
+                None => Some((*line, *column)),
+            },
             _ => None,
         }
     }

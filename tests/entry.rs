@@ -157,11 +157,16 @@ fn rejects_missing_arg_binding() {
 
 /// Lower both and require the same module: what the first leaves unsaid, the
 /// second says.
+///
+/// Spans are dropped before the comparison. The two sources differ in length,
+/// so the byte ranges their nodes carry differ too, and a span is a position in
+/// a file rather than a property of the module — these tests are about what the
+/// two spellings mean, not where they are written.
 fn same_module(implied: &str, explicit: &str) {
     let lower = |src: &str| {
         let module = parse_str(src).unwrap_or_else(|e| panic!("parse: {e}\n{src}"));
         synaga::validate(&module).unwrap_or_else(|e| panic!("validate: {e}\n{src}"));
-        format!("{module:#?}")
+        without_spans(&format!("{module:#?}"))
     };
     assert_eq!(lower(implied), lower(explicit), "\n{implied}\n{explicit}");
 }
@@ -286,4 +291,104 @@ fn any_other_result_is_a_struct_of_bound_fields() {
         "fn fs() -> Vec4 { Vec4::ONE }"
     ));
     assert!(msg.contains("derives `Io`"), "{msg}");
+}
+
+#[test]
+fn interpolate_says_how_a_location_varies() {
+    let wgsl = roundtrip(
+        r#"
+        #[entry_point(vertex)]
+        fn vs() -> Out { Out { pos: Vec4::ZERO, flat: 1.0, centroid: 2.0 } }
+        #[derive(Clone, Copy, Io)]
+        struct Out {
+            #[builtin(position)] pos: Vec4,
+            #[location(0)] #[interpolate(flat, first)] flat: f32,
+            #[location(1)] #[interpolate(linear, centroid)] centroid: f32,
+        }
+        "#,
+    );
+    // WGSL's own spelling: the mode and the sampling, as `interpolate` takes
+    // them. Naga prints a float varying as `@interpolate(...)`.
+    assert!(wgsl.contains("@interpolate(flat, first)"), "{wgsl}");
+    assert!(wgsl.contains("@interpolate(linear, centroid)"), "{wgsl}");
+}
+
+#[test]
+fn a_varying_gets_the_default_when_it_says_nothing() {
+    let wgsl = roundtrip(
+        r#"
+        #[entry_point(vertex)]
+        fn vs() -> Out { Out { pos: Vec4::ZERO, uv: Vec2::ZERO } }
+        #[derive(Clone, Copy, Io)]
+        struct Out {
+            #[builtin(position)] pos: Vec4,
+            #[location(0)] uv: Vec2,
+        }
+        "#,
+    );
+    // Perspective-correct, center-sampled, which is what WGSL assumes and what
+    // Naga's own frontend bakes in — so printing it would be noise. The check
+    // is that a plain float varying carries no `@interpolate`, i.e. it took the
+    // default rather than none.
+    assert!(!wgsl.contains("@interpolate"), "{wgsl}");
+}
+
+#[test]
+fn invariant_position_is_kept() {
+    let wgsl = roundtrip(
+        r#"
+        #[entry_point(vertex)]
+        fn vs() -> Out { Out { pos: Vec4::ZERO } }
+        #[derive(Clone, Copy, Io)]
+        struct Out {
+            #[builtin(position)] #[invariant] pos: Vec4,
+        }
+        "#,
+    );
+    assert!(wgsl.contains("invariant"), "{wgsl}");
+    // And by the name WGSL spells it, which is what a reader of WGSL expects.
+    let by_name = roundtrip(
+        r#"
+        #[entry_point(vertex)]
+        fn vs() -> Out { Out { pos: Vec4::ZERO } }
+        #[derive(Clone, Copy, Io)]
+        struct Out {
+            #[builtin(position_invariant)] pos: Vec4,
+        }
+        "#,
+    );
+    assert!(by_name.contains("invariant"), "{by_name}");
+}
+
+#[test]
+fn an_integer_varying_still_needs_flat() {
+    // `#[flat]` is how it is spelled in the dialect, and `#[interpolate(flat,
+    // ..)]` is WGSL's. Both say the same thing, so both satisfy the check.
+    for flat in ["#[flat]", "#[interpolate(flat, first)]"] {
+        let src = format!(
+            r#"
+            #[entry_point(vertex)]
+            fn vs() -> Out {{ Out {{ pos: Vec4::ZERO, id: 1 }} }}
+            #[derive(Clone, Copy, Io)]
+            struct Out {{
+                #[builtin(position)] pos: Vec4,
+                #[location(0)] {flat} id: u32,
+            }}
+            "#
+        );
+        let wgsl = roundtrip(&src);
+        assert!(wgsl.contains("@interpolate(flat"), "{wgsl}");
+    }
+    let msg = reject(
+        r#"
+        #[entry_point(vertex)]
+        fn vs() -> Out { Out { pos: Vec4::ZERO, id: 1 } }
+        #[derive(Clone, Copy, Io)]
+        struct Out {
+            #[builtin(position)] pos: Vec4,
+            #[location(0)] id: u32,
+        }
+        "#,
+    );
+    assert!(msg.contains("`#[flat]`"), "{msg}");
 }

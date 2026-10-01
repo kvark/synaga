@@ -17,6 +17,11 @@ readme = "README.md"
 wgsl = ["naga/wgsl-in", "naga/wgsl-out"]
 
 [dependencies]
+# For `NAGA_MAJOR`, which the generated file asserts against the reader's: a
+# module is written by one Naga and read by another, and a mismatch is otherwise
+# a panic at the first `decode`. Only the constant is wanted, so the features
+# that pull in serde and bincode are off.
+synaga-shader = { path = "crates/shader", default-features = false }
 naga = { version = "30", features = ["serialize"] }
 bincode = { version = "2", default-features = false, features = ["std", "serde"] }
 # `span-locations` is what lets an error say which line it is about. Features
@@ -27,6 +32,11 @@ quote = "1"
 thiserror = "2"
 
 [dev-dependencies]
-# Reading back what the build step writes, as a host would.
-synaga-shader = { path = "crates/shader" }
+# Reading back what the build step writes, as a host does. The `bytemuck` feature
+# is what `Shared` derives, and a shared struct cannot be compiled without it.
+synaga-shader = { path = "crates/shader", features = ["bytemuck"] }
 naga = { version = "30", features = ["deserialize"] }
+# Compiling the examples and checking the diagnostics they produce. The
+# generated layout assertions can only be seen failing by compiling something
+# that includes them, which is what these do.
+trybuild = "1.0.110"

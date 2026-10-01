@@ -1,4 +1,4 @@
-use naga::{Block, Expression, Function, Handle, MathFunction, Span, Statement, Type};
+use naga::{Block, Expression, Function, Handle, MathFunction, Statement, Type};
 use syn::Expr;
 
 use super::emit::emit;
@@ -199,6 +199,7 @@ fn lower_bitcast(
         return Err(Error::TypeMismatch);
     }
     let handle = emit(
+        ctx,
         function,
         body,
         Expression::As {
@@ -266,7 +267,7 @@ pub(super) fn lower_call_any(
         if let Some(ty) = zero_value_type(ctx, &path, turbofish, hint)? {
             let handle = function
                 .expressions
-                .append(Expression::ZeroValue(ty), Span::UNDEFINED);
+                .append(Expression::ZeroValue(ty), ctx.span);
             return Ok(Some((handle, ty)));
         }
     }
@@ -283,14 +284,14 @@ pub(super) fn lower_call_any(
         if !call.args.is_empty() {
             return Err(Error::WrongArgCount(name));
         }
-        body.push(Statement::ControlBarrier(barrier), Span::UNDEFINED);
+        body.push(Statement::ControlBarrier(barrier), ctx.span);
         return Ok(None);
     }
     if name == "discard" {
         if !call.args.is_empty() {
             return Err(Error::WrongArgCount(name));
         }
-        body.push(Statement::Kill, Span::UNDEFINED);
+        body.push(Statement::Kill, ctx.span);
         return Ok(None);
     }
     if let Some(fun) = relational(&name) {
@@ -335,6 +336,7 @@ fn lower_select(
         return Err(Error::TypeMismatch);
     }
     let handle = emit(
+        ctx,
         function,
         body,
         Expression::Select {
@@ -389,7 +391,12 @@ fn lower_relational(
         }
         _ => return Err(Error::TypeMismatch),
     };
-    let handle = emit(function, body, Expression::Relational { fun, argument })?;
+    let handle = emit(
+        ctx,
+        function,
+        body,
+        Expression::Relational { fun, argument },
+    )?;
     Ok((handle, result))
 }
 
@@ -616,6 +623,7 @@ pub(super) fn lower_math_method(
             (spec.fun, shape, ctx.shape(ty))
         {
             handle = emit(
+                ctx,
                 function,
                 body,
                 Expression::Splat {
@@ -669,12 +677,9 @@ fn lower_special_math(
         arg2: None,
         arg3: None,
     };
-    let binary = |function: &mut Function, body: &mut Block, op, left, right| {
-        emit(function, body, Expression::Binary { op, left, right })
-    };
     let typed = match special {
         RustMath::UnsignedAbs => {
-            let magnitude = emit(function, body, math(MathFunction::Abs, None))?;
+            let magnitude = emit(ctx, function, body, math(MathFunction::Abs, None))?;
             let expr = Expression::As {
                 expr: magnitude,
                 kind: naga::ScalarKind::Uint,
@@ -684,7 +689,7 @@ fn lower_special_math(
                 Shape::Vector(size, _) => ctx.intern_vector(size, naga::Scalar::U32),
                 _ => ctx.intern_scalar(naga::Scalar::U32),
             };
-            (emit(function, body, expr)?, uint)
+            (emit(ctx, function, body, expr)?, uint)
         }
         RustMath::Rotate { left } => {
             use naga::BinaryOperator as Op;
@@ -697,6 +702,7 @@ fn lower_special_math(
             let reinterpret = |function: &mut Function, body: &mut Block, expr, kind| {
                 let convert = None;
                 emit(
+                    ctx,
                     function,
                     body,
                     Expression::As {
@@ -708,7 +714,7 @@ fn lower_special_math(
             };
             let literal = |function: &mut Function, n| {
                 let literal = Expression::Literal(naga::Literal::U32(n));
-                function.expressions.append(literal, Span::UNDEFINED)
+                function.expressions.append(literal, ctx.span)
             };
             // An `i32` rotates its bits, which `>>` on it would not keep: it
             // drags the sign in.
@@ -726,14 +732,14 @@ fn lower_special_math(
                 (Op::ShiftRight, Op::ShiftLeft)
             };
             let mask = literal(function, 31);
-            let near_amount = binary(function, body, Op::And, amount, mask)?;
-            let near = binary(function, body, first, bits, near_amount)?;
+            let near_amount = super::emit::binary(ctx, function, body, Op::And, amount, mask)?;
+            let near = super::emit::binary(ctx, function, body, first, bits, near_amount)?;
             let width = literal(function, 32);
-            let rest = binary(function, body, Op::Subtract, width, amount)?;
+            let rest = super::emit::binary(ctx, function, body, Op::Subtract, width, amount)?;
             let mask = literal(function, 31);
-            let far_amount = binary(function, body, Op::And, rest, mask)?;
-            let far = binary(function, body, second, bits, far_amount)?;
-            let rotated = binary(function, body, Op::InclusiveOr, near, far)?;
+            let far_amount = super::emit::binary(ctx, function, body, Op::And, rest, mask)?;
+            let far = super::emit::binary(ctx, function, body, second, bits, far_amount)?;
+            let rotated = super::emit::binary(ctx, function, body, Op::InclusiveOr, near, far)?;
             match signed {
                 true => (reinterpret(function, body, rotated, Kind::Sint)?, ty),
                 false => (rotated, ty),
@@ -745,11 +751,15 @@ fn lower_special_math(
             if ctx.shape(rhs_ty) != shape {
                 return Err(Error::TypeMismatch);
             }
-            (binary(function, body, op, value, rhs)?, ty)
+            (
+                super::emit::binary(ctx, function, body, op, value, rhs)?,
+                ty,
+            )
         }
         RustMath::WrappingNeg => {
             let negated = match kind {
                 Some(Kind::Sint) => emit(
+                    ctx,
                     function,
                     body,
                     Expression::Unary {
@@ -761,8 +771,15 @@ fn lower_special_math(
                 _ => {
                     let zero = function
                         .expressions
-                        .append(Expression::ZeroValue(ty), Span::UNDEFINED);
-                    binary(function, body, naga::BinaryOperator::Subtract, zero, value)?
+                        .append(Expression::ZeroValue(ty), ctx.span);
+                    super::emit::binary(
+                        ctx,
+                        function,
+                        body,
+                        naga::BinaryOperator::Subtract,
+                        zero,
+                        value,
+                    )?
                 }
             };
             (negated, ty)
@@ -779,36 +796,45 @@ fn lower_special_math(
             // from 32 up.
             let mask = function
                 .expressions
-                .append(Expression::Literal(naga::Literal::U32(31)), Span::UNDEFINED);
-            let amount = binary(function, body, naga::BinaryOperator::And, amount, mask)?;
+                .append(Expression::Literal(naga::Literal::U32(31)), ctx.span);
+            let amount =
+                super::emit::binary(ctx, function, body, naga::BinaryOperator::And, amount, mask)?;
             let op = match left {
                 true => naga::BinaryOperator::ShiftLeft,
                 false => naga::BinaryOperator::ShiftRight,
             };
-            (binary(function, body, op, value, amount)?, ty)
+            (
+                super::emit::binary(ctx, function, body, op, value, amount)?,
+                ty,
+            )
         }
         RustMath::Fract => {
-            let whole = emit(function, body, math(MathFunction::Trunc, None))?;
+            let whole = emit(ctx, function, body, math(MathFunction::Trunc, None))?;
             let op = naga::BinaryOperator::Subtract;
-            (binary(function, body, op, value, whole)?, ty)
+            (
+                super::emit::binary(ctx, function, body, op, value, whole)?,
+                ty,
+            )
         }
         RustMath::LengthSquared => {
             let Shape::Vector(_, scalar) = shape else {
                 return Err(Error::TypeMismatch);
             };
-            let handle = emit(function, body, math(MathFunction::Dot, Some(value)))?;
+            let handle = emit(ctx, function, body, math(MathFunction::Dot, Some(value)))?;
             (handle, ctx.intern_scalar(scalar))
         }
         RustMath::Recip => {
-            let mut one = function.expressions.append(
-                Expression::Literal(naga::Literal::F32(1.0)),
-                Span::UNDEFINED,
-            );
+            let mut one = function
+                .expressions
+                .append(Expression::Literal(naga::Literal::F32(1.0)), ctx.span);
             if let Shape::Vector(size, _) = shape {
-                one = emit(function, body, Expression::Splat { size, value: one })?;
+                one = emit(ctx, function, body, Expression::Splat { size, value: one })?;
             }
             let op = naga::BinaryOperator::Divide;
-            (binary(function, body, op, one, value)?, ty)
+            (
+                super::emit::binary(ctx, function, body, op, one, value)?,
+                ty,
+            )
         }
         RustMath::Builtin(_) => unreachable!("a builtin is not special"),
     };
@@ -878,6 +904,7 @@ fn finish_math(
         MathResult::Vec2F32 => ctx.intern_vector(naga::VectorSize::Bi, naga::Scalar::F32),
     };
     let handle = emit(
+        ctx,
         function,
         body,
         Expression::Math {
@@ -950,7 +977,7 @@ pub(super) fn call_function(
     let result = ret_ty.map(|_| {
         function
             .expressions
-            .append(Expression::CallResult(callee), Span::UNDEFINED)
+            .append(Expression::CallResult(callee), ctx.span)
     });
     body.push(
         Statement::Call {
@@ -958,7 +985,7 @@ pub(super) fn call_function(
             arguments: arg_values,
             result,
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     Ok(result.zip(ret_ty))
 }

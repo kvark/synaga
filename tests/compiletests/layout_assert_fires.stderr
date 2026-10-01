@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: `common::Globals` is 80 bytes on the GPU
+  --> tests/compiletests/layout_assert_fires.rs:33:9
+   |
+33 |         assert!(::core::mem::size_of::<self::shaders::common::Globals>() == 80, "`common::Globals` is 80 bytes on the GPU");
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `main::_` failed here

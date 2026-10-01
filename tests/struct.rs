@@ -111,7 +111,9 @@ fn struct_update_takes_the_rest_from_the_base() {
     let lower = |src: &str| {
         let module = synaga::parse_str(src).unwrap_or_else(|e| panic!("parse: {e}\n{src}"));
         synaga::validate(&module).unwrap_or_else(|e| panic!("validate: {e}\n{src}"));
-        format!("{module:#?}")
+        // The two spellings differ in length, so their spans differ; the
+        // update syntax is what is being compared, not where it is written.
+        common::without_spans(&format!("{module:#?}"))
     };
     let decl = "#[derive(Clone, Copy, Default)] struct S { a: f32, b: u32, c: Vec2 }";
     // `..Default::default()` is how Rust avoids assigning fields one by one

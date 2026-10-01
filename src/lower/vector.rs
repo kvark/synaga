@@ -21,6 +21,7 @@ pub(super) fn splat_mix(
     match (ctx.shape(*left_ty), ctx.shape(*right_ty)) {
         (Shape::Vector(size, scalar), Shape::Scalar(s)) if s == scalar => {
             *right = emit(
+                ctx,
                 function,
                 body,
                 Expression::Splat {
@@ -31,7 +32,12 @@ pub(super) fn splat_mix(
             *right_ty = ctx.intern_vector(size, scalar);
         }
         (Shape::Scalar(s), Shape::Vector(size, scalar)) if s == scalar => {
-            *left = emit(function, body, Expression::Splat { size, value: *left })?;
+            *left = emit(
+                ctx,
+                function,
+                body,
+                Expression::Splat { size, value: *left },
+            )?;
             *left_ty = ctx.intern_vector(size, scalar);
         }
         _ => {}
@@ -54,6 +60,7 @@ pub(super) fn splat_shift(
     {
         if scalar == Scalar::U32 {
             *right = emit(
+                ctx,
                 function,
                 body,
                 Expression::Splat {
@@ -130,6 +137,7 @@ pub(super) fn lower_vec_ctor(
     let ty = ctx.intern_vector(size, scalar);
     if components.len() == 1 && ctx.as_scalar(component_tys[0]).is_some() {
         let handle = emit(
+            ctx,
             function,
             body,
             Expression::Splat {
@@ -145,7 +153,7 @@ pub(super) fn lower_vec_ctor(
     if width != size as u32 {
         return Err(Error::VecCtorArgs);
     }
-    let handle = emit(function, body, Expression::Compose { ty, components })?;
+    let handle = emit(ctx, function, body, Expression::Compose { ty, components })?;
     Ok((handle, ty))
 }
 
@@ -199,6 +207,7 @@ pub(super) fn swizzle(
     }
     if letters.len() == 1 {
         let handle = emit(
+            ctx,
             function,
             body,
             Expression::AccessIndex {
@@ -214,6 +223,7 @@ pub(super) fn swizzle(
         _ => VectorSize::Quad,
     };
     let handle = emit(
+        ctx,
         function,
         body,
         Expression::Swizzle {
@@ -237,9 +247,9 @@ pub(super) fn lower_index(
         element(ctx, base_ty).ok_or_else(|| Error::UnsupportedExpr("index".into()))?;
     let handle = match index_expr(ctx, function, body, &index.index, bound, env)? {
         IndexKind::Constant(index) => {
-            emit(function, body, Expression::AccessIndex { base, index })?
+            emit(ctx, function, body, Expression::AccessIndex { base, index })?
         }
-        IndexKind::Dynamic(index) => emit(function, body, Expression::Access { base, index })?,
+        IndexKind::Dynamic(index) => emit(ctx, function, body, Expression::Access { base, index })?,
     };
     Ok((handle, result_ty))
 }

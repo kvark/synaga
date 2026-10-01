@@ -19,10 +19,40 @@ pub struct Cfg {
     set: HashSet<(String, Option<String>)>,
 }
 
+/// The `cfg` predicates that are always set or always clear, whatever Cargo
+/// said.
+///
+/// `CARGO_CFG_*` covers features, target and `debug_assertions`, but not the
+/// flags Cargo only tells `rustc`: `test`, `doctest` and `miri` are decided
+/// after the build script runs, and no `CARGO_CFG_*` says so. A shader written
+/// `#[cfg(test)]` would be compiled by `rustc` under `cargo test` and dropped
+/// here, which is the gap this closes.
+///
+/// `PROFILE` is the one signal Cargo does give a build script about it, since
+/// it is passed as an environment variable. `test` and `debug_assertions` hold
+/// together in practice — `cargo test` builds the test profile in debug mode —
+/// so a `PROFILE` of `debug` is taken to mean the crate is being tested, and
+/// `test` follows `debug_assertions`.
+const TEST_PROFILES: [&str; 1] = ["debug"];
+
 impl Cfg {
     /// Nothing holds.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// What Cargo says holds, plus the flags Cargo does not pass on but that
+    /// `rustc` sets anyway.
+    ///
+    /// See [`Cfg::from_cargo_env`] for the environment; this is that plus
+    /// `#[cfg(test)]`, which a shader written for both the GPU and the CPU
+    /// needs.
+    pub fn from_cargo_env_agreeing_with_rustc() -> Self {
+        let mut cfg = Self::from_cargo_env();
+        if std::env::var("PROFILE").is_ok_and(|p| TEST_PROFILES.contains(&p.as_str())) {
+            cfg.set.insert(("test".into(), None));
+        }
+        cfg
     }
 
     /// What Cargo says holds for the crate being built: `debug_assertions` in a

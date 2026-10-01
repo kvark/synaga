@@ -8,7 +8,7 @@ use naga::{
 use syn::{FnArg, Item, ItemFn, ReturnType, Signature};
 
 use crate::build::Bindings;
-use crate::Error;
+use crate::{Error, Pos};
 
 mod atomic;
 mod call;
@@ -118,6 +118,14 @@ pub struct Context {
     pub(super) origins: HashMap<Handle<Type>, structure::Origin>,
     /// What `Self` is, in a method being lowered.
     pub(super) impl_self: Option<ImplSelf>,
+    /// The span of the `syn` node being lowered, which every expression and
+    /// statement the lowering emits is tagged with.
+    ///
+    /// Naga's spans are byte offsets into a module's source, and a module here
+    /// is built from several files. A span therefore means a position in
+    /// whichever file the node came from, which is all Naga validation reports
+    /// and all `src/build.rs` needs to say which file a failure is in.
+    pub(super) span: Span,
 }
 
 /// The type an `impl` is for, while one of its methods is lowered.
@@ -154,6 +162,7 @@ impl Context {
             derived_defaults: HashSet::new(),
             origins: HashMap::new(),
             impl_self: None,
+            span: Span::UNDEFINED,
         }
     }
 
@@ -209,7 +218,7 @@ impl Context {
         let item = entry.item.take().expect("a pending entry keeps its item");
         let source = entry.source;
         let owner = entry.owner;
-        let (label, line) = item_location(&item);
+        let (label, at) = item_location(&item);
 
         // Lowering one item can start another, so whatever belongs to the
         // item in progress is set aside and put back afterwards.
@@ -242,7 +251,8 @@ impl Context {
                 self.failed_source.get_or_insert(source);
                 Err(Error::At {
                     item: label,
-                    line,
+                    line: at.line,
+                    column: at.column,
                     source: Box::new(err),
                 })
             }
@@ -385,28 +395,29 @@ impl Context {
     /// Intern a type that has no component structure of its own: an image or
     /// a sampler.
     pub(super) fn intern_handle_type(&mut self, inner: TypeInner) -> Handle<Type> {
-        self.module
-            .types
-            .insert(Type { name: None, inner }, Span::UNDEFINED)
+        let span = self.span;
+        self.module.types.insert(Type { name: None, inner }, span)
     }
 
     pub(super) fn intern_scalar(&mut self, scalar: Scalar) -> Handle<Type> {
+        let span = self.span;
         self.module.types.insert(
             Type {
                 name: None,
                 inner: TypeInner::Scalar(scalar),
             },
-            Span::UNDEFINED,
+            span,
         )
     }
 
     pub(super) fn intern_vector(&mut self, size: VectorSize, scalar: Scalar) -> Handle<Type> {
+        let span = self.span;
         self.module.types.insert(
             Type {
                 name: None,
                 inner: TypeInner::Vector { size, scalar },
             },
-            Span::UNDEFINED,
+            span,
         )
     }
 
@@ -452,6 +463,7 @@ impl Context {
         rows: VectorSize,
         scalar: Scalar,
     ) -> Handle<Type> {
+        let span = self.span;
         self.module.types.insert(
             Type {
                 name: None,
@@ -461,7 +473,7 @@ impl Context {
                     scalar,
                 },
             },
-            Span::UNDEFINED,
+            span,
         )
     }
 
@@ -741,12 +753,13 @@ impl Context {
         size: ArraySize,
     ) -> Result<Handle<Type>, Error> {
         let stride = self.stride_of(base)?;
+        let span = self.span;
         Ok(self.module.types.insert(
             Type {
                 name: None,
                 inner: TypeInner::Array { base, size, stride },
             },
-            Span::UNDEFINED,
+            span,
         ))
     }
 
@@ -813,7 +826,8 @@ impl Context {
         stmt::lower_body(self, &mut function, &mut body, &item.block, &mut env)?;
         env.pop_scope();
         function.body = body;
-        let handle = self.module.functions.append(function, Span::UNDEFINED);
+        let span = self.span;
+        let handle = self.module.functions.append(function, span);
         Ok(Lowered::Function(handle))
     }
 }
@@ -828,8 +842,8 @@ pub(super) fn last(path: &[String]) -> String {
     path.last().cloned().unwrap_or_default()
 }
 
-/// How to name an item in an error, and the line it opens on.
-fn item_location(item: &Item) -> (String, usize) {
+/// How to name an item in an error, and where it opens.
+fn item_location(item: &Item) -> (String, Pos) {
     use syn::spanned::Spanned;
     let name = match item {
         Item::Fn(f) => format!("`fn {}`", f.sig.ident),
@@ -839,7 +853,37 @@ fn item_location(item: &Item) -> (String, usize) {
         Item::ForeignMod(_) => "`extern` block".to_string(),
         other => item_kind(other),
     };
-    (name, item.span().start().line)
+    let start = item.span().start();
+    (name, pos_of(start.line, start.column))
+}
+
+/// A position, 1-based, from `syn`'s 0-based line and column.
+pub(super) fn pos_of(line: usize, column: usize) -> Pos {
+    Pos {
+        line,
+        column: column + 1,
+    }
+}
+
+/// The position of any `syn` node that can report one.
+pub(super) fn pos<T: syn::spanned::Spanned>(node: &T) -> Pos {
+    let start = node.span().start();
+    pos_of(start.line, start.column)
+}
+
+/// The Naga span for a `syn` node: the byte range it covers in its own source
+/// file.
+///
+/// Naga's spans are offsets into a module's source, and a module here is built
+/// from several files. So a span names a position in whichever file its node
+/// came from, which is what [`crate::build`] tracks when it turns a Naga
+/// validation failure into a `file:line:column`.
+pub(super) fn naga_span<T: syn::spanned::Spanned>(node: &T) -> Span {
+    let range = node.span().byte_range();
+    Span::new(
+        u32::try_from(range.start).unwrap_or(u32::MAX),
+        u32::try_from(range.end).unwrap_or(u32::MAX),
+    )
 }
 
 /// Parse a vector's name: the type `Vec3`, its constructor `vec3`, or one of
@@ -1093,7 +1137,7 @@ pub(super) fn lower_signature(
                 });
                 let expr = function
                     .expressions
-                    .append(Expression::FunctionArgument(index), Span::UNDEFINED);
+                    .append(Expression::FunctionArgument(index), ctx.span);
                 match kind {
                     ReceiverKind::Mut => env.push_in(
                         "self".into(),
@@ -1123,7 +1167,7 @@ pub(super) fn lower_signature(
                 });
                 let expr = function
                     .expressions
-                    .append(Expression::FunctionArgument(index), Span::UNDEFINED);
+                    .append(Expression::FunctionArgument(index), ctx.span);
                 // A pointer parameter names storage the caller owns, so it
                 // binds as a place: `r.field = x` writes through it, and `&T`
                 // marks the write as not allowed.

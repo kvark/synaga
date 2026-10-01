@@ -14,7 +14,7 @@ use common::*;
 fn same_module(rust: &str, wgsl: &str) {
     let lower = |src: &str| {
         let module = synaga::parse_str(src).unwrap_or_else(|e| panic!("parse: {e}\n{src}"));
-        format!("{module:#?}")
+        common::without_spans(&format!("{module:#?}"))
     };
     assert_eq!(lower(rust), lower(wgsl), "\n{rust}\n{wgsl}");
 }

@@ -1,6 +1,4 @@
-use naga::{
-    proc::Layouter, Block, Expression, Function, Handle, Span, StructMember, Type, TypeInner,
-};
+use naga::{proc::Layouter, Block, Expression, Function, Handle, StructMember, Type, TypeInner};
 use syn::{Fields, ItemStruct};
 
 use super::emit::emit;
@@ -121,7 +119,7 @@ pub(super) fn lower_struct_item(
             name: Some(name),
             inner: TypeInner::Struct { members, span },
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     // An interface struct's fields are bindings, so it has no bytes to share.
     if let Some(repr) = repr.filter(|_| bound == 0) {
@@ -174,6 +172,10 @@ pub(crate) struct SharedStruct {
     /// `None` for a struct that ends in a runtime-sized array, which has no
     /// size in Rust either.
     pub size: Option<u32>,
+    /// The struct's alignment, which `rustc` has to agree on as well: a type
+    /// can have every offset and the right size and still disagree here, and
+    /// that is what puts a member of an enclosing struct in the wrong place.
+    pub align: u32,
     pub fields: Vec<(String, u32)>,
 }
 
@@ -203,10 +205,14 @@ pub(crate) fn shared_structs(ctx: &Context) -> Vec<SharedStruct> {
                 .filter(|&(member, &visible)| visible && !is_unsized(ctx, member.ty))
                 .filter_map(|(member, _)| Some((member.name.clone()?, member.offset)))
                 .collect();
+            // `host_layouts` holds the size and alignment this check compared
+            // against the GPU's, which is exactly what `rustc` has to match.
+            let layout = ctx.host_layouts[&ty];
             Some(SharedStruct {
                 module: origin.module.clone()?,
                 name: ctx.module.types[ty].name.clone()?,
                 size: (!unsized_tail).then_some(*span),
+                align: layout.align,
                 fields,
             })
         })
@@ -318,13 +324,19 @@ pub(crate) struct HostRepr {
     align: u32,
 }
 
+/// What a struct's `#[repr]` says about sharing it.
+///
+/// `C` says the host shares the struct, so its layout has to be the GPU's.
+/// `transparent` says the same of a newtype, whose layout is its field's, and
+/// the `Shared` derive accepts it — so it is read here rather than leaving the
+/// derive and the transpiler disagreeing about what is shared.
 fn host_repr(attrs: &[syn::Attribute], name: &str) -> Result<Option<HostRepr>, Error> {
-    let mut c = false;
+    let mut shared = false;
     let mut align = 1;
     for attr in attrs.iter().filter(|a| a.path().is_ident("repr")) {
         attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("C") {
-                c = true;
+            if meta.path.is_ident("C") || meta.path.is_ident("transparent") {
+                shared = true;
             } else if meta.path.is_ident("align") {
                 let content;
                 syn::parenthesized!(content in meta.input);
@@ -337,7 +349,7 @@ fn host_repr(attrs: &[syn::Attribute], name: &str) -> Result<Option<HostRepr>, E
         })
         .map_err(|e| Error::HostLayout(name.into(), e.to_string()))?;
     }
-    Ok(c.then_some(HostRepr { align }))
+    Ok(shared.then_some(HostRepr { align }))
 }
 
 /// `members`, laid out the way `rustc` lays out a `#[repr(C)]` struct, have
@@ -551,17 +563,17 @@ pub(super) fn lower_struct_lit(
             (Some(_), _) => return Err(Error::TypeMismatch),
             (None, Rest::Zero) => function
                 .expressions
-                .append(Expression::ZeroValue(*want_ty), Span::UNDEFINED),
+                .append(Expression::ZeroValue(*want_ty), ctx.span),
             (None, &Rest::From(base)) => {
                 let index = index as u32;
-                emit(function, body, Expression::AccessIndex { base, index })?
+                emit(ctx, function, body, Expression::AccessIndex { base, index })?
             }
             (None, Rest::None) => return Err(Error::MissingStructField(want_name.clone())),
         };
         components.push(component);
     }
 
-    let handle = emit(function, body, Expression::Compose { ty, components })?;
+    let handle = emit(ctx, function, body, Expression::Compose { ty, components })?;
     Ok((handle, ty))
 }
 
@@ -606,6 +618,6 @@ pub(super) fn lower_struct_field(
                 .map(|_| (i as u32, m.ty))
         })
         .ok_or_else(|| Error::UnknownField(member.into()))?;
-    let handle = emit(function, body, Expression::AccessIndex { base, index })?;
+    let handle = emit(ctx, function, body, Expression::AccessIndex { base, index })?;
     Ok((handle, field_ty))
 }

@@ -1,6 +1,6 @@
 use naga::{
     AddressSpace, Expression, Function, GlobalVariable, Handle, MemoryDecorations, ResourceBinding,
-    Span, StorageAccess, Type,
+    StorageAccess, Type,
 };
 use syn::{Attribute, Expr, ForeignItem, ItemForeignMod, ItemStatic, LitInt};
 
@@ -40,7 +40,7 @@ pub(super) fn bind_globals(ctx: &Context, function: &mut Function, env: &mut Env
     for g in &ctx.globals {
         let expr = function
             .expressions
-            .append(Expression::GlobalVariable(g.handle), Span::UNDEFINED);
+            .append(Expression::GlobalVariable(g.handle), ctx.span);
         // A handle names the resource itself; there is nothing to load from it,
         // and Naga wants the `GlobalVariable` expression passed straight to the
         // image builtins.
@@ -262,7 +262,7 @@ fn finish_global(
             init: None,
             memory_decorations: MemoryDecorations::empty(),
         },
-        Span::UNDEFINED,
+        ctx.span,
     );
     ctx.globals.push(GlobalInfo {
         name,
