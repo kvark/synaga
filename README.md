@@ -57,6 +57,30 @@ asserts that version against `synaga_shader::ir::NAGA_MAJOR` as it compiles, so
 a `synaga` build-dependency and a `synaga-shader` dependency that disagree is a
 build error naming both numbers rather than a panic at the first `decode()`.
 
+That is a check between two crates, and not against the `naga` either of them
+resolved. Cargo will not give a git dependency and a registry dependency the
+same Naga however close their versions are, so a host pinned to a wgpu revision
+and a synaga on the registry have two, and the module is written by one and read
+by the other. Nothing says so, and bincode has no field names to notice with.
+`decode` catches a layout that moved by refusing trailing bytes, which is most of
+it, and the rest is a wrong shader rather than an error.
+
+So the host and synaga have to resolve to one Naga, which is a fact about where
+each takes it from rather than about versions. Taking Naga from the registry, as
+synaga does, is the whole of it, and a workspace that pins Naga to a git
+revision says so with a patch:
+
+```toml
+[patch.crates-io]
+naga = { git = "https://github.com/gfx-rs/wgpu", rev = "…" }
+```
+
+This crate compiles against either, so the patch is the whole of the fix. A
+client that depends on published versions and leaves Naga to Cargo never has to
+think about it; one that pins Naga itself has to carry the patch, since the
+patch is read from the root of the workspace being built and does not travel
+with a published crate.
+
 The generated code says `::synaga_shader::…`, so the host crate has to depend on
 the package `synaga-shader` under that name — a `rename` is not enough, since
 the path in the generated file is fixed.
