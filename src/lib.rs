@@ -208,7 +208,27 @@ pub fn validate_with(
 ) -> Result<naga::valid::ModuleInfo, ValidationError> {
     naga::valid::Validator::new(flags, capabilities)
         .validate(module)
-        .map_err(|e| ValidationError(Box::new(e)))
+        .map_err(|e| ValidationError(e.into_boxed()))
+}
+
+/// `Validator::validate` reports a `WithSpan<E>` in one Naga and a
+/// `Box<WithSpan<E>>` in the next, and this is the one place both are accepted,
+/// so a host and its transpiler need not be on the same revision to agree on
+/// what a module looks like.
+trait IntoBoxed<E> {
+    fn into_boxed(self) -> Box<naga::WithSpan<E>>;
+}
+
+impl<E> IntoBoxed<E> for naga::WithSpan<E> {
+    fn into_boxed(self) -> Box<naga::WithSpan<E>> {
+        Box::new(self)
+    }
+}
+
+impl<E> IntoBoxed<E> for Box<naga::WithSpan<E>> {
+    fn into_boxed(self) -> Box<naga::WithSpan<E>> {
+        self
+    }
 }
 
 /// Emit WGSL for a validated module.
