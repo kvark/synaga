@@ -2,6 +2,8 @@
 from itertools import permutations
 
 SCALARS = ["f32", "i32", "u32", "bool"]
+# `half`'s, with the `f16` feature, which every item that names it is behind.
+HALF = "half::f16"
 SIZES = [2, 3, 4]
 # Every vector gets the same operators, differing only in which ones apply:
 # `bool` has no arithmetic, only integers shift, only signed types negate. One
@@ -359,11 +361,13 @@ w('''//! Vector types.
 w("")
 w("use core::ops::*;")
 w("")
-w('''/// What a vector's lanes hold: `f32`, `i32`, `u32` or `bool`.
+w('''/// What a vector's lanes hold: `f32`, `i32`, `u32` or `bool`, and `f16` with
+/// the `f16` feature.
 ///
 /// The bound is also what makes `vec3(0.0, 1.0, 0.0)` a `Vec3<f32>`: `f32` is
-/// the one float type that is a `Scalar`, so Rust gives the literals that type
-/// rather than its usual `f64`.
+/// the one primitive float type that is a `Scalar`, so Rust gives the literals
+/// that type rather than its usual `f64`. `f16` is `half`'s struct, which a
+/// literal never is.
 pub trait Scalar: Copy + PartialEq + PartialOrd + sealed::Sealed {
     /// Zero, or `false`.
     const ZERO: Self;
@@ -380,6 +384,8 @@ mod sealed {
         fn to_u32(self) -> u32;
         /// `true` unless it is zero, as the GPU's `bool(x)`.
         fn to_bool(self) -> bool;
+        #[cfg(feature = "f16")]
+        fn to_f16(self) -> half::f16;
         /// `lane as Self`.
         fn convert<S: Sealed>(lane: S) -> Self;
     }
@@ -392,17 +398,39 @@ CONVERT = {
     "u32": {"f32": "self as f32", "i32": "self as i32", "u32": "self", "bool": "self != 0"},
     "bool": {"f32": "self as u32 as f32", "i32": "self as i32", "u32": "self as u32", "bool": "self"},
 }
+# Into the half-precision lane, rounding to the nearest: an integer through
+# `f64`, where it is exact, so it rounds once.
+TO_F16 = {
+    "f32": "half::f16::from_f32(self)",
+    "i32": "half::f16::from_f64(f64::from(self))",
+    "u32": "half::f16::from_f64(f64::from(self))",
+    "bool": "if self { half::f16::ONE } else { half::f16::ZERO }",
+}
 for scalar in SCALARS:
     w(f"    impl Sealed for {scalar} {{")
     for target in SCALARS:
         w(f"        #[inline] fn to_{target}(self) -> {target} {{ {CONVERT[scalar][target]} }}")
+    w('        #[cfg(feature = "f16")]')
+    w(f"        #[inline] fn to_f16(self) -> half::f16 {{ {TO_F16[scalar]} }}")
     w(f"        #[inline] fn convert<S: Sealed>(lane: S) -> Self {{ lane.to_{scalar}() }}")
     w("    }")
+# Out of it, through `f32`, which holds every `f16` exactly.
+w('    #[cfg(feature = "f16")]')
+w("    impl Sealed for half::f16 {")
+w("        #[inline] fn to_f32(self) -> f32 { half::f16::to_f32(self) }")
+w("        #[inline] fn to_i32(self) -> i32 { half::f16::to_f32(self) as i32 }")
+w("        #[inline] fn to_u32(self) -> u32 { half::f16::to_f32(self) as u32 }")
+w("        #[inline] fn to_bool(self) -> bool { self != half::f16::ZERO }")
+w("        #[inline] fn to_f16(self) -> half::f16 { self }")
+w("        #[inline] fn convert<S: Sealed>(lane: S) -> Self { lane.to_f16() }")
+w("    }")
 w("}")
 w("")
 for scalar in SCALARS:
     zero, one = ZERO_ONE[scalar]
     w(f"impl Scalar for {scalar} {{ const ZERO: Self = {zero}; const ONE: Self = {one}; }}")
+w('#[cfg(feature = "f16")]')
+w("impl Scalar for half::f16 { const ZERO: Self = half::f16::ZERO; const ONE: Self = half::f16::ONE; }")
 w("")
 w(MACRO)
 w("")
@@ -518,10 +546,13 @@ for size in SIZES:
         w("}")
     w("")
 
-    for scalar in SCALARS:
+    for scalar in SCALARS + [HALF]:
         ty = vname(size, scalar)
+        # The half lane exists only with its feature.
+        gate = (lambda: w('#[cfg(feature = "f16")]')) if scalar == HALF else (lambda: None)
         # Lane-wise ordering, for everything but `bool`.
         if scalar != "bool":
+            gate()
             w(f"impl {ty} {{")
             for i, (op, doc) in enumerate([("cmplt", "<"), ("cmple", "<="),
                                            ("cmpgt", ">"), ("cmpge", ">=")]):
@@ -531,6 +562,7 @@ for size in SIZES:
                 w("    #[inline]")
                 w(f"    pub fn {op}(self, rhs: Self) -> {vname(size, 'bool')} {{ self.zip_lanes(rhs, |a, b| a {doc} b) }}")
             w("}")
+            gate()
             w("/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`")
             w("/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane")
             w("/// agrees, and `None` otherwise. So `a <= b` holds more often than")
@@ -559,13 +591,16 @@ for size in SIZES:
             traits.append("bitwise")
         if scalar in ("i32", "u32"):
             traits.append("shift")
-        if scalar in ("f32", "i32"):
+        if scalar in ("f32", "i32", HALF):
             traits.append("neg")
         if scalar in ("i32", "u32", "bool"):
             traits.append("not")
+        gate()
         w(f"vector_ops!({ty}, {scalar}, {vname(size, 'u32')}{''.join(', ' + t for t in traits)});")
+        # `half` gives an `f16` its ordering, but none of `f32`'s other math.
         groups = {"f32": ["ord", "float"], "i32": ["ord", "signed", "wrapping"],
-                  "u32": ["ord", "wrapping"], "bool": ["bool"]}
+                  "u32": ["ord", "wrapping"], "bool": ["bool"], HALF: ["ord"]}
+        gate()
         w(f"vector_math!({ty}, {scalar}{''.join(', ' + g for g in groups[scalar])});")
         if size == 3 and scalar == "f32":
             w(f"impl {ty} {{")
@@ -630,10 +665,12 @@ w("")
 
 # component-type conversions, for a shader's `vec3<f32>(v)`
 for size in SIZES:
-    for a in SCALARS:
-        for b in SCALARS:
+    for a in SCALARS + [HALF]:
+        for b in SCALARS + [HALF]:
             if a == b:
                 continue
+            if HALF in (a, b):
+                w('#[cfg(feature = "f16")]')
             w(f"impl From<{vname(size, a)}> for {vname(size, b)} {{")
             w("    #[inline]")
             w(f"    fn from(v: {vname(size, a)}) -> Self {{ v.cast() }}")

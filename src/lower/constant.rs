@@ -83,14 +83,9 @@ fn lower_const_expr(
                 }
             }
             let Some(index) = ctx.constant(&segments)? else {
-                let value = ctx
-                    .float_const(&segments)
-                    .ok_or_else(|| Error::UnknownIdent(super::last(&segments)))?;
-                let handle = ctx
-                    .module
-                    .global_expressions
-                    .append(Expression::Literal(naga::Literal::F32(value)), ctx.span);
-                return Ok((handle, ctx.intern_scalar(Scalar::F32)));
+                // `PI`, or `f32::INFINITY`, which folding says WGSL cannot
+                // write.
+                return fold_literal(ctx, expr, want);
             };
             let info = &ctx.consts[index];
             let (handle, ty) = (info.handle, info.ty);
@@ -110,23 +105,30 @@ fn lower_const_expr(
                 .append(Expression::Literal(naga::Literal::Bool(value)), ctx.span);
             Ok((handle, ctx.intern_scalar(Scalar::BOOL)))
         }
-        _ => {
-            let want = want.and_then(Ty::of);
-            let value = match fold::fold(ctx, expr, want)? {
-                // A float nothing gave a type is an `f64` to `rustc`, which a
-                // shader has not; its context here is a vector's, unread.
-                Value::F64(v) if want.is_none() => Value::F32(v as f32),
-                value => value,
-            };
-            let literal = value.literal().map_err(|err| err.at(super::pos(expr)))?;
-            let ty = ctx.intern_scalar(literal.scalar());
-            let handle = ctx
-                .module
-                .global_expressions
-                .append(Expression::Literal(literal), ctx.span);
-            Ok((handle, ty))
-        }
+        _ => fold_literal(ctx, expr, want),
     }
+}
+
+/// `expr` folded to the literal it comes to.
+fn fold_literal(
+    ctx: &mut Context,
+    expr: &Expr,
+    want: Option<Scalar>,
+) -> Result<(Handle<Expression>, Handle<Type>), Error> {
+    let want = want.and_then(Ty::of);
+    let value = match fold::fold(ctx, expr, want)? {
+        // A float nothing gave a type is an `f64` to `rustc`, which a shader
+        // has not; its context here is a vector's, unread.
+        Value::F64(v) if want.is_none() => Value::F32(v as f32),
+        value => value,
+    };
+    let literal = value.literal().map_err(|err| err.at(super::pos(expr)))?;
+    let ty = ctx.intern_scalar(literal.scalar());
+    let handle = ctx
+        .module
+        .global_expressions
+        .append(Expression::Literal(literal), ctx.span);
+    Ok((handle, ty))
 }
 
 /// `Ty::ITEM` where that is a literal: a set's flag or an enum's variant,
@@ -177,8 +179,27 @@ pub(super) fn scalar_const(ty: &str, name: &str) -> Option<naga::Literal> {
         ("f32", "MIN") => L::F32(f32::MIN),
         ("f32", "MIN_POSITIVE") => L::F32(f32::MIN_POSITIVE),
         ("f32", "EPSILON") => L::F32(f32::EPSILON),
+        ("f16", _) => L::F16(half_const(name)?),
         _ => return None,
     })
+}
+
+/// `f16::ONE`, `f16::PI`: the constants `half` gives an `f16`, but for its
+/// infinities and NaN.
+fn half_const(name: &str) -> Option<half::f16> {
+    macro_rules! named {
+        ($($name:ident)*) => {
+            match name {
+                $(stringify!($name) => Some(half::f16::$name),)*
+                _ => None,
+            }
+        };
+    }
+    named!(
+        ZERO NEG_ZERO ONE NEG_ONE MAX MIN MIN_POSITIVE EPSILON MIN_POSITIVE_SUBNORMAL MAX_SUBNORMAL
+        E PI FRAC_1_PI FRAC_1_SQRT_2 FRAC_2_PI FRAC_2_SQRT_PI FRAC_PI_2 FRAC_PI_3 FRAC_PI_4
+        FRAC_PI_6 FRAC_PI_8 LN_10 LN_2 LOG10_E LOG10_2 LOG2_E LOG2_10 SQRT_2
+    )
 }
 
 /// `core::f32::consts::PI`, `std::f32::consts::TAU`: the constants `rustc`

@@ -342,6 +342,42 @@ fn a_subgroup_on_the_cpu_is_the_one_invocation() {
     subgroup_barrier();
 }
 
+#[cfg(feature = "f16")]
+#[test]
+fn an_f16_lane_rounds_to_the_nearest_even() {
+    let h = f16::from_f32;
+    // 2049 is halfway between 2048 and 2050, so it goes to the even one, from
+    // a float or an integer alike.
+    assert_eq!(
+        vec2(2049.0, 2051.0).cast::<f16>(),
+        vec2(h(2048.0), h(2052.0))
+    );
+    assert_eq!(vec2(2049u32, 3).cast::<f16>(), vec2(h(2048.0), h(3.0)));
+    // Every `f16` is an `f32` exactly, and an integer saturates, as `as` does.
+    // The `f16` nearest 0.1 is 819/8192.
+    let v = vec3(h(0.1), f16::MAX, -f16::MAX);
+    assert_eq!(v.cast::<f32>(), vec3(819.0 / 8192.0, 65504.0, -65504.0));
+    assert_eq!(v.cast::<u32>(), vec3(0, 65504, 0));
+    assert_eq!(vec2(true, false).cast::<f16>(), vec2(f16::ONE, f16::ZERO));
+
+    // The arithmetic is lane by lane, and in half precision.
+    let a = vec3(f16::ONE, h(2.0), h(-0.5));
+    assert_eq!(a * h(2.0) + a, vec3(h(3.0), h(6.0), h(-1.5)));
+    assert_eq!(-a, vec3(f16::NEG_ONE, h(-2.0), h(0.5)));
+    assert_eq!(f16::MAX + f16::MAX, f16::INFINITY);
+    assert_eq!(a.dot(a), h(5.25));
+    assert_eq!(
+        a.max(Vec3::splat(f16::ZERO)),
+        vec3(f16::ONE, h(2.0), f16::ZERO)
+    );
+    assert_eq!(abs(a), vec3(f16::ONE, h(2.0), h(0.5)));
+    assert_eq!(sign(a), vec3(f16::ONE, f16::ONE, f16::NEG_ONE));
+    assert_eq!(clamp(h(3.0), f16::ZERO, f16::ONE), f16::ONE);
+    assert_eq!(dot(a, a), h(5.25));
+    assert!(vec2(f16::NAN, f16::ONE).cmplt(Vec2::ONE) == vec2(false, false));
+    assert_eq!(subgroup_add(a), a);
+}
+
 #[test]
 fn half_floats_round_to_the_nearest_even() {
     assert_eq!(pack2x16float(vec2(1.0, -2.0)), 0xC000_3C00);

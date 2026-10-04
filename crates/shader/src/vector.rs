@@ -63,11 +63,13 @@
 
 use core::ops::*;
 
-/// What a vector's lanes hold: `f32`, `i32`, `u32` or `bool`.
+/// What a vector's lanes hold: `f32`, `i32`, `u32` or `bool`, and `f16` with
+/// the `f16` feature.
 ///
 /// The bound is also what makes `vec3(0.0, 1.0, 0.0)` a `Vec3<f32>`: `f32` is
-/// the one float type that is a `Scalar`, so Rust gives the literals that type
-/// rather than its usual `f64`.
+/// the one primitive float type that is a `Scalar`, so Rust gives the literals
+/// that type rather than its usual `f64`. `f16` is `half`'s struct, which a
+/// literal never is.
 pub trait Scalar: Copy + PartialEq + PartialOrd + sealed::Sealed {
     /// Zero, or `false`.
     const ZERO: Self;
@@ -84,6 +86,8 @@ mod sealed {
         fn to_u32(self) -> u32;
         /// `true` unless it is zero, as the GPU's `bool(x)`.
         fn to_bool(self) -> bool;
+        #[cfg(feature = "f16")]
+        fn to_f16(self) -> half::f16;
         /// `lane as Self`.
         fn convert<S: Sealed>(lane: S) -> Self;
     }
@@ -104,6 +108,11 @@ mod sealed {
         #[inline]
         fn to_bool(self) -> bool {
             self != 0.0
+        }
+        #[cfg(feature = "f16")]
+        #[inline]
+        fn to_f16(self) -> half::f16 {
+            half::f16::from_f32(self)
         }
         #[inline]
         fn convert<S: Sealed>(lane: S) -> Self {
@@ -127,6 +136,11 @@ mod sealed {
         fn to_bool(self) -> bool {
             self != 0
         }
+        #[cfg(feature = "f16")]
+        #[inline]
+        fn to_f16(self) -> half::f16 {
+            half::f16::from_f64(f64::from(self))
+        }
         #[inline]
         fn convert<S: Sealed>(lane: S) -> Self {
             lane.to_i32()
@@ -148,6 +162,11 @@ mod sealed {
         #[inline]
         fn to_bool(self) -> bool {
             self != 0
+        }
+        #[cfg(feature = "f16")]
+        #[inline]
+        fn to_f16(self) -> half::f16 {
+            half::f16::from_f64(f64::from(self))
         }
         #[inline]
         fn convert<S: Sealed>(lane: S) -> Self {
@@ -171,9 +190,45 @@ mod sealed {
         fn to_bool(self) -> bool {
             self
         }
+        #[cfg(feature = "f16")]
+        #[inline]
+        fn to_f16(self) -> half::f16 {
+            if self {
+                half::f16::ONE
+            } else {
+                half::f16::ZERO
+            }
+        }
         #[inline]
         fn convert<S: Sealed>(lane: S) -> Self {
             lane.to_bool()
+        }
+    }
+    #[cfg(feature = "f16")]
+    impl Sealed for half::f16 {
+        #[inline]
+        fn to_f32(self) -> f32 {
+            half::f16::to_f32(self)
+        }
+        #[inline]
+        fn to_i32(self) -> i32 {
+            half::f16::to_f32(self) as i32
+        }
+        #[inline]
+        fn to_u32(self) -> u32 {
+            half::f16::to_f32(self) as u32
+        }
+        #[inline]
+        fn to_bool(self) -> bool {
+            self != half::f16::ZERO
+        }
+        #[inline]
+        fn to_f16(self) -> half::f16 {
+            self
+        }
+        #[inline]
+        fn convert<S: Sealed>(lane: S) -> Self {
+            lane.to_f16()
         }
     }
 }
@@ -193,6 +248,11 @@ impl Scalar for u32 {
 impl Scalar for bool {
     const ZERO: Self = false;
     const ONE: Self = true;
+}
+#[cfg(feature = "f16")]
+impl Scalar for half::f16 {
+    const ZERO: Self = half::f16::ZERO;
+    const ONE: Self = half::f16::ONE;
 }
 
 /// The operators every vector has, and the ones only some do.
@@ -751,6 +811,70 @@ vector_math!(Vec2<u32>, u32, ord, wrapping);
 vector_ops!(Vec2<bool>, bool, Vec2<u32>, bitwise, not);
 vector_math!(Vec2<bool>, bool, bool);
 
+#[cfg(feature = "f16")]
+impl Vec2<half::f16> {
+    /// Lane-wise `<`.
+    #[inline]
+    pub fn cmplt(self, rhs: Self) -> Vec2<bool> {
+        self.zip_lanes(rhs, |a, b| a < b)
+    }
+
+    /// Lane-wise `<=`.
+    #[inline]
+    pub fn cmple(self, rhs: Self) -> Vec2<bool> {
+        self.zip_lanes(rhs, |a, b| a <= b)
+    }
+
+    /// Lane-wise `>`.
+    #[inline]
+    pub fn cmpgt(self, rhs: Self) -> Vec2<bool> {
+        self.zip_lanes(rhs, |a, b| a > b)
+    }
+
+    /// Lane-wise `>=`.
+    #[inline]
+    pub fn cmpge(self, rhs: Self) -> Vec2<bool> {
+        self.zip_lanes(rhs, |a, b| a >= b)
+    }
+}
+#[cfg(feature = "f16")]
+/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`
+/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane
+/// agrees, and `None` otherwise. So `a <= b` holds more often than
+/// `a < b || a == b`, which `PartialOrd` asks of it, as it does in nalgebra.
+impl PartialOrd for Vec2<half::f16> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        use core::cmp::Ordering::*;
+        match (self == other, self < other, self > other) {
+            (true, _, _) => Some(Equal),
+            (_, true, _) => Some(Less),
+            (_, _, true) => Some(Greater),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn lt(&self, other: &Self) -> bool {
+        self.cmplt(*other).all()
+    }
+    #[inline]
+    fn le(&self, other: &Self) -> bool {
+        self.cmple(*other).all()
+    }
+    #[inline]
+    fn gt(&self, other: &Self) -> bool {
+        self.cmpgt(*other).all()
+    }
+    #[inline]
+    fn ge(&self, other: &Self) -> bool {
+        self.cmpge(*other).all()
+    }
+}
+#[cfg(feature = "f16")]
+vector_ops!(Vec2<half::f16>, half::f16, Vec2<u32>, arith, neg);
+#[cfg(feature = "f16")]
+vector_math!(Vec2<half::f16>, half::f16, ord);
+
 /// `vec3<T>` in WGSL. A bare `Vec3` is `Vec3<f32>`, WGSL's `vec3f`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(C)]
@@ -1148,6 +1272,70 @@ vector_math!(Vec3<u32>, u32, ord, wrapping);
 
 vector_ops!(Vec3<bool>, bool, Vec3<u32>, bitwise, not);
 vector_math!(Vec3<bool>, bool, bool);
+
+#[cfg(feature = "f16")]
+impl Vec3<half::f16> {
+    /// Lane-wise `<`.
+    #[inline]
+    pub fn cmplt(self, rhs: Self) -> Vec3<bool> {
+        self.zip_lanes(rhs, |a, b| a < b)
+    }
+
+    /// Lane-wise `<=`.
+    #[inline]
+    pub fn cmple(self, rhs: Self) -> Vec3<bool> {
+        self.zip_lanes(rhs, |a, b| a <= b)
+    }
+
+    /// Lane-wise `>`.
+    #[inline]
+    pub fn cmpgt(self, rhs: Self) -> Vec3<bool> {
+        self.zip_lanes(rhs, |a, b| a > b)
+    }
+
+    /// Lane-wise `>=`.
+    #[inline]
+    pub fn cmpge(self, rhs: Self) -> Vec3<bool> {
+        self.zip_lanes(rhs, |a, b| a >= b)
+    }
+}
+#[cfg(feature = "f16")]
+/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`
+/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane
+/// agrees, and `None` otherwise. So `a <= b` holds more often than
+/// `a < b || a == b`, which `PartialOrd` asks of it, as it does in nalgebra.
+impl PartialOrd for Vec3<half::f16> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        use core::cmp::Ordering::*;
+        match (self == other, self < other, self > other) {
+            (true, _, _) => Some(Equal),
+            (_, true, _) => Some(Less),
+            (_, _, true) => Some(Greater),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn lt(&self, other: &Self) -> bool {
+        self.cmplt(*other).all()
+    }
+    #[inline]
+    fn le(&self, other: &Self) -> bool {
+        self.cmple(*other).all()
+    }
+    #[inline]
+    fn gt(&self, other: &Self) -> bool {
+        self.cmpgt(*other).all()
+    }
+    #[inline]
+    fn ge(&self, other: &Self) -> bool {
+        self.cmpge(*other).all()
+    }
+}
+#[cfg(feature = "f16")]
+vector_ops!(Vec3<half::f16>, half::f16, Vec3<u32>, arith, neg);
+#[cfg(feature = "f16")]
+vector_math!(Vec3<half::f16>, half::f16, ord);
 
 /// `vec4<T>` in WGSL. A bare `Vec4` is `Vec4<f32>`, WGSL's `vec4f`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -1799,6 +1987,70 @@ vector_math!(Vec4<u32>, u32, ord, wrapping);
 vector_ops!(Vec4<bool>, bool, Vec4<u32>, bitwise, not);
 vector_math!(Vec4<bool>, bool, bool);
 
+#[cfg(feature = "f16")]
+impl Vec4<half::f16> {
+    /// Lane-wise `<`.
+    #[inline]
+    pub fn cmplt(self, rhs: Self) -> Vec4<bool> {
+        self.zip_lanes(rhs, |a, b| a < b)
+    }
+
+    /// Lane-wise `<=`.
+    #[inline]
+    pub fn cmple(self, rhs: Self) -> Vec4<bool> {
+        self.zip_lanes(rhs, |a, b| a <= b)
+    }
+
+    /// Lane-wise `>`.
+    #[inline]
+    pub fn cmpgt(self, rhs: Self) -> Vec4<bool> {
+        self.zip_lanes(rhs, |a, b| a > b)
+    }
+
+    /// Lane-wise `>=`.
+    #[inline]
+    pub fn cmpge(self, rhs: Self) -> Vec4<bool> {
+        self.zip_lanes(rhs, |a, b| a >= b)
+    }
+}
+#[cfg(feature = "f16")]
+/// `a < b` when every lane is, as `a.cmplt(b).all()`, and so for `<=`, `>`
+/// and `>=`. `partial_cmp` is `Equal`, `Less` or `Greater` when every lane
+/// agrees, and `None` otherwise. So `a <= b` holds more often than
+/// `a < b || a == b`, which `PartialOrd` asks of it, as it does in nalgebra.
+impl PartialOrd for Vec4<half::f16> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        use core::cmp::Ordering::*;
+        match (self == other, self < other, self > other) {
+            (true, _, _) => Some(Equal),
+            (_, true, _) => Some(Less),
+            (_, _, true) => Some(Greater),
+            _ => None,
+        }
+    }
+    #[inline]
+    fn lt(&self, other: &Self) -> bool {
+        self.cmplt(*other).all()
+    }
+    #[inline]
+    fn le(&self, other: &Self) -> bool {
+        self.cmple(*other).all()
+    }
+    #[inline]
+    fn gt(&self, other: &Self) -> bool {
+        self.cmpgt(*other).all()
+    }
+    #[inline]
+    fn ge(&self, other: &Self) -> bool {
+        self.cmpge(*other).all()
+    }
+}
+#[cfg(feature = "f16")]
+vector_ops!(Vec4<half::f16>, half::f16, Vec4<u32>, arith, neg);
+#[cfg(feature = "f16")]
+vector_math!(Vec4<half::f16>, half::f16, ord);
+
 impl<T: Scalar> From<[T; 2]> for Vec2<T> {
     #[inline]
     fn from([x, y]: [T; 2]) -> Self {
@@ -1963,6 +2215,13 @@ impl From<Vec2<f32>> for Vec2<bool> {
         v.cast()
     }
 }
+#[cfg(feature = "f16")]
+impl From<Vec2<f32>> for Vec2<half::f16> {
+    #[inline]
+    fn from(v: Vec2<f32>) -> Self {
+        v.cast()
+    }
+}
 impl From<Vec2<i32>> for Vec2<f32> {
     #[inline]
     fn from(v: Vec2<i32>) -> Self {
@@ -1976,6 +2235,13 @@ impl From<Vec2<i32>> for Vec2<u32> {
     }
 }
 impl From<Vec2<i32>> for Vec2<bool> {
+    #[inline]
+    fn from(v: Vec2<i32>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec2<i32>> for Vec2<half::f16> {
     #[inline]
     fn from(v: Vec2<i32>) -> Self {
         v.cast()
@@ -1999,6 +2265,13 @@ impl From<Vec2<u32>> for Vec2<bool> {
         v.cast()
     }
 }
+#[cfg(feature = "f16")]
+impl From<Vec2<u32>> for Vec2<half::f16> {
+    #[inline]
+    fn from(v: Vec2<u32>) -> Self {
+        v.cast()
+    }
+}
 impl From<Vec2<bool>> for Vec2<f32> {
     #[inline]
     fn from(v: Vec2<bool>) -> Self {
@@ -2017,6 +2290,41 @@ impl From<Vec2<bool>> for Vec2<u32> {
         v.cast()
     }
 }
+#[cfg(feature = "f16")]
+impl From<Vec2<bool>> for Vec2<half::f16> {
+    #[inline]
+    fn from(v: Vec2<bool>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec2<half::f16>> for Vec2<f32> {
+    #[inline]
+    fn from(v: Vec2<half::f16>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec2<half::f16>> for Vec2<i32> {
+    #[inline]
+    fn from(v: Vec2<half::f16>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec2<half::f16>> for Vec2<u32> {
+    #[inline]
+    fn from(v: Vec2<half::f16>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec2<half::f16>> for Vec2<bool> {
+    #[inline]
+    fn from(v: Vec2<half::f16>) -> Self {
+        v.cast()
+    }
+}
 impl From<Vec3<f32>> for Vec3<i32> {
     #[inline]
     fn from(v: Vec3<f32>) -> Self {
@@ -2030,6 +2338,13 @@ impl From<Vec3<f32>> for Vec3<u32> {
     }
 }
 impl From<Vec3<f32>> for Vec3<bool> {
+    #[inline]
+    fn from(v: Vec3<f32>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec3<f32>> for Vec3<half::f16> {
     #[inline]
     fn from(v: Vec3<f32>) -> Self {
         v.cast()
@@ -2053,6 +2368,13 @@ impl From<Vec3<i32>> for Vec3<bool> {
         v.cast()
     }
 }
+#[cfg(feature = "f16")]
+impl From<Vec3<i32>> for Vec3<half::f16> {
+    #[inline]
+    fn from(v: Vec3<i32>) -> Self {
+        v.cast()
+    }
+}
 impl From<Vec3<u32>> for Vec3<f32> {
     #[inline]
     fn from(v: Vec3<u32>) -> Self {
@@ -2066,6 +2388,13 @@ impl From<Vec3<u32>> for Vec3<i32> {
     }
 }
 impl From<Vec3<u32>> for Vec3<bool> {
+    #[inline]
+    fn from(v: Vec3<u32>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec3<u32>> for Vec3<half::f16> {
     #[inline]
     fn from(v: Vec3<u32>) -> Self {
         v.cast()
@@ -2089,6 +2418,41 @@ impl From<Vec3<bool>> for Vec3<u32> {
         v.cast()
     }
 }
+#[cfg(feature = "f16")]
+impl From<Vec3<bool>> for Vec3<half::f16> {
+    #[inline]
+    fn from(v: Vec3<bool>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec3<half::f16>> for Vec3<f32> {
+    #[inline]
+    fn from(v: Vec3<half::f16>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec3<half::f16>> for Vec3<i32> {
+    #[inline]
+    fn from(v: Vec3<half::f16>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec3<half::f16>> for Vec3<u32> {
+    #[inline]
+    fn from(v: Vec3<half::f16>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec3<half::f16>> for Vec3<bool> {
+    #[inline]
+    fn from(v: Vec3<half::f16>) -> Self {
+        v.cast()
+    }
+}
 impl From<Vec4<f32>> for Vec4<i32> {
     #[inline]
     fn from(v: Vec4<f32>) -> Self {
@@ -2102,6 +2466,13 @@ impl From<Vec4<f32>> for Vec4<u32> {
     }
 }
 impl From<Vec4<f32>> for Vec4<bool> {
+    #[inline]
+    fn from(v: Vec4<f32>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec4<f32>> for Vec4<half::f16> {
     #[inline]
     fn from(v: Vec4<f32>) -> Self {
         v.cast()
@@ -2125,6 +2496,13 @@ impl From<Vec4<i32>> for Vec4<bool> {
         v.cast()
     }
 }
+#[cfg(feature = "f16")]
+impl From<Vec4<i32>> for Vec4<half::f16> {
+    #[inline]
+    fn from(v: Vec4<i32>) -> Self {
+        v.cast()
+    }
+}
 impl From<Vec4<u32>> for Vec4<f32> {
     #[inline]
     fn from(v: Vec4<u32>) -> Self {
@@ -2138,6 +2516,13 @@ impl From<Vec4<u32>> for Vec4<i32> {
     }
 }
 impl From<Vec4<u32>> for Vec4<bool> {
+    #[inline]
+    fn from(v: Vec4<u32>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec4<u32>> for Vec4<half::f16> {
     #[inline]
     fn from(v: Vec4<u32>) -> Self {
         v.cast()
@@ -2158,6 +2543,41 @@ impl From<Vec4<bool>> for Vec4<i32> {
 impl From<Vec4<bool>> for Vec4<u32> {
     #[inline]
     fn from(v: Vec4<bool>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec4<bool>> for Vec4<half::f16> {
+    #[inline]
+    fn from(v: Vec4<bool>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec4<half::f16>> for Vec4<f32> {
+    #[inline]
+    fn from(v: Vec4<half::f16>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec4<half::f16>> for Vec4<i32> {
+    #[inline]
+    fn from(v: Vec4<half::f16>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec4<half::f16>> for Vec4<u32> {
+    #[inline]
+    fn from(v: Vec4<half::f16>) -> Self {
+        v.cast()
+    }
+}
+#[cfg(feature = "f16")]
+impl From<Vec4<half::f16>> for Vec4<bool> {
+    #[inline]
+    fn from(v: Vec4<half::f16>) -> Self {
         v.cast()
     }
 }

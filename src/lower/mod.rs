@@ -643,6 +643,8 @@ impl Context {
         // write `arr[i as usize]`. An index is 32-bit on a GPU, so it is `u32`.
         match name.as_str() {
             "f32" => Ok(self.intern_scalar(Scalar::F32)),
+            // `half`'s, which `synaga-shader` names `f16`.
+            "f16" => Ok(self.intern_scalar(Scalar::F16)),
             "u32" | "usize" => Ok(self.intern_scalar(Scalar::U32)),
             "i32" | "isize" => Ok(self.intern_scalar(Scalar::I32)),
             "bool" => Ok(self.intern_scalar(Scalar::BOOL)),
@@ -1095,6 +1097,7 @@ fn lower_scalar_ident(ty: &syn::Type) -> Result<Scalar, Error> {
     };
     match ident.to_string().as_str() {
         "f32" => Ok(Scalar::F32),
+        "f16" => Ok(Scalar::F16),
         "u32" | "usize" => Ok(Scalar::U32),
         "i32" | "isize" => Ok(Scalar::I32),
         "bool" => Ok(Scalar::BOOL),

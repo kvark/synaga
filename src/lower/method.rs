@@ -147,6 +147,8 @@ fn is_value_method(name: &str) -> bool {
                 | "extend"
                 | "truncate"
                 | "to_bits"
+                | "to_f32"
+                | "to_f32_const"
                 | "all"
                 | "any"
                 | "element_sum"
@@ -374,6 +376,20 @@ fn lower_value_method(
         ("to_bits", []) if ctx.shape(base_ty) == Shape::Scalar(Scalar::F32) => {
             bitcast(ctx, function, body, base, Scalar::U32)
         }
+        // `h.to_f32()`: `half`'s spelling of WGSL's `f32(h)`, which is exact.
+        ("to_f32" | "to_f32_const", []) if ctx.shape(base_ty) == Shape::Scalar(Scalar::F16) => {
+            let handle = emit(
+                ctx,
+                function,
+                body,
+                Expression::As {
+                    expr: base,
+                    kind: naga::ScalarKind::Float,
+                    convert: Some(Scalar::F32.width),
+                },
+            )?;
+            Ok((handle, ctx.intern_scalar(Scalar::F32)))
+        }
         ("truncate", []) => {
             let Shape::Vector(size, _) = ctx.shape(base_ty) else {
                 return Err(Error::UnsupportedMethod(name));
@@ -410,11 +426,10 @@ fn lower_value_method(
                 return Err(Error::UnsupportedMethod(name));
             };
             let one = match scalar.kind {
-                naga::ScalarKind::Float => naga::Literal::F32(1.0),
-                naga::ScalarKind::Sint => naga::Literal::I32(1),
-                naga::ScalarKind::Uint => naga::Literal::U32(1),
-                _ => return Err(Error::UnsupportedMethod(name)),
-            };
+                naga::ScalarKind::Bool => None,
+                _ => naga::Literal::one(scalar),
+            }
+            .ok_or_else(|| Error::UnsupportedMethod(name.clone()))?;
             let one = function
                 .expressions
                 .append(Expression::Literal(one), ctx.span);
@@ -553,6 +568,10 @@ pub(super) fn lower_qualified_call(
         }
     }
 
+    if let Some(typed) = lower_half_call(ctx, function, body, ty_name, method, args, env)? {
+        return Ok(typed);
+    }
+
     // `f32::from_bits(n)`: a `u32`'s bits read as a float, which WGSL spells
     // `bitcast<f32>(n)`.
     if ty_name == "f32" && method == "from_bits" {
@@ -651,12 +670,7 @@ pub(super) fn lower_qualified_const(
             Ok((handle, ty))
         }
         "ONE" => {
-            let one = match scalar.kind {
-                naga::ScalarKind::Float => naga::Literal::F32(1.0),
-                naga::ScalarKind::Sint => naga::Literal::I32(1),
-                naga::ScalarKind::Uint => naga::Literal::U32(1),
-                _ => naga::Literal::Bool(true),
-            };
+            let one = naga::Literal::one(scalar).unwrap_or(naga::Literal::Bool(true));
             let value = function
                 .expressions
                 .append(Expression::Literal(one), ctx.span);
@@ -665,6 +679,68 @@ pub(super) fn lower_qualified_const(
         }
         _ => Err(Error::UnknownIdent(format!("{ty_name}::{constant}"))),
     }
+}
+
+/// `f16::from_f32(x)` and `f32::from(h)`: into and out of half precision,
+/// which Rust has no literal or `as` for. `None` for any other call.
+///
+/// A value the build can fold, a literal or arithmetic on constants, is
+/// converted here, as `half` converts it on the CPU, so the module holds the
+/// `f16` the CPU has. Anything else is the GPU's conversion, which WGSL lets
+/// round either way.
+#[allow(clippy::too_many_arguments)]
+fn lower_half_call(
+    ctx: &mut Context,
+    function: &mut Function,
+    body: &mut Block,
+    ty_name: &str,
+    method: &str,
+    args: &[&Expr],
+    env: &mut Env,
+) -> Result<Option<Typed>, Error> {
+    use super::fold::{self, Ty, Value};
+    let to = match (ty_name, method) {
+        ("f16", "from_f32" | "from_f32_const") => Scalar::F16,
+        ("f32", "from") => Scalar::F32,
+        _ => return Ok(None),
+    };
+    let [value] = args else {
+        return Err(Error::WrongArgCount(format!("{ty_name}::{method}")));
+    };
+    if to == Scalar::F16 && !env.reads_local(value) {
+        if let Ok(Value::F32(v)) = fold::fold(ctx, value, Some(Ty::F32)) {
+            let literal = Value::F16(half::f16::from_f32(v))
+                .literal()
+                .map_err(|err| err.at(super::pos(value)))?;
+            let handle = function
+                .expressions
+                .append(Expression::Literal(literal), ctx.span);
+            return Ok(Some((handle, ctx.intern_scalar(Scalar::F16))));
+        }
+    }
+    let (value, value_ty) = lower_expr(ctx, function, body, value, env)?;
+    let from = match to {
+        Scalar::F16 => Scalar::F32,
+        _ => Scalar::F16,
+    };
+    if ctx.shape(value_ty) != Shape::Scalar(from) {
+        // `f32::from` takes others, which are not this.
+        return match to {
+            Scalar::F32 => Err(Error::UnsupportedMethod(format!("{ty_name}::{method}"))),
+            _ => Err(Error::TypeMismatch),
+        };
+    }
+    let handle = emit(
+        ctx,
+        function,
+        body,
+        Expression::As {
+            expr: value,
+            kind: naga::ScalarKind::Float,
+            convert: Some(to.width),
+        },
+    )?;
+    Ok(Some((handle, ctx.intern_scalar(to))))
 }
 
 /// `value` as a `u32` literal.

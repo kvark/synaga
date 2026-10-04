@@ -10,7 +10,9 @@
 //! What a `const` holds is small. An operator on a vector is a trait method,
 //! which a `const` cannot call, so everything folded here is a scalar:
 //! literals, other constants, the operators, `as`, `if`, and the `const fn`s of
-//! the primitive types.
+//! the primitive types. An `f16` is `half`'s, whose arithmetic is trait
+//! methods, so a constant one only comes from a conversion, a type's constant
+//! or another constant, and goes only through `half`'s own `const fn`s.
 
 use std::cmp::Ordering;
 
@@ -28,6 +30,7 @@ pub(super) enum Ty {
     I32,
     U32,
     F32,
+    F16,
     /// What `rustc` makes an unsuffixed float when nothing says otherwise, as
     /// in `(1.0 / 3.0) as f32`. A shader has no `f64`, so one only passes
     /// through.
@@ -42,6 +45,7 @@ impl Ty {
             Scalar::I32 => Ty::I32,
             Scalar::U32 => Ty::U32,
             Scalar::F32 => Ty::F32,
+            Scalar::F16 => Ty::F16,
             _ => return None,
         })
     }
@@ -52,12 +56,13 @@ impl Ty {
             Ty::I32 => "i32",
             Ty::U32 => "u32",
             Ty::F32 => "f32",
+            Ty::F16 => "f16",
             Ty::F64 => "f64",
         }
     }
 
     fn is_float(self) -> bool {
-        matches!(self, Ty::F32 | Ty::F64)
+        matches!(self, Ty::F32 | Ty::F16 | Ty::F64)
     }
 }
 
@@ -68,6 +73,7 @@ pub(super) enum Value {
     I32(i32),
     U32(u32),
     F32(f32),
+    F16(half::f16),
     F64(f64),
 }
 
@@ -78,6 +84,7 @@ impl Value {
             Value::I32(_) => Ty::I32,
             Value::U32(_) => Ty::U32,
             Value::F32(_) => Ty::F32,
+            Value::F16(_) => Ty::F16,
             Value::F64(_) => Ty::F64,
         }
     }
@@ -89,7 +96,8 @@ impl Value {
             Value::I32(v) => Literal::I32(v),
             Value::U32(v) => Literal::U32(v),
             Value::F32(v) if v.is_finite() => Literal::F32(v),
-            Value::F32(_) => {
+            Value::F16(v) if v.is_finite() => Literal::F16(v),
+            Value::F32(_) | Value::F16(_) => {
                 return Err(Error::ConstArithmetic(
                     "comes to an infinity or a NaN, which WGSL cannot write".into(),
                 ))
@@ -104,6 +112,7 @@ impl Value {
             Literal::I32(v) => Value::I32(v),
             Literal::U32(v) => Value::U32(v),
             Literal::F32(v) => Value::F32(v),
+            Literal::F16(v) => Value::F16(v),
             other => return Err(Error::UnsupportedType(format!("{:?}", other.scalar()))),
         })
     }
@@ -229,6 +238,7 @@ fn natural(ctx: &mut Context, expr: &Expr) -> Result<Option<Ty>, Error> {
         },
         Expr::Call(call) => match call_name(call).as_deref() {
             Some("f32::from_bits") => Some(Ty::F32),
+            Some("f16::from_f32_const" | "f16::from_f64_const" | "f16::from_bits") => Some(Ty::F16),
             _ => None,
         },
         Expr::If(if_expr) => match if_expr.then_branch.stmts.as_slice() {
@@ -265,8 +275,10 @@ fn literal(lit: &syn::Lit, want: Option<Ty>, negated: bool) -> Result<Value, Err
             let ty = match (int.suffix(), want) {
                 ("", Some(Ty::I32 | Ty::U32)) => want.expect("matched"),
                 // An integer literal is never a float to `rustc`, which says
-                // so before this ever sees it.
-                ("", Some(Ty::F32 | Ty::F64 | Ty::Bool)) => return Err(Error::TypeMismatch),
+                // so before this ever sees it, and nothing is an `f16`.
+                ("", Some(Ty::F32 | Ty::F16 | Ty::F64 | Ty::Bool)) => {
+                    return Err(Error::TypeMismatch)
+                }
                 ("", None) => Ty::I32,
                 (suffix, _) => suffix_ty(suffix)?,
             };
@@ -289,14 +301,16 @@ fn literal(lit: &syn::Lit, want: Option<Ty>, negated: bool) -> Result<Value, Err
                 // `1f32` is an integer token with a float suffix.
                 Ty::F32 => Value::F32(signed_float(magnitude as f32, negated)),
                 Ty::F64 => Value::F64(signed_float(magnitude as f64, negated)),
-                Ty::Bool => return Err(Error::TypeMismatch),
+                Ty::F16 | Ty::Bool => return Err(Error::TypeMismatch),
             };
             Ok(value)
         }
         syn::Lit::Float(float) => {
             let ty = match (float.suffix(), want) {
                 ("", Some(Ty::F32)) => Ty::F32,
-                ("", Some(Ty::I32 | Ty::U32 | Ty::Bool)) => return Err(Error::TypeMismatch),
+                ("", Some(Ty::I32 | Ty::U32 | Ty::F16 | Ty::Bool)) => {
+                    return Err(Error::TypeMismatch)
+                }
                 ("", _) => Ty::F64,
                 (suffix, _) => suffix_ty(suffix)?,
             };
@@ -323,11 +337,20 @@ fn overflows(ty: Ty) -> Error {
     Error::ConstArithmetic(format!("overflows `{}`", ty.name()))
 }
 
+/// `half` gives an `f16` its operators by traits, whose methods a `const`
+/// cannot call.
+fn half_operator(op: &str) -> Error {
+    Error::ConstArithmetic(format!(
+        "uses `{op}` on an `f16`, which `half` implements by a trait a `const` cannot call"
+    ))
+}
+
 fn neg(value: Value) -> Result<Value, Error> {
     Ok(match value {
         Value::I32(v) => Value::I32(v.checked_neg().ok_or_else(|| overflows(Ty::I32))?),
         Value::F32(v) => Value::F32(-v),
         Value::F64(v) => Value::F64(-v),
+        Value::F16(_) => return Err(half_operator("-")),
         Value::U32(_) | Value::Bool(_) => return Err(Error::BadOperandTypes("-".into())),
     })
 }
@@ -337,7 +360,9 @@ fn not(value: Value) -> Result<Value, Error> {
         Value::Bool(v) => Value::Bool(!v),
         Value::I32(v) => Value::I32(!v),
         Value::U32(v) => Value::U32(!v),
-        Value::F32(_) | Value::F64(_) => return Err(Error::BadOperandTypes("!".into())),
+        Value::F32(_) | Value::F16(_) | Value::F64(_) => {
+            return Err(Error::BadOperandTypes("!".into()))
+        }
     })
 }
 
@@ -412,6 +437,12 @@ fn op_name(op: &BinOp) -> &'static str {
         BinOp::BitOr(_) => "|",
         BinOp::Shl(_) => "<<",
         BinOp::Shr(_) => ">>",
+        BinOp::Eq(_) => "==",
+        BinOp::Ne(_) => "!=",
+        BinOp::Lt(_) => "<",
+        BinOp::Le(_) => "<=",
+        BinOp::Gt(_) => ">",
+        BinOp::Ge(_) => ">=",
         _ => "operator",
     }
 }
@@ -460,6 +491,7 @@ fn arithmetic(op: &BinOp, a: Value, b: Value) -> Result<Value, Error> {
         (Value::U32(a), Value::U32(b)) => Value::U32(int_arithmetic!(op, a, b, Ty::U32)),
         (Value::F32(a), Value::F32(b)) => Value::F32(float_arithmetic!(op, a, b)),
         (Value::F64(a), Value::F64(b)) => Value::F64(float_arithmetic!(op, a, b)),
+        (Value::F16(_), Value::F16(_)) => return Err(half_operator(op_name(op))),
         (Value::Bool(a), Value::Bool(b)) => Value::Bool(match op {
             BinOp::BitAnd(_) => a & b,
             BinOp::BitOr(_) => a | b,
@@ -511,6 +543,7 @@ fn compare(op: &BinOp, a: Value, b: Value) -> Result<Value, Error> {
         (Value::U32(a), Value::U32(b)) => a.partial_cmp(&b),
         (Value::F32(a), Value::F32(b)) => a.partial_cmp(&b),
         (Value::F64(a), Value::F64(b)) => a.partial_cmp(&b),
+        (Value::F16(_), Value::F16(_)) => return Err(half_operator(op_name(op))),
         (Value::Bool(a), Value::Bool(b)) => a.partial_cmp(&b),
         _ => return Err(Error::TypeMismatch),
     };
@@ -554,7 +587,7 @@ fn cast_to(value: Value, to: Ty) -> Result<Value, Error> {
                 Ty::U32 => Value::U32($v as u32),
                 Ty::F32 => Value::F32($v as f32),
                 Ty::F64 => Value::F64($v as f64),
-                Ty::Bool => return Err(Error::UnsupportedCast("bool".into())),
+                Ty::F16 | Ty::Bool => return Err(Error::UnsupportedCast(to.name().into())),
             }
         };
     }
@@ -563,6 +596,8 @@ fn cast_to(value: Value, to: Ty) -> Result<Value, Error> {
         Value::U32(v) => to!(v),
         Value::F32(v) => to!(v),
         Value::F64(v) => to!(v),
+        // `as` is for primitives, which `half`'s `f16` is not.
+        Value::F16(_) => return Err(Error::UnsupportedCast(to.name().into())),
         // `true as f32` is no cast `rustc` takes.
         Value::Bool(_) if to.is_float() => return Err(Error::UnsupportedCast(to.name().into())),
         Value::Bool(v) => to!(u32::from(v)),
@@ -583,6 +618,9 @@ fn path_value(ctx: &mut Context, path: &syn::Path) -> Result<Value, Error> {
             ("f32", "NAN") => return Ok(Value::F32(f32::NAN)),
             ("f32", "INFINITY") => return Ok(Value::F32(f32::INFINITY)),
             ("f32", "NEG_INFINITY") => return Ok(Value::F32(f32::NEG_INFINITY)),
+            ("f16", "NAN") => return Ok(Value::F16(half::f16::NAN)),
+            ("f16", "INFINITY") => return Ok(Value::F16(half::f16::INFINITY)),
+            ("f16", "NEG_INFINITY") => return Ok(Value::F16(half::f16::NEG_INFINITY)),
             _ => {}
         }
     }
@@ -595,7 +633,7 @@ fn path_value(ctx: &mut Context, path: &syn::Path) -> Result<Value, Error> {
     }
 }
 
-/// `f32::from_bits(b)`, the one function call a constant here makes.
+/// The path a call names, as `f32::from_bits`.
 fn call_name(call: &syn::ExprCall) -> Option<String> {
     match strip_parens(&call.func) {
         Expr::Path(path) if path.qself.is_none() => Some(path_segments(&path.path).join("::")),
@@ -603,10 +641,31 @@ fn call_name(call: &syn::ExprCall) -> Option<String> {
     }
 }
 
+/// The functions a constant calls: `f32::from_bits`, and `half`'s conversions
+/// into an `f16`, which round to the nearest as `half` does.
 fn fold_call(ctx: &mut Context, call: &syn::ExprCall) -> Result<Value, Error> {
     match (call_name(call).as_deref(), call.args.len()) {
         (Some("f32::from_bits"), 1) => match fold(ctx, &call.args[0], Some(Ty::U32))? {
             Value::U32(bits) => Ok(Value::F32(f32::from_bits(bits))),
+            _ => Err(Error::TypeMismatch),
+        },
+        (Some("f16::from_f32_const"), 1) => match fold(ctx, &call.args[0], Some(Ty::F32))? {
+            Value::F32(v) => Ok(Value::F16(half::f16::from_f32(v))),
+            _ => Err(Error::TypeMismatch),
+        },
+        (Some("f16::from_f64_const"), 1) => match fold(ctx, &call.args[0], Some(Ty::F64))? {
+            Value::F64(v) => Ok(Value::F16(half::f16::from_f64(v))),
+            _ => Err(Error::TypeMismatch),
+        },
+        // The bits are a `u16`, which a shader has not, so they fold as a
+        // `u32` that has to fit.
+        (Some("f16::from_bits"), 1) => match fold(ctx, &call.args[0], Some(Ty::U32))? {
+            Value::U32(bits) => match u16::try_from(bits) {
+                Ok(bits) => Ok(Value::F16(half::f16::from_bits(bits))),
+                Err(_) => Err(Error::ConstArithmetic(
+                    "has a literal out of range for `u16`".into(),
+                )),
+            },
             _ => Err(Error::TypeMismatch),
         },
         (Some(name), _) => Err(Error::UnsupportedConstExpr(format!("{name}()"))),
@@ -619,6 +678,8 @@ fn method_result(name: &str) -> Option<Ty> {
     match name {
         "count_ones" | "count_zeros" | "leading_zeros" | "trailing_zeros" | "ilog2"
         | "unsigned_abs" | "to_bits" => Some(Ty::U32),
+        "to_f32_const" => Some(Ty::F32),
+        "to_f64_const" => Some(Ty::F64),
         "is_power_of_two" | "is_positive" | "is_negative" | "is_nan" | "is_finite"
         | "is_infinite" | "is_sign_positive" | "is_sign_negative" => Some(Ty::Bool),
         _ => None,
@@ -639,7 +700,7 @@ fn method_args(name: &str) -> Option<(usize, Option<Ty>)> {
         | "reverse_bits" | "swap_bytes" | "abs" | "signum" | "unsigned_abs" | "ilog2"
         | "is_power_of_two" | "next_power_of_two" | "is_positive" | "is_negative" | "to_bits"
         | "recip" | "to_degrees" | "to_radians" | "is_nan" | "is_finite" | "is_infinite"
-        | "is_sign_positive" | "is_sign_negative" => (0, None),
+        | "is_sign_positive" | "is_sign_negative" | "to_f32_const" | "to_f64_const" => (0, None),
         _ => return None,
     })
 }
@@ -816,8 +877,34 @@ fn fold_method(
         Value::U32(v) => int_method!(u32, U32, v, method, args, unsupported),
         Value::F32(v) => float_method!(F32, v, method, args, unsupported),
         Value::F64(v) => float_method!(F64, v, method, args, unsupported),
+        Value::F16(v) => half_method(v, method, args, unsupported),
         Value::Bool(_) => Err(unsupported()),
     }
+}
+
+/// The `const fn`s `half` gives an `f16`, computed by `half`. `to_bits` is one
+/// too, but its `u16` is no type a shader has.
+fn half_method(
+    v: half::f16,
+    name: &str,
+    args: &[Value],
+    unsupported: impl FnOnce() -> Error,
+) -> Result<Value, Error> {
+    Ok(match name {
+        "to_f32_const" => Value::F32(v.to_f32()),
+        "to_f64_const" => Value::F64(v.to_f64()),
+        "signum" => Value::F16(v.signum()),
+        "copysign" => match args.first() {
+            Some(Value::F16(sign)) => Value::F16(v.copysign(*sign)),
+            _ => return Err(Error::TypeMismatch),
+        },
+        "is_nan" => Value::Bool(v.is_nan()),
+        "is_finite" => Value::Bool(v.is_finite()),
+        "is_infinite" => Value::Bool(v.is_infinite()),
+        "is_sign_positive" => Value::Bool(v.is_sign_positive()),
+        "is_sign_negative" => Value::Bool(v.is_sign_negative()),
+        _ => return Err(unsupported()),
+    })
 }
 
 /// The `u32` argument a shift, rotation or power takes.
