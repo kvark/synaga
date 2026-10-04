@@ -5,7 +5,7 @@
 //! ```ignore
 //! use synaga_shader::*;
 //!
-//! #[derive(Clone, Copy, Io)]
+//! #[derive(Io)]
 //! struct VsOut {
 //!     #[builtin(position)] clip: Vec4,
 //!     #[location(0)] uv: Vec2,
@@ -107,7 +107,7 @@ pub use vector::*;
 
 /// A struct the host shares with a shader, which `#[derive(Shared)]`
 /// implements, with `Clone`, `Copy`, a zeroed `Default`, and `bytemuck`'s
-/// `Zeroable` and `Pod`.
+/// `Zeroable` and `Pod`, or `NoUninit` with `#[shared(no_uninit)]`.
 ///
 /// ```
 /// use synaga_shader::*;
@@ -145,8 +145,49 @@ pub use vector::*;
 ///     size: u32,
 /// }
 /// ```
+///
+/// An enum is not `Pod`, since not every `u32` is one of its variants, so a
+/// struct that holds one says `#[shared(no_uninit)]`. It is then `NoUninit`,
+/// which is all an upload needs, but the host cannot read one back from bytes.
+/// Its `Default` is all zeroes too, so the enum needs a variant that is zero.
+///
+/// ```
+/// use synaga_shader::*;
+/// #[repr(u32)]
+/// #[derive(Clone, Copy, Debug, PartialEq, bytemuck::NoUninit, bytemuck::Zeroable)]
+/// enum Mode {
+///     Final,
+///     Depth,
+/// }
+/// #[repr(C)]
+/// #[derive(Shared)]
+/// #[shared(no_uninit)]
+/// struct Debug {
+///     mode: Mode,
+///     _pad: u32,
+/// }
+/// assert_eq!(Debug::default().mode, Mode::Final);
+/// ```
+///
+/// Without it, the enum is a field that is not `Pod`:
+///
+/// ```compile_fail
+/// use synaga_shader::*;
+/// #[repr(u32)]
+/// #[derive(Clone, Copy, bytemuck::NoUninit, bytemuck::Zeroable)]
+/// enum Mode {
+///     Final,
+///     Depth,
+/// }
+/// #[repr(C)]
+/// #[derive(Shared)]
+/// struct Debug {
+///     mode: Mode,
+///     _pad: u32,
+/// }
+/// ```
 #[cfg(feature = "bytemuck")]
-pub trait Shared: bytemuck::Pod + Default {}
+pub trait Shared: bytemuck::NoUninit + bytemuck::Zeroable + Default {}
 
 /// What `#[derive(Shared)]` reaches for, from a crate that need not depend on
 /// `bytemuck` itself.

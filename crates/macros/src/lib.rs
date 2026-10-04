@@ -226,7 +226,12 @@ fn check_io(item: &DeriveInput) -> syn::Result<Vec<&syn::Ident>> {
 /// that the GPU reads each field where `rustc` puts it. `Pod` is checked as
 /// `bytemuck`'s derive checks it: every field is `Pod`, and there is no
 /// padding. It needs `synaga-shader`'s `bytemuck` feature.
-#[proc_macro_derive(Shared)]
+///
+/// A struct that holds an enum cannot be `Pod`, since not every `u32` is one
+/// of its variants. `#[shared(no_uninit)]` makes it `bytemuck`'s `NoUninit`
+/// instead, which is all an upload needs, with every field `NoUninit` and
+/// `Zeroable`. The host then cannot read one back from bytes.
+#[proc_macro_derive(Shared, attributes(shared))]
 pub fn derive_shared(input: TokenStream) -> TokenStream {
     let item = parse_macro_input!(input as DeriveInput);
     match expand_shared(&item) {
@@ -257,6 +262,37 @@ fn expand_shared(item: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let name = &item.ident;
     let fields: Vec<&syn::Type> = data.fields.iter().map(|field| &field.ty).collect();
     let bytemuck = quote!(::synaga_shader::__private::bytemuck);
+    // What the struct is to `bytemuck`, and a check that every field can make
+    // it that, whose name is what `rustc` reports for a field that cannot.
+    let (data_impl, field_check) = if no_uninit(&item.attrs)? {
+        (
+            quote! {
+                // SAFETY: `#[repr(C)]`, every field `NoUninit`, and no padding
+                // between or after them, all checked below.
+                unsafe impl #bytemuck::NoUninit for #name {}
+            },
+            quote! {
+                fn every_field_is_no_uninit_and_zeroable() {
+                    fn no_uninit_and_zeroable<T: #bytemuck::NoUninit + #bytemuck::Zeroable>() {}
+                    #( no_uninit_and_zeroable::<#fields>(); )*
+                }
+            },
+        )
+    } else {
+        (
+            quote! {
+                // SAFETY: `#[repr(C)]`, every field `Pod`, and no padding
+                // between or after them, all checked below.
+                unsafe impl #bytemuck::Pod for #name {}
+            },
+            quote! {
+                fn every_field_is_pod() {
+                    fn pod<T: #bytemuck::Pod>() {}
+                    #( pod::<#fields>(); )*
+                }
+            },
+        )
+    };
     Ok(quote! {
         impl ::core::clone::Clone for #name {
             #[inline]
@@ -271,23 +307,35 @@ fn expand_shared(item: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 #bytemuck::Zeroable::zeroed()
             }
         }
-        // SAFETY: every field is `Pod`, so `Zeroable`, as checked below.
+        // SAFETY: every field is `Zeroable`, which `Pod` includes, as
+        // checked below.
         unsafe impl #bytemuck::Zeroable for #name {}
-        // SAFETY: `#[repr(C)]`, every field `Pod`, and no padding between or
-        // after them, all checked below.
-        unsafe impl #bytemuck::Pod for #name {}
+        #data_impl
         impl ::synaga_shader::Shared for #name {}
         const _: () = {
-            fn every_field_is_pod() {
-                fn pod<T: #bytemuck::Pod>() {}
-                #( pod::<#fields>(); )*
-            }
+            #field_check
             assert!(
                 ::core::mem::size_of::<#name>() == 0 #( + ::core::mem::size_of::<#fields>() )*,
                 "a `Shared` struct has no padding: add a field for it, as the build's layout check suggests",
             );
         };
     })
+}
+
+/// Whether a `Shared` struct says `#[shared(no_uninit)]`.
+fn no_uninit(attrs: &[syn::Attribute]) -> syn::Result<bool> {
+    let mut found = false;
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("shared")) {
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("no_uninit") {
+                found = true;
+                Ok(())
+            } else {
+                Err(meta.error("`#[shared(..)]` takes `no_uninit`"))
+            }
+        })?;
+    }
+    Ok(found)
 }
 
 /// `#[repr(C)]` or `#[repr(transparent)]`, with anything beside it.

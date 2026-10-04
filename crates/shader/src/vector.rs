@@ -1825,6 +1825,12 @@ impl<T: Scalar> From<Vec2<T>> for mint::Vector2<T> {
         mint::Vector2 { x: v.x, y: v.y }
     }
 }
+// Names the mint type, for a crate that takes any math library's vectors,
+// such as one that picks a vertex format for a field.
+#[cfg(feature = "mint")]
+impl<T: Scalar> mint::IntoMint for Vec2<T> {
+    type MintType = mint::Vector2<T>;
+}
 // SAFETY: `#[repr(C)]` lanes of one type, so there is no padding, and
 // all zeroes, like any bytes of a `Pod` lane type, are valid lanes.
 #[cfg(feature = "bytemuck")]
@@ -1864,6 +1870,12 @@ impl<T: Scalar> From<Vec3<T>> for mint::Vector3<T> {
             z: v.z,
         }
     }
+}
+// Names the mint type, for a crate that takes any math library's vectors,
+// such as one that picks a vertex format for a field.
+#[cfg(feature = "mint")]
+impl<T: Scalar> mint::IntoMint for Vec3<T> {
+    type MintType = mint::Vector3<T>;
 }
 // SAFETY: `#[repr(C)]` lanes of one type, so there is no padding, and
 // all zeroes, like any bytes of a `Pod` lane type, are valid lanes.
@@ -1919,6 +1931,12 @@ impl<T: Scalar> From<Vec4<T>> for mint::Vector4<T> {
             w: v.w,
         }
     }
+}
+// Names the mint type, for a crate that takes any math library's vectors,
+// such as one that picks a vertex format for a field.
+#[cfg(feature = "mint")]
+impl<T: Scalar> mint::IntoMint for Vec4<T> {
+    type MintType = mint::Vector4<T>;
 }
 // SAFETY: `#[repr(C)]` lanes of one type, so there is no padding, and
 // all zeroes, like any bytes of a `Pod` lane type, are valid lanes.

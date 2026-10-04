@@ -53,6 +53,27 @@ fn matrices_convert_column_by_column() {
 }
 
 #[test]
+fn a_crate_that_knows_only_mint_finds_the_mint_type() {
+    // What a crate generic over math libraries does with a field's type.
+    fn to_mint<T: mint::IntoMint>(value: T) -> T::MintType {
+        value.into()
+    }
+    let v: mint::Vector3<f32> = to_mint(vec3(1.0, 2.0, 3.0));
+    assert_eq!(
+        v,
+        mint::Vector3 {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0
+        }
+    );
+    let u: mint::Vector2<u32> = to_mint(vec2(4u32, 5));
+    assert_eq!(u, mint::Vector2 { x: 4, y: 5 });
+    let m: mint::ColumnMatrix2<f32> = to_mint(mat2(vec2(1.0, 0.0), vec2(0.0, 1.0)));
+    assert_eq!(m.y, mint::Vector2 { x: 0.0, y: 1.0 });
+}
+
+#[test]
 fn a_shared_struct_is_its_bytes() {
     #[repr(C)]
     #[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
@@ -93,6 +114,34 @@ fn one_derive_makes_a_struct_shared() {
     };
     let copy = params;
     assert_eq!(bytemuck::bytes_of(&copy)[16..20], 3u32.to_ne_bytes());
+    fn shared<T: Shared>() {}
+    shared::<Params>();
+}
+
+#[test]
+fn a_shared_struct_holding_an_enum_is_no_uninit() {
+    #[repr(u32)]
+    #[derive(Clone, Copy, Debug, PartialEq, bytemuck::NoUninit, bytemuck::Zeroable)]
+    enum Mode {
+        Final,
+        Depth,
+    }
+    #[repr(C)]
+    #[derive(Debug, PartialEq, Shared)]
+    #[shared(no_uninit)]
+    struct Params {
+        mode: Mode,
+        count: u32,
+    }
+    // The zero variant, as on the GPU.
+    assert_eq!(Params::default().mode, Mode::Final);
+    let params = Params {
+        mode: Mode::Depth,
+        count: 3,
+    };
+    let bytes = bytemuck::bytes_of(&params);
+    assert_eq!(bytes[..4], 1u32.to_ne_bytes());
+    assert_eq!(bytes[4..], 3u32.to_ne_bytes());
     fn shared<T: Shared>() {}
     shared::<Params>();
 }

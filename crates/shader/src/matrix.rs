@@ -136,6 +136,10 @@ macro_rules! matrix {
             #[inline]
             fn from(m: $name) -> Self { mint::$mint { $($m: m.$c.into()),+ } }
         }
+        #[cfg(feature = "mint")]
+        impl mint::IntoMint for $name {
+            type MintType = mint::$mint<f32>;
+        }
         // SAFETY: `#[repr(C)]` columns of one `Pod` type, and `f32` lanes
         // where the GPU pads them, so no padding.
         #[cfg(feature = "bytemuck")]

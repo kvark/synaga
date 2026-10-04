@@ -147,7 +147,7 @@ pub static camera: Uniform<Camera> = group(0).binding(0);
 pub static albedo: Texture2D<f32> = group(1).binding(0);
 pub static linear: Sampler = group(1).binding(1);
 
-#[derive(Clone, Copy, Io)]
+#[derive(Io)]
 pub struct VsOut {
     #[builtin(position)]
     pub clip: Vec4,
@@ -321,11 +321,11 @@ GPU, so a shared struct can hold them, and a shader compares and tests them as
 Rust does: `debug.mode == Mode::Depth`, `debug.draw.contains(Draw::SPACE)`.
 A set's `!` is its complement, which stays within the declared flags, and its
 `-` is the difference; neither is the `u32` operator. A set that derives
-`Pod` is declared on a newtype, as `bitflags` shows for any derive it lacks:
+`Shared` is declared on a newtype, as `bitflags` shows for any derive it lacks:
 
 ```rust,ignore
 #[repr(transparent)]
-#[derive(Clone, Copy, Default, PartialEq, Eq, bytemuck::Zeroable, bytemuck::Pod)]
+#[derive(PartialEq, Eq, Shared)]
 pub struct Draw(u32);
 
 bitflags::bitflags! {
@@ -337,8 +337,27 @@ bitflags::bitflags! {
 ```
 
 An enum cannot be `Pod`, since not every `u32` is one of its variants, so a
-struct that holds one derives `bytemuck::NoUninit`, which is all an upload
-needs.
+struct that holds one says `#[shared(no_uninit)]`. It is then `bytemuck`'s
+`NoUninit`, which is all an upload needs, though the host cannot read one back
+from bytes. Its `Default` is still all zeroes, so the enum derives
+`bytemuck::Zeroable`, which takes a variant that is zero:
+
+```rust,ignore
+#[repr(u32)]
+#[derive(Clone, Copy, PartialEq, bytemuck::NoUninit, bytemuck::Zeroable)]
+pub enum Mode {
+    Final,
+    Depth,
+}
+
+#[repr(C)]
+#[derive(Shared)]
+#[shared(no_uninit)]
+pub struct Debug {
+    pub mode: Mode,
+    pub draw: Draw,
+}
+```
 
 ### Textures and ray queries are methods
 
@@ -709,7 +728,7 @@ interpolated, so an integer `#[location]` that is — a vertex output or a
 fragment input — has to say `#[flat]`:
 
 ```rust,ignore
-#[derive(Clone, Copy, Io)]
+#[derive(Io)]
 struct VsOut {
     #[builtin(position)] pos: Vec4,
     #[location(0)] uv: Vec2,
