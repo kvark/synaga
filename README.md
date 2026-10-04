@@ -649,10 +649,21 @@ the CPU runs a shader's pure functions, and the GPU the rest.
   `SUBGROUP` capability. On the CPU each runs as a subgroup of one
 - `RayFlag` and `RayQueryIntersection`, and WGSL's predeclared `RAY_FLAG_*` and
   `RAY_QUERY_INTERSECTION_*` names they stand for
+- cooperative matrices, wgpu's `wgpu_cooperative_matrix`: `CoopMat8x8<T, R>`
+  and `CoopMat16x16<T, R>` of `f32` or `f16`, with the role `R` one of `A`, `B`
+  and `C` in `a * b + c`. `CoopMat8x8::<f32, A>::load(&data[offset..], stride)`
+  reads one column by column and `load_row_major` row by row; `m.store(&mut
+  data[offset..], stride)` and `store_row_major` write it back; `a.mul_add(b, c)`
+  is `coopMultiplyAdd`; `+`, `-`, a scalar's `*` and `default()`, the zero
+  matrix. A module that has one needs Naga's `COOPERATIVE_MATRIX`, and only a
+  compute shader can. Every invocation of the subgroup holds part of a matrix,
+  so all of them have to reach each operation, as a barrier: Naga checks that
+  of a load and a multiply-add, but not yet of a store. On the CPU a matrix is
+  all in the one invocation, and `mul_add` adds each product to `c` in turn,
+  where the GPU sums as it likes
 
 Not yet: labeled loops, `break` values, `match` guards and range patterns,
-generics, cooperative matrices, `f16` matrices and the `f32`-only builtins on an
-`f16`, as `sqrt`. Swizzles are values, so `v.xy = a` is
+generics, `f16` matrices and the `f32`-only builtins on an `f16`, as `sqrt`. Swizzles are values, so `v.xy = a` is
 rejected — as it is in WGSL. Assignment to function arguments is rejected.
 
 ### What the transpiler will not read
@@ -673,6 +684,10 @@ exists to prevent.
 - **The directory is searched recursively**, so `shaders/brdf/ggx.rs` is a module
   named `ggx` reached as `use super::ggx::*`. Two files of one stem in different
   directories would be ambiguous, and the reachability scan treats them as one.
+- **A cooperative load names its matrix.** `let a: CoopMat8x8<f32, A> =
+  CoopMat8x8::load(..)` is Rust, but the transpiler does not carry the `let`'s
+  type into the call, so the call says it: `CoopMat8x8::<f32, A>::load(..)`, or
+  `Lhs::load(..)` after `type Lhs = CoopMat8x8<f32, A>;`.
 
 `#[cfg(...)]` and `cfg!(...)` hold or not as they do for `rustc`, including
 `#[cfg(test)]`, which Cargo does not pass to a build script and which is

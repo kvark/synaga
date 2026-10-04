@@ -419,3 +419,111 @@ fn bitcast_keeps_the_bits() {
     );
     assert_eq!(1.0f32.to_bits(), bitcast::<u32>(1.0f32));
 }
+
+#[test]
+fn a_cooperative_matrix_loads_and_stores_either_way() {
+    // Two 8×8 matrices side by side, 3 columns of padding after each row.
+    let stride = 8 + 8 + 3;
+    let data: Vec<f32> = (0..8 * stride).map(|i| i as f32).collect();
+    let m = CoopMat8x8::<f32, C>::load_row_major(&data[8..], stride as u32);
+    let mut rows = vec![-1.0; data.len()];
+    m.store_row_major(&mut rows[8..], stride as u32);
+    for row in 0..8 {
+        for column in 0..stride {
+            let i = row * stride + column;
+            let written = (8..16).contains(&column);
+            assert_eq!(
+                rows[i],
+                if written { data[i] } else { -1.0 },
+                "{row}, {column}"
+            );
+        }
+    }
+    // Stored column by column, row `r` of the matrix is column `r` of the
+    // slice: the transpose.
+    let mut columns = vec![0.0; 64];
+    m.store(&mut columns, 8);
+    let back = CoopMat8x8::<f32, C>::load(&columns, 8);
+    let mut again = vec![0.0; 64];
+    back.store_row_major(&mut again, 8);
+    for row in 0..8 {
+        for column in 0..8 {
+            assert_eq!(columns[column * 8 + row], data[row * stride + 8 + column]);
+            assert_eq!(again[row * 8 + column], data[row * stride + 8 + column]);
+        }
+    }
+}
+
+/// What the tiled multiply in the transpiler's tests computes, on the CPU:
+/// `lhs` is M×K and `rhs` K×N, row by row, and each 8×8 tile of the product
+/// is a sum of multiply-adds.
+fn tiled_multiply(lhs: &[f32], rhs: &[f32], m: usize, n: usize, k: usize) -> Vec<f32> {
+    let mut out = vec![0.0; m * n];
+    for row in (0..m).step_by(8) {
+        for column in (0..n).step_by(8) {
+            let mut acc = CoopMat8x8::<f32, C>::default();
+            for step in (0..k).step_by(8) {
+                let a = CoopMat8x8::<f32, A>::load_row_major(&lhs[row * k + step..], k as u32);
+                let b = CoopMat8x8::<f32, B>::load_row_major(&rhs[step * n + column..], n as u32);
+                acc = a.mul_add(b, acc);
+            }
+            acc.store_row_major(&mut out[row * n + column..], n as u32);
+        }
+    }
+    out
+}
+
+#[test]
+fn a_tiled_multiply_is_the_product() {
+    let (m, n, k) = (16, 24, 32);
+    // Small integers, whose products and sums a float holds exactly, so any
+    // order of the sum gives the same answer.
+    let lhs: Vec<f32> = (0..m * k).map(|i| (i % 7) as f32 - 3.0).collect();
+    let rhs: Vec<f32> = (0..k * n).map(|i| (i % 5) as f32 - 2.0).collect();
+    let out = tiled_multiply(&lhs, &rhs, m, n, k);
+    for row in 0..m {
+        for column in 0..n {
+            let product: f32 = (0..k).map(|i| lhs[row * k + i] * rhs[i * n + column]).sum();
+            assert_eq!(out[row * n + column], product, "{row}, {column}");
+        }
+    }
+}
+
+#[test]
+fn a_cooperative_matrix_adds_and_scales_as_a_whole() {
+    let ones = vec![1.0f32; 256];
+    let twos = vec![2.0f32; 256];
+    let a = CoopMat16x16::<f32, C>::load(&ones, 16);
+    let b = CoopMat16x16::<f32, C>::load(&twos, 16);
+    let mut m = (a + b) * 2.0 - 0.5 * b;
+    m += a;
+    m -= b * 0.25;
+    m *= 2.0;
+    let mut out = vec![0.0; 256];
+    m.store(&mut out, 16);
+    // ((1 + 2) * 2 - 1 + 1 - 0.5) * 2
+    assert!(out.iter().all(|&x| x == 11.0), "{out:?}");
+}
+
+#[cfg(feature = "f16")]
+#[test]
+fn a_cooperative_matrix_holds_halves() {
+    let identity: Vec<f16> = (0..64)
+        .map(|i| if i % 9 == 0 { f16::ONE } else { f16::ZERO })
+        .collect();
+    let values: Vec<f16> = (0..64).map(|i| f16::from_f32(i as f32 * 0.5)).collect();
+    let a = CoopMat8x8::<f16, A>::load(&identity, 8);
+    let b = CoopMat8x8::<f16, B>::load(&values, 8);
+    let c = CoopMat8x8::<f16, C>::load(&values, 8);
+    let mut out = vec![f16::ZERO; 64];
+    (a.mul_add(b, c) * f16::from_f32(0.5)).store(&mut out, 8);
+    assert_eq!(out, values);
+}
+
+#[test]
+#[should_panic]
+fn a_load_past_the_slice_panics() {
+    // Column 7 starts at 7 * 8 and ends one past the last element.
+    let short = vec![0.0f32; 63];
+    let _ = CoopMat8x8::<f32, A>::load(&short, 8);
+}

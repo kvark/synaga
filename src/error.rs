@@ -168,6 +168,14 @@ pub enum Error {
     ConstArithmetic(String),
     #[error("`{0}` reads one lane for the whole subgroup, so the lane is a constant: a literal, a `const` or arithmetic on them")]
     NonConstantLane(String),
+    #[error("`{0}` says its scalar and its role, as `{0}<f32, A>` does, and so in a call: `{0}::<f32, A>::load(..)`, or a type alias for it. The scalar is `f32` or `f16`, and the role `A`, `B` or `C`")]
+    CoopType(String),
+    #[error("`{0}` takes a slice of the matrix's own scalars: `&data[offset..]`, or `&mut data[offset..]` to store")]
+    CoopData(String),
+    #[error(
+        "`a.mul_add(b, c)` takes an `A` matrix, a `B` and a `C`, all of one size and one scalar"
+    )]
+    CoopRoles,
     #[error("duplicate struct `{0}`")]
     DuplicateStruct(String),
     #[error("unknown struct `{0}`")]

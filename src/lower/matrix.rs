@@ -113,6 +113,15 @@ pub(super) fn multiply_result_ty(
     let float = |s: naga::Scalar| s.kind == Sk::Float;
     let bad = || Error::BadOperandTypes("*".into());
 
+    // A cooperative matrix scales by its own scalar, from either side.
+    let cooperative = |ty| super::cooperative::matrix(ctx, ty).map(|(_, scalar, _)| scalar);
+    match (cooperative(left), cooperative(right)) {
+        (Some(scalar), None) if ctx.shape(right) == Shape::Scalar(scalar) => return Ok(left),
+        (None, Some(scalar)) if ctx.shape(left) == Shape::Scalar(scalar) => return Ok(right),
+        (None, None) => {}
+        _ => return Err(bad()),
+    }
+
     match (ctx.shape(left), ctx.shape(right)) {
         (Shape::Scalar(a), Shape::Scalar(b)) if a == b && numeric(a) => Ok(left),
         (Shape::Vector(n, a), Shape::Vector(m, b)) if n == m && a == b && numeric(a) => Ok(left),
