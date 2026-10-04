@@ -127,6 +127,15 @@ fn a_broadcast_lane_is_a_constant() {
         "#,
     );
     assert!(err.contains("`subgroup_broadcast` reads one lane"), "{err}");
+    // A local is read, as in Rust, though a constant has its name.
+    let err = reject(
+        r#"
+        const LANE: u32 = 2;
+        #[allow(non_snake_case)]
+        fn f(x: f32) -> f32 { let LANE = 3u32; quad_broadcast(x, LANE + 1) }
+        "#,
+    );
+    assert!(err.contains("`quad_broadcast` reads one lane"), "{err}");
 }
 
 #[test]

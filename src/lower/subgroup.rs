@@ -239,15 +239,13 @@ fn lane(
     indexed: Indexed,
 ) -> Result<Handle<Expression>, Error> {
     if indexed.constant() {
-        let not_constant = || Error::NonConstantLane(name.into());
-        let lane = match ctx.const_u32(expr) {
-            Ok(Some(lane)) => lane,
-            Ok(None) => return Err(not_constant()),
-            // A local is a value the shader computes, which the subgroup
-            // cannot agree on beforehand.
-            Err(err) if names_local(&err, env) => return Err(not_constant()),
-            Err(err) => return Err(err),
+        // A local is a value the shader computes, which the subgroup cannot
+        // agree on beforehand.
+        let lane = match env.reads_local(expr) {
+            true => None,
+            false => ctx.const_u32(expr)?,
         };
+        let lane = lane.ok_or_else(|| Error::NonConstantLane(name.into()))?;
         return Ok(function
             .expressions
             .append(Expression::Literal(Literal::U32(lane)), ctx.span));
@@ -256,14 +254,5 @@ fn lane(
     match ctx.as_scalar(ty) {
         Some(Scalar::U32) => Ok(index),
         _ => Err(Error::BadOperandTypes(name.into())),
-    }
-}
-
-/// Whether folding failed on a name that is a local: a value, not a constant.
-fn names_local(err: &Error, env: &Env) -> bool {
-    match err {
-        Error::Pos { source, .. } | Error::At { source, .. } => names_local(source, env),
-        Error::UnknownIdent(name) => env.lookup(name).is_some(),
-        _ => false,
     }
 }
