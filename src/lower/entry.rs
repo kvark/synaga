@@ -237,6 +237,10 @@ fn map_builtin(name: &str) -> Result<BuiltIn, Error> {
         "num_workgroups" => BuiltIn::NumWorkGroups,
         "front_facing" => BuiltIn::FrontFacing,
         "frag_depth" => BuiltIn::FragDepth,
+        "subgroup_size" => BuiltIn::SubgroupSize,
+        "subgroup_invocation_id" => BuiltIn::SubgroupInvocationId,
+        "num_subgroups" => BuiltIn::NumSubgroups,
+        "subgroup_id" => BuiltIn::SubgroupId,
         other => return Err(Error::UnsupportedBinding(other.into())),
     })
 }
@@ -250,7 +254,10 @@ fn input_builtin(stage: ShaderStage, name: &str) -> Option<BuiltIn> {
     let builtin = map_builtin(name).ok()?;
     let takes = match stage {
         ShaderStage::Vertex => matches!(builtin, B::VertexIndex | B::InstanceIndex),
-        ShaderStage::Fragment => matches!(builtin, B::Position { .. } | B::FrontFacing),
+        ShaderStage::Fragment => matches!(
+            builtin,
+            B::Position { .. } | B::FrontFacing | B::SubgroupSize | B::SubgroupInvocationId
+        ),
         ShaderStage::Compute => matches!(
             builtin,
             B::GlobalInvocationId
@@ -258,6 +265,10 @@ fn input_builtin(stage: ShaderStage, name: &str) -> Option<BuiltIn> {
                 | B::LocalInvocationIndex
                 | B::WorkGroupId
                 | B::NumWorkGroups
+                | B::SubgroupSize
+                | B::SubgroupInvocationId
+                | B::NumSubgroups
+                | B::SubgroupId
         ),
         _ => false,
     };

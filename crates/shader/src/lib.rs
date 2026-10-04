@@ -28,6 +28,8 @@
 //! panics on overflow under overflow checks, as `+` on a `u32` does. A free
 //! function keeps WGSL's meaning, so `fract(v)` is `v - floor(v)`. The atomics
 //! are real atomics, and the [`ir`] module decodes what the build step wrote.
+//! The [`subgroup`] operations run as a subgroup of one, which the invocation
+//! calling them is.
 //!
 //! What needs the GPU panics: resources, textures and samplers, ray queries,
 //! barriers and `discard()`. Running those needs a runtime that runs the
@@ -95,6 +97,7 @@ pub mod builtins;
 pub mod ir;
 pub mod matrix;
 pub mod resource;
+pub mod subgroup;
 pub mod texture;
 pub mod vector;
 
@@ -102,6 +105,7 @@ pub use atomic::*;
 pub use builtins::*;
 pub use matrix::*;
 pub use resource::*;
+pub use subgroup::*;
 pub use synaga_macros::{entry_point, Io, Shared};
 pub use texture::*;
 pub use vector::*;

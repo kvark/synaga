@@ -27,6 +27,7 @@ mod ray;
 mod scope;
 mod stmt;
 mod structure;
+mod subgroup;
 mod switch;
 mod texture;
 mod vector;

@@ -146,6 +146,7 @@ fn barrier(name: &str) -> Option<naga::Barrier> {
         "workgroupBarrier" | "workgroup_barrier" => Some(naga::Barrier::WORK_GROUP),
         "storageBarrier" | "storage_barrier" => Some(naga::Barrier::STORAGE),
         "textureBarrier" | "texture_barrier" => Some(naga::Barrier::TEXTURE),
+        "subgroupBarrier" | "subgroup_barrier" => Some(naga::Barrier::SUB_GROUP),
         _ => None,
     }
 }
@@ -296,6 +297,11 @@ pub(super) fn lower_call_any(
     }
     if let Some(fun) = relational(&name) {
         return lower_relational(ctx, function, body, call, env, &name, fun).map(Some);
+    }
+    if let Some(result) =
+        super::subgroup::lower_subgroup_call(ctx, function, body, &name, call, env, hint)?
+    {
+        return Ok(Some(result));
     }
     if let Some(spec) = math_spec(&name) {
         return lower_math(ctx, function, body, call, env, (&name, spec), hint).map(Some);
