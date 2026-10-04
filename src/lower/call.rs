@@ -410,10 +410,16 @@ enum MathResult {
     SameAsFirst,
     ScalarOfFirst,
     Transpose,
-    /// `u32`, for the pack functions.
+    /// `u32`, for the pack functions and `dot4_u8_packed`.
     U32,
+    /// `i32`, for `dot4_i8_packed`.
+    I32,
     /// `vec4<f32>`, for the 4x8 unpack functions.
     Vec4F32,
+    /// `vec4<i32>`, for `unpack4x_i8`.
+    Vec4I32,
+    /// `vec4<u32>`, for `unpack4x_u8`.
+    Vec4U32,
     /// `vec2<f32>`, for the 2x16 unpack functions.
     Vec2F32,
 }
@@ -469,6 +475,14 @@ fn math_spec(name: &str) -> Option<MathSpec> {
         "unpack2x16snorm" | "unpack_2x16_snorm" => (Mf::Unpack2x16snorm, 1, Vec2F32),
         "unpack2x16unorm" | "unpack_2x16_unorm" => (Mf::Unpack2x16unorm, 1, Vec2F32),
         "unpack2x16float" | "unpack_2x16_float" => (Mf::Unpack2x16float, 1, Vec2F32),
+        "dot4_u8_packed" | "dot4U8Packed" => (Mf::Dot4U8Packed, 2, U32),
+        "dot4_i8_packed" | "dot4I8Packed" => (Mf::Dot4I8Packed, 2, I32),
+        "pack4x_i8" | "pack4xI8" => (Mf::Pack4xI8, 1, U32),
+        "pack4x_u8" | "pack4xU8" => (Mf::Pack4xU8, 1, U32),
+        "pack4x_i8_clamp" | "pack4xI8Clamp" => (Mf::Pack4xI8Clamp, 1, U32),
+        "pack4x_u8_clamp" | "pack4xU8Clamp" => (Mf::Pack4xU8Clamp, 1, U32),
+        "unpack4x_i8" | "unpack4xI8" => (Mf::Unpack4xI8, 1, Vec4I32),
+        "unpack4x_u8" | "unpack4xU8" => (Mf::Unpack4xU8, 1, Vec4U32),
         "normalize" => (Mf::Normalize, 1, SameAsFirst),
         "exp" => (Mf::Exp, 1, SameAsFirst),
         "exp2" => (Mf::Exp2, 1, SameAsFirst),
@@ -858,7 +872,7 @@ fn lower_math(
     // result goes says the type as well: `let n: u32 = max(1, 2)`.
     let mut hint = match spec.result {
         MathResult::SameAsFirst | MathResult::ScalarOfFirst => hint,
-        _ => None,
+        _ => argument_scalar(spec.fun),
     };
     let mut args = Vec::new();
     let mut tys = Vec::new();
@@ -869,6 +883,27 @@ fn lower_math(
         tys.push(ty);
     }
     finish_math(ctx, function, body, spec, &args, &tys)
+}
+
+/// The scalar a builtin's arguments are, where its signature fixes one rather
+/// than following them: an unsuffixed literal takes it, as Rust's would.
+fn argument_scalar(fun: MathFunction) -> Option<naga::Scalar> {
+    use MathFunction as Mf;
+    match fun {
+        Mf::Dot4I8Packed
+        | Mf::Dot4U8Packed
+        | Mf::Pack4xU8
+        | Mf::Pack4xU8Clamp
+        | Mf::Unpack4xI8
+        | Mf::Unpack4xU8
+        | Mf::Unpack4x8snorm
+        | Mf::Unpack4x8unorm
+        | Mf::Unpack2x16snorm
+        | Mf::Unpack2x16unorm
+        | Mf::Unpack2x16float => Some(naga::Scalar::U32),
+        Mf::Pack4xI8 | Mf::Pack4xI8Clamp => Some(naga::Scalar::I32),
+        _ => None,
+    }
 }
 
 fn finish_math(
@@ -900,7 +935,10 @@ fn finish_math(
             ctx.intern_matrix(rows, columns, s)
         }
         MathResult::U32 => ctx.intern_scalar(naga::Scalar::U32),
+        MathResult::I32 => ctx.intern_scalar(naga::Scalar::I32),
         MathResult::Vec4F32 => ctx.intern_vector(naga::VectorSize::Quad, naga::Scalar::F32),
+        MathResult::Vec4I32 => ctx.intern_vector(naga::VectorSize::Quad, naga::Scalar::I32),
+        MathResult::Vec4U32 => ctx.intern_vector(naga::VectorSize::Quad, naga::Scalar::U32),
         MathResult::Vec2F32 => ctx.intern_vector(naga::VectorSize::Bi, naga::Scalar::F32),
     };
     let handle = emit(
