@@ -279,7 +279,7 @@ pub struct Globals {
 
 `#[derive(Shared)]` is what uploading one takes: `Clone`, `Copy`, a `Default`
 of all zeroes, which is the GPU's default too, and `bytemuck`'s `Zeroable` and
-`Pod`, checked as `bytemuck`'s own derive checks them.
+`NoUninit`, checked as `bytemuck`'s own derives check them.
 
 The transpiler works out `rustc`'s layout from the types. To have `rustc`
 confirm it, for the target being built, the module that lists the shader
@@ -337,11 +337,9 @@ bitflags::bitflags! {
 }
 ```
 
-An enum cannot be `Pod`, since not every `u32` is one of its variants, so a
-struct that holds one says `#[shared(no_uninit)]`. It is then `bytemuck`'s
-`NoUninit`, which is all an upload needs, though the host cannot read one back
-from bytes. Its `Default` is still all zeroes, so the enum derives
-`bytemuck::Zeroable`, which takes a variant that is zero:
+An enum is a field like any other. The struct's `Default` is all zeroes, so
+the enum derives `bytemuck::Zeroable`, which takes a variant that is zero, and
+`NoUninit` for the upload:
 
 ```rust,ignore
 #[repr(u32)]
@@ -353,12 +351,17 @@ pub enum Mode {
 
 #[repr(C)]
 #[derive(Shared)]
-#[shared(no_uninit)]
 pub struct Debug {
     pub mode: Mode,
     pub draw: Draw,
 }
 ```
+
+`Shared` is not `Pod`, which promises that any bytes are a value: not every
+`u32` is a `Mode`. A host that reads a struct back from bytes derives
+`bytemuck::CheckedBitPattern` beside `Shared`, on the struct and its enums, and
+reads with `bytemuck::checked`, which refuses a `u32` that is none of the
+variants.
 
 ### Textures and ray queries are methods
 

@@ -119,7 +119,7 @@ fn one_derive_makes_a_struct_shared() {
 }
 
 #[test]
-fn a_shared_struct_holding_an_enum_is_no_uninit() {
+fn a_shared_struct_can_hold_an_enum() {
     #[repr(u32)]
     #[derive(Clone, Copy, Debug, PartialEq, bytemuck::NoUninit, bytemuck::Zeroable)]
     enum Mode {
@@ -128,7 +128,6 @@ fn a_shared_struct_holding_an_enum_is_no_uninit() {
     }
     #[repr(C)]
     #[derive(Debug, PartialEq, Shared)]
-    #[shared(no_uninit)]
     struct Params {
         mode: Mode,
         count: u32,
@@ -144,6 +143,89 @@ fn a_shared_struct_holding_an_enum_is_no_uninit() {
     assert_eq!(bytes[4..], 3u32.to_ne_bytes());
     fn shared<T: Shared>() {}
     shared::<Params>();
+}
+
+#[test]
+fn a_shared_struct_can_hold_an_array_of_them() {
+    #[repr(u32)]
+    #[derive(Clone, Copy, Debug, PartialEq, bytemuck::NoUninit, bytemuck::Zeroable)]
+    enum Kind {
+        Point,
+        Spot,
+    }
+    #[repr(C)]
+    #[derive(Shared)]
+    struct Light {
+        color: Vec3,
+        kind: Kind,
+    }
+    // `bytemuck` makes `[Light; 2]` `NoUninit` only for a `Pod` `Light`, which
+    // one holding an enum is not, so the derive checks the element.
+    #[repr(C)]
+    #[derive(Shared)]
+    struct Lights {
+        lights: [Light; 2],
+        count: u32,
+        _pad: Vec3<u32>,
+    }
+    let mut lights = Lights::default();
+    lights.lights[1] = Light {
+        color: Vec3::ONE,
+        kind: Kind::Spot,
+    };
+    lights.count = 2;
+    assert_eq!(lights.lights[0].kind, Kind::Point);
+    let bytes = bytemuck::bytes_of(&lights);
+    assert_eq!(bytes.len(), 2 * 16 + 16);
+    assert_eq!(bytes[28..32], 1u32.to_ne_bytes());
+    assert_eq!(bytes[32..36], 2u32.to_ne_bytes());
+}
+
+#[test]
+fn a_shared_struct_reads_back_with_its_enums_checked() {
+    #[repr(u32)]
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        bytemuck::NoUninit,
+        bytemuck::Zeroable,
+        bytemuck::CheckedBitPattern,
+    )]
+    enum Mode {
+        Final,
+        Depth,
+    }
+    #[repr(C)]
+    #[derive(Debug, PartialEq, Shared, bytemuck::CheckedBitPattern)]
+    struct Params {
+        tint: Vec4,
+        mode: Mode,
+        count: u32,
+        _pad: Vec2<u32>,
+    }
+    let written = [
+        Params {
+            tint: Vec4::ONE,
+            mode: Mode::Depth,
+            count: 3,
+            _pad: Vec2::ZERO,
+        },
+        Params::default(),
+    ];
+    // What a buffer holds, as a host maps it back.
+    let mut words: Vec<u32> = bytemuck::cast_slice(&written).to_vec();
+    let read: &[Params] = bytemuck::checked::cast_slice(&words);
+    assert_eq!(read, &written);
+    // Zeroes are the zero variant.
+    assert_eq!(read[1].mode, Mode::Final);
+    // A `u32` that is none of the variants is refused, not read.
+    words[4] = 7;
+    assert!(matches!(
+        bytemuck::checked::try_cast_slice::<u32, Params>(&words),
+        Err(bytemuck::checked::CheckedCastError::InvalidBitPattern)
+    ));
 }
 
 #[test]

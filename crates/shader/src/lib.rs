@@ -54,10 +54,11 @@
 //!
 //! [`Shared`](derive@Shared) derives what uploading one takes: `Clone`,
 //! `Copy`, a `Default` of all zeroes, as the GPU's default is, and
-//! `bytemuck`'s `Zeroable` and `Pod`, which the `bytemuck` feature makes the
-//! vectors and matrices. They convert from arrays, a matrix column by column,
-//! and with the `mint` feature from mint's types, which most math crates
-//! convert to. `vec3(x, y, z)` and the other constructors work on the CPU too.
+//! `bytemuck`'s `Zeroable` and `NoUninit`. The `bytemuck` feature makes the
+//! vectors and matrices `Pod`, which is both. They convert from arrays, a
+//! matrix column by column, and with the `mint` feature from mint's types,
+//! which most math crates convert to. `vec3(x, y, z)` and the other
+//! constructors work on the CPU too.
 //!
 //! # Where this differs from WGSL
 //!
@@ -107,7 +108,7 @@ pub use vector::*;
 
 /// A struct the host shares with a shader, which `#[derive(Shared)]`
 /// implements, with `Clone`, `Copy`, a zeroed `Default`, and `bytemuck`'s
-/// `Zeroable` and `Pod`, or `NoUninit` with `#[shared(no_uninit)]`.
+/// `Zeroable` and `NoUninit`.
 ///
 /// ```
 /// use synaga_shader::*;
@@ -146,10 +147,8 @@ pub use vector::*;
 /// }
 /// ```
 ///
-/// An enum is not `Pod`, since not every `u32` is one of its variants, so a
-/// struct that holds one says `#[shared(no_uninit)]`. It is then `NoUninit`,
-/// which is all an upload needs, but the host cannot read one back from bytes.
-/// Its `Default` is all zeroes too, so the enum needs a variant that is zero.
+/// A struct can hold an enum, which is a `u32` on the GPU. Its `Default` is all
+/// zeroes too, so the enum needs a variant that is zero:
 ///
 /// ```
 /// use synaga_shader::*;
@@ -161,30 +160,56 @@ pub use vector::*;
 /// }
 /// #[repr(C)]
 /// #[derive(Shared)]
-/// #[shared(no_uninit)]
-/// struct Debug {
+/// struct Params {
 ///     mode: Mode,
 ///     _pad: u32,
 /// }
-/// assert_eq!(Debug::default().mode, Mode::Final);
+/// assert_eq!(Params::default().mode, Mode::Final);
 /// ```
 ///
-/// Without it, the enum is a field that is not `Pod`:
+/// and one without such a variant cannot be zeroed:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// use synaga_shader::*;
 /// #[repr(u32)]
-/// #[derive(Clone, Copy, bytemuck::NoUninit, bytemuck::Zeroable)]
+/// #[derive(Clone, Copy, bytemuck::NoUninit)]
+/// enum Mode {
+///     Depth = 1,
+///     Normal,
+/// }
+/// #[repr(C)]
+/// #[derive(Shared)]
+/// struct Params {
+///     mode: Mode,
+///     _pad: u32,
+/// }
+/// ```
+///
+/// `NoUninit` is all an upload takes. A host that reads one back from bytes
+/// derives `bytemuck`'s `CheckedBitPattern` beside `Shared`, on the struct and
+/// on its enums, so that a `u32` that is none of the variants is refused rather
+/// than read. `bytemuck` checks no array that way, so the struct's arrays are
+/// of `Pod` elements:
+///
+/// ```
+/// use synaga_shader::*;
+/// #[repr(u32)]
+/// #[derive(Clone, Copy, Debug, PartialEq)]
+/// #[derive(bytemuck::NoUninit, bytemuck::Zeroable, bytemuck::CheckedBitPattern)]
 /// enum Mode {
 ///     Final,
 ///     Depth,
 /// }
 /// #[repr(C)]
-/// #[derive(Shared)]
-/// struct Debug {
+/// #[derive(Debug, Shared, bytemuck::CheckedBitPattern)]
+/// struct Params {
 ///     mode: Mode,
-///     _pad: u32,
+///     count: u32,
 /// }
+/// let read: &Params = bytemuck::checked::from_bytes(bytemuck::cast_slice(&[1u32, 3]));
+/// assert_eq!((read.mode, read.count), (Mode::Depth, 3));
+/// let unknown = bytemuck::checked::try_from_bytes::<Params>(bytemuck::cast_slice(&[7u32, 3]));
+/// assert!(unknown.is_err());
 /// ```
 #[cfg(feature = "bytemuck")]
 pub trait Shared: bytemuck::NoUninit + bytemuck::Zeroable + Default {}

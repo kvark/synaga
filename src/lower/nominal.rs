@@ -11,7 +11,7 @@
 //!
 //! A set is declared with `bitflags!`, either whole (`pub struct Flags: u32`)
 //! or on a newtype the source declares itself (`impl Flags: u32`), which is
-//! how the newtype can derive `bytemuck::Pod` for the host.
+//! how the newtype can derive `Shared` for the host.
 
 use naga::{BinaryOperator, Block, Expression, Function, Handle, Literal, Scalar, Type};
 use naga::{TypeInner, UnaryOperator};
