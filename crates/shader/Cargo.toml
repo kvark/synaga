@@ -15,8 +15,11 @@ ir = ["dep:serde", "dep:bincode"]
 # For a `#[repr(C)]` struct the host shares with a shader: `bytemuck` makes
 # the vectors and matrices `Pod`, so the struct can derive it and upload
 # itself, and `mint` converts from the host's own math types.
-bytemuck = ["dep:bytemuck"]
+bytemuck = ["dep:bytemuck", "half?/bytemuck"]
 mint = ["dep:mint"]
+# WGSL's `f16`, as `half`'s, since Rust's own is not stable. A module that
+# uses one needs Naga's `SHADER_FLOAT16`.
+f16 = ["dep:half"]
 
 [dependencies]
 synaga-macros = { path = "../macros", version = "0.1.0" }
@@ -26,6 +29,7 @@ serde = { version = "1", optional = true }
 bincode = { version = "2", default-features = false, features = ["std", "serde"], optional = true }
 bytemuck = { version = "1", optional = true }
 mint = { version = "0.5.8", optional = true }
+half = { version = "2.5", default-features = false, optional = true }
 
 [dev-dependencies]
 bytemuck = { version = "1", features = ["derive"] }

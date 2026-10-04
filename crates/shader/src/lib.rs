@@ -110,6 +110,16 @@ pub use synaga_macros::{entry_point, Io, Shared};
 pub use texture::*;
 pub use vector::*;
 
+/// WGSL's `f16`: `half`'s, since Rust's own is not stable yet.
+///
+/// A shader names it `f16` either way, so it keeps working when Rust's
+/// arrives. Rust has no `f16` literal or `as` for it, so a value is written
+/// `f16::from_f32(1.5)`, `f16::ONE` or `v.cast::<f16>()`, and read back with
+/// `x.to_f32()`. The arithmetic, the comparisons and the builtins that take
+/// any number work on it; the transcendental ones are `f32`'s.
+#[cfg(feature = "f16")]
+pub use half::f16;
+
 /// A struct the host shares with a shader, which `#[derive(Shared)]`
 /// implements, with `Clone`, `Copy`, a zeroed `Default`, and `bytemuck`'s
 /// `Zeroable` and `NoUninit`.

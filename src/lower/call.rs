@@ -61,6 +61,7 @@ pub(super) fn zero_value_type(
     }
     let scalar = match name.as_str() {
         "f32" => naga::Scalar::F32,
+        "f16" => naga::Scalar::F16,
         "u32" | "usize" => naga::Scalar::U32,
         "i32" | "isize" => naga::Scalar::I32,
         "bool" => naga::Scalar::BOOL,
@@ -101,7 +102,7 @@ fn names_type(ctx: &mut Context, path: &[String]) -> Result<bool, Error> {
         || parse_mat_ident(&name).is_some()
         || matches!(
             name.as_str(),
-            "f32" | "u32" | "i32" | "usize" | "isize" | "bool" | "ray_query" | "RayQuery"
+            "f32" | "f16" | "u32" | "i32" | "usize" | "isize" | "bool" | "ray_query" | "RayQuery"
         )
         || super::ray::is_ray_word_type(&name)
         || ctx.named_type(path)?.is_some())
@@ -844,9 +845,11 @@ fn lower_special_math(
             (handle, ctx.intern_scalar(scalar))
         }
         RustMath::Recip => {
+            let scalar = shape.scalar().ok_or(Error::TypeMismatch)?;
+            let one = naga::Literal::one(scalar).ok_or(Error::TypeMismatch)?;
             let mut one = function
                 .expressions
-                .append(Expression::Literal(naga::Literal::F32(1.0)), ctx.span);
+                .append(Expression::Literal(one), ctx.span);
             if let Shape::Vector(size, _) = shape {
                 one = emit(ctx, function, body, Expression::Splat { size, value: one })?;
             }

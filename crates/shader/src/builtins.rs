@@ -30,6 +30,8 @@ macro_rules! mark {
 
 mark!(Numeric: f32, i32, u32,
       Vec2, Vec3, Vec4, Vec2<i32>, Vec3<i32>, Vec4<i32>, Vec2<u32>, Vec3<u32>, Vec4<u32>);
+#[cfg(feature = "f16")]
+mark!(Numeric: half::f16, Vec2<half::f16>, Vec3<half::f16>, Vec4<half::f16>);
 mark!(Floating: f32, Vec2, Vec3, Vec4);
 mark!(Integral: i32, u32, Vec2<i32>, Vec3<i32>, Vec4<i32>, Vec2<u32>, Vec3<u32>, Vec4<u32>);
 mark!(BoolVector: bool, Vec2<bool>, Vec3<bool>, Vec4<bool>);
@@ -567,6 +569,8 @@ mod lanes {
         )*};
     }
     scalar_lanes!(f32, i32, u32, bool);
+    #[cfg(feature = "f16")]
+    scalar_lanes!(half::f16);
 
     macro_rules! vector_lanes {
         ($($vec:ident),*) => {$(
@@ -643,6 +647,33 @@ mod lanes {
         #[inline]
         fn max(self, other: i32) -> i32 {
             Ord::max(self, other)
+        }
+    }
+
+    #[cfg(feature = "f16")]
+    impl Number for half::f16 {
+        /// The sign bit cleared, which is what the GPU's `abs` does too.
+        #[inline]
+        fn abs(self) -> half::f16 {
+            half::f16::from_bits(self.to_bits() & 0x7FFF)
+        }
+        #[inline]
+        fn sign(self) -> half::f16 {
+            if self > half::f16::ZERO {
+                half::f16::ONE
+            } else if self < half::f16::ZERO {
+                -half::f16::ONE
+            } else {
+                half::f16::ZERO
+            }
+        }
+        #[inline]
+        fn min(self, other: half::f16) -> half::f16 {
+            half::f16::min(self, other)
+        }
+        #[inline]
+        fn max(self, other: half::f16) -> half::f16 {
+            half::f16::max(self, other)
         }
     }
 

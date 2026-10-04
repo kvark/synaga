@@ -460,6 +460,7 @@ default methods are not supported.
 | `all(a <= b)`, `any(a != b)` | `a <= b`, `a != b` | that one `bool` is every lane's, as `PartialOrd` and `PartialEq` are |
 | `vec3<f32>(v)` | `Vec3::from(v)` | a type is not a function, and `as` only converts primitives |
 | `T()` | `T::default()` | `T()` is a call, and a struct is not a function |
+| `1.5h`, `f16(x)`, `f32(h)` | `f16::from_f32(1.5)`, `f16::from_f32(x)`, `h.to_f32()` | Rust's `f16` is not stable, so it is `half`'s, which has no literal and no `as` |
 
 The types are WGSL's words in WGSL's order, capitalized: `texture_storage_2d_array`
 is `TextureStorage2DArray`, `sampler_comparison` is `SamplerComparison`. A
@@ -529,12 +530,15 @@ wraps on both. The rest of what differs, operator by operator:
 | `x.round()` | refused: the GPU's rounds a half to the even neighbour, which is `round_ties_even()` | |
 | `0.0f32.signum()` | refused: the GPU's `sign(0.0)` is 0 | 1 |
 | `min`, `max` with a NaN | either operand | the one that is a number |
+| a conversion into an `f16` that is not exact | either neighbour | the nearest, ties to even |
 
 `+`, `-` and `*` are correctly rounded on both, and so is a conversion that
 fits. Beyond those, WGSL allows error: 2.5 ULP for `/`, a few for the square
 roots, more for `exp`, `log` and `pow`, which is `exp2(y * log2(x))` and only
 defined for `x >= 0`, and an absolute 2^-11 for `sin` and `cos` on `[-π, π]`.
 `fma` may or may not round once. The CPU's are Rust's, which are closer. An
+`f16` literal, `f16::from_f32(1.5)`, is converted by the build, as `half`
+converts it, so it is the CPU's `f16` on both sides. An
 ill-conditioned function turns those few ULP into more: Blade's GGX sampling
 at a roughness of 0.05 moves its density by percents for an ulp in the half
 vector it draws.
@@ -591,6 +595,11 @@ the CPU runs a shader's pure functions, and the GPU the rest.
 - scalars `f32`, `u32`, `i32`, `bool`; vectors `Vec2<T>`/`Vec3<T>`/`Vec4<T>`
   of any of them, `f32` when `T` is left out; matrices `Mat2`/`Mat3`/`Mat4` and
   `Mat2x3` through `Mat4x3`, columns first as in WGSL's `matCxR`
+- `f16` and its vectors, with `synaga-shader`'s `f16` feature: `half`'s type,
+  its operators and comparisons, `f16::ONE`, `f16::PI` and the rest of its
+  constants, `f16::from_f32(x)`, `h.to_f32()`, `v.cast::<f16>()`, and the
+  builtins that take any number, `abs`, `min`, `max`, `clamp`, `dot` and the
+  subgroup operations. A module with one needs Naga's `SHADER_FLOAT16`.
 - constructors `vec3(x, y, z)`; matrix constructors from column vectors or
   column-major scalars
 - components `.x`/`.y`/`.z`/`.w`, swizzles, index `v[0]` / `v[i]` / `m[0]`
@@ -617,7 +626,8 @@ the CPU runs a shader's pure functions, and the GPU the rest.
   `u32::MAX` and the rest of a primitive's own, `core::f32::consts`, `cfg!(..)`),
   and arithmetic on them, folded to the literal `rustc` gets: the operators,
   `as`, `if`, and a primitive's `const fn`s, `wrapping_add`, `pow`, `div_ceil`,
-  `to_bits` and the like. An array length and a binding number fold the same
+  `to_bits` and the like, and `half`'s, `f16::from_f32_const(x)` and
+  `h.to_f32_const()`. An array length and a binding number fold the same
   way
 - structs, their literals, with `..Default::default()` or `..other` for the rest,
   and fields; arrays `[T; N]` and `[a, b, c]`; `[T]`
@@ -641,7 +651,8 @@ the CPU runs a shader's pure functions, and the GPU the rest.
   `RAY_QUERY_INTERSECTION_*` names they stand for
 
 Not yet: labeled loops, `break` values, `match` guards and range patterns,
-generics, cooperative matrices, `f16`. Swizzles are values, so `v.xy = a` is
+generics, cooperative matrices, `f16` matrices and the `f32`-only builtins on an
+`f16`, as `sqrt`. Swizzles are values, so `v.xy = a` is
 rejected — as it is in WGSL. Assignment to function arguments is rejected.
 
 ### What the transpiler will not read
