@@ -304,14 +304,15 @@ the GPU spaces 16 bytes apart, cannot. `examples/sprites` shares its uniforms
 this way.
 
 `check_layout!` is what makes this a build error rather than a runtime surprise,
-so it is worth noticing if you have not added it. When a module has shared
-structs and nothing has included the layout file, the build script says so:
+so the build looks for it where `rustc` looks for the module: `mod.rs` in the
+shader directory, or the file named after the directory beside it. When there
+are shared structs and it is not there, the build script says so:
 
 ```text
 warning: synaga: 2 shared struct(s) in src/shaders have `rustc` layout checks in
-…/shaders_layout.rs, which nothing has included — add
-`synaga_shader::check_layout!("shaders_layout.rs");` to the module that lists
-the shader modules, or the layout is checked only by synaga's own model of `rustc`
+…/shaders_layout.rs, which src/shaders/mod.rs does not include — add
+`synaga_shader::check_layout!();` to it, or the layout is checked only by
+synaga's own model of `rustc`
 ```
 
 The checks cover `size_of`, `align_of` and each field's `offset_of!`.

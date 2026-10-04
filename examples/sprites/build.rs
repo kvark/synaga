@@ -6,8 +6,8 @@
 //!
 //! `src/shaders/mod.rs` has `synaga_shader::check_layout!()`, which is where
 //! `rustc` checks this crate's own layout of the structs it shares with the
-//! shaders. The build script cannot see that include, so it is told here.
+//! shaders. The build reads `mod.rs` for it, and warns if it goes missing.
 
 fn main() {
-    synaga::build::Shaders::new().layout_checks_included().run();
+    synaga::build::Shaders::new().run();
 }
