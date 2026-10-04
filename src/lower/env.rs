@@ -57,4 +57,28 @@ impl Env {
     pub fn lookup(&self, name: &str) -> Option<&Binding> {
         self.bindings.iter().rev().find(|b| b.name == name)
     }
+
+    /// Whether `expr` reads a local anywhere, which makes it a value the
+    /// shader computes rather than one the build can fold, even where a
+    /// constant has the local's name.
+    pub fn reads_local(&self, expr: &syn::Expr) -> bool {
+        struct Reads<'a> {
+            env: &'a Env,
+            found: bool,
+        }
+        impl<'ast> syn::visit::Visit<'ast> for Reads<'_> {
+            fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+                if let Some(ident) = path.path.get_ident() {
+                    self.found |= self.env.lookup(&ident.to_string()).is_some();
+                }
+                syn::visit::visit_expr_path(self, path);
+            }
+        }
+        let mut reads = Reads {
+            env: self,
+            found: false,
+        };
+        syn::visit::Visit::visit_expr(&mut reads, expr);
+        reads.found
+    }
 }
