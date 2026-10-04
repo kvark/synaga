@@ -166,6 +166,8 @@ pub enum Error {
     UnsupportedConstExpr(String),
     #[error("constant arithmetic {0}")]
     ConstArithmetic(String),
+    #[error("`{0}` reads one lane for the whole subgroup, so the lane is a constant: a literal, a `const` or arithmetic on them")]
+    NonConstantLane(String),
     #[error("duplicate struct `{0}`")]
     DuplicateStruct(String),
     #[error("unknown struct `{0}`")]

@@ -322,6 +322,27 @@ fn packed_bytes_multiply_and_pack_as_the_gpu_does() {
 }
 
 #[test]
+fn a_subgroup_on_the_cpu_is_the_one_invocation() {
+    // A reduction or an inclusive scan of one lane is that lane, and an
+    // exclusive scan is the operation's identity.
+    assert_eq!(subgroup_add(vec3(1.0, 2.0, 3.0)), vec3(1.0, 2.0, 3.0));
+    assert_eq!(subgroup_max(-4i32), -4);
+    assert_eq!(subgroup_inclusive_add(7u32), 7);
+    assert_eq!(subgroup_exclusive_add(5u32), 0);
+    assert_eq!(subgroup_exclusive_mul(vec2(2, 3)), vec2(1, 1));
+    assert_eq!(subgroup_xor(0b1010u32), 0b1010);
+    assert!(subgroup_all(true) && !subgroup_any(false));
+    // The one invocation is bit 0 of the first word.
+    assert_eq!(subgroup_ballot(true), vec4(1, 0, 0, 0));
+    assert_eq!(subgroup_ballot(false), Vec4::<u32>::ZERO);
+    // There is no other lane to read from.
+    assert_eq!(subgroup_broadcast(4.0, 0), 4.0);
+    assert_eq!(subgroup_shuffle_xor(9u32, 1), 9);
+    assert_eq!(quad_swap_diagonal(vec2(1.0, 2.0)), vec2(1.0, 2.0));
+    subgroup_barrier();
+}
+
+#[test]
 fn half_floats_round_to_the_nearest_even() {
     assert_eq!(pack2x16float(vec2(1.0, -2.0)), 0xC000_3C00);
     assert_eq!(pack2x16float(vec2(65504.0, 0.0)), 0x7BFF);

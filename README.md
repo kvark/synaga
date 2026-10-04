@@ -630,7 +630,13 @@ the CPU runs a shader's pure functions, and the GPU the rest.
   `_clamp` forms, `unpack4x_i8` and `unpack4x_u8`;
   `select(reject, accept, condition)` in WGSL's argument order; `all`, `any`,
   `isNan`, `isInf`; `bitcast::<T>(x)`
-- `workgroup_barrier()`, `storage_barrier()`, `discard()`
+- `workgroup_barrier()`, `storage_barrier()`, `subgroup_barrier()`, `discard()`
+- the subgroup operations, WGSL's in snake case: `subgroup_add` and the other
+  reductions, the inclusive and exclusive scans, `subgroup_all`, `subgroup_any`,
+  `subgroup_ballot`, the broadcasts, the shuffles and the quad operations; and
+  `subgroup_size`, `subgroup_invocation_id`, `subgroup_id` and `num_subgroups`
+  as parameters named after the builtin. A module that uses one needs Naga's
+  `SUBGROUP` capability. On the CPU each runs as a subgroup of one
 - `RayFlag` and `RayQueryIntersection`, and WGSL's predeclared `RAY_FLAG_*` and
   `RAY_QUERY_INTERSECTION_*` names they stand for
 
