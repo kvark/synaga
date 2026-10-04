@@ -101,6 +101,9 @@ pub(super) fn lower_method_any(
             ctx, function, body, receiver, &name, &args, env,
         );
     }
+    if super::cooperative::matrix(ctx, receiver.1).is_some() {
+        return super::cooperative::lower_method(ctx, function, body, receiver, &name, &args, env);
+    }
     if name == "cast" {
         return lower_cast(ctx, function, body, receiver, call, hint).map(Some);
     }

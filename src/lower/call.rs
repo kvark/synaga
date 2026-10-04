@@ -105,6 +105,7 @@ fn names_type(ctx: &mut Context, path: &[String]) -> Result<bool, Error> {
             "f32" | "f16" | "u32" | "i32" | "usize" | "isize" | "bool" | "ray_query" | "RayQuery"
         )
         || super::ray::is_ray_word_type(&name)
+        || super::cooperative::is_type_name(&name)
         || ctx.named_type(path)?.is_some())
 }
 
@@ -240,12 +241,19 @@ pub(super) fn lower_call_any(
         // build, a vector's scalar included.
         Callee::Associated { ty, item } => {
             let ty_segment = &syn_path.segments[syn_path.segments.len() - 2];
+            let args: Vec<&Expr> = call.args.iter().collect();
+            // A cooperative matrix's turbofish says its scalar and its role,
+            // which no other type's does.
+            if let Some(typed) = super::cooperative::lower_assoc_call(
+                ctx, function, body, &ty, ty_segment, &item, &args, env,
+            )? {
+                return Ok(Some(typed));
+            }
             let on = super::method::OnType {
                 path: &ty,
                 turbofish: super::turbofish_scalar(ty_segment)?,
                 hint,
             };
-            let args: Vec<&Expr> = call.args.iter().collect();
             if let Some(result) =
                 super::method::lower_user_assoc_call(ctx, function, body, &on, &item, &args, env)?
             {

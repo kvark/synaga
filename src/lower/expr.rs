@@ -795,6 +795,13 @@ pub(super) fn bin_result_ty(
     }
 
     let bad = || Error::BadOperandTypes(op_name(op).into());
+    // A cooperative matrix adds and subtracts as a whole, as a matrix does.
+    if super::cooperative::matrix(ctx, left).is_some() {
+        return match op {
+            Bo::Add | Bo::Subtract => Ok(left),
+            _ => Err(bad()),
+        };
+    }
     let shape = ctx.shape(left);
     match op {
         // Addition and subtraction are the only component-wise operators Naga

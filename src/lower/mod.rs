@@ -13,6 +13,7 @@ use crate::{Error, Pos};
 mod atomic;
 mod call;
 mod constant;
+mod cooperative;
 mod emit;
 mod entry;
 mod env;
@@ -558,6 +559,10 @@ impl Context {
         if ray::is_ray_word_type(&name) {
             return Ok(self.intern_scalar(Scalar::U32));
         }
+        // `CoopMat8x8<f32, A>` takes its scalar and its role.
+        if let Some(result) = cooperative::parse_type(self, &name, seg) {
+            return result;
+        }
 
         let type_arg = match &seg.arguments {
             syn::PathArguments::None => None,
@@ -1087,7 +1092,7 @@ fn collect_type_args(seg: &syn::PathSegment) -> Result<Vec<&syn::Type>, Error> {
         .collect()
 }
 
-fn lower_scalar_ident(ty: &syn::Type) -> Result<Scalar, Error> {
+pub(super) fn lower_scalar_ident(ty: &syn::Type) -> Result<Scalar, Error> {
     let ident = match ty {
         syn::Type::Path(path) if path.qself.is_none() => path
             .path

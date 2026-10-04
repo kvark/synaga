@@ -29,7 +29,7 @@
 //! function keeps WGSL's meaning, so `fract(v)` is `v - floor(v)`. The atomics
 //! are real atomics, and the [`ir`] module decodes what the build step wrote.
 //! The [`subgroup`] operations run as a subgroup of one, which the invocation
-//! calling them is.
+//! calling them is, and a [`cooperative`] matrix is all there in that one.
 //!
 //! What needs the GPU panics: resources, textures and samplers, ray queries,
 //! barriers and `discard()`. Running those needs a runtime that runs the
@@ -94,6 +94,7 @@
 
 pub mod atomic;
 pub mod builtins;
+pub mod cooperative;
 pub mod ir;
 pub mod matrix;
 pub mod resource;
@@ -103,6 +104,7 @@ pub mod vector;
 
 pub use atomic::*;
 pub use builtins::*;
+pub use cooperative::*;
 pub use matrix::*;
 pub use resource::*;
 pub use subgroup::*;
