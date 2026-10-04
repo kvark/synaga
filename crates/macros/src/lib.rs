@@ -220,18 +220,19 @@ fn check_io(item: &DeriveInput) -> syn::Result<Vec<&syn::Ident>> {
 
 /// A struct the host fills in and uploads, which a shader reads as it is:
 /// `Clone`, `Copy`, a `Default` of all zeroes, which is the GPU's default
-/// too, and `bytemuck`'s `Zeroable` and `Pod`, in one derive.
+/// too, and `bytemuck`'s `Zeroable` and `NoUninit`, in one derive.
 ///
 /// The struct says `#[repr(C)]`, which is also what tells the build to check
-/// that the GPU reads each field where `rustc` puts it. `Pod` is checked as
-/// `bytemuck`'s derive checks it: every field is `Pod`, and there is no
-/// padding. It needs `synaga-shader`'s `bytemuck` feature.
+/// that the GPU reads each field where `rustc` puts it. The rest is checked as
+/// `bytemuck`'s derives check it: every field is `NoUninit` and `Zeroable`, and
+/// there is no padding. It needs `synaga-shader`'s `bytemuck` feature.
 ///
-/// A struct that holds an enum cannot be `Pod`, since not every `u32` is one
-/// of its variants. `#[shared(no_uninit)]` makes it `bytemuck`'s `NoUninit`
-/// instead, which is all an upload needs, with every field `NoUninit` and
-/// `Zeroable`. The host then cannot read one back from bytes.
-#[proc_macro_derive(Shared, attributes(shared))]
+/// `NoUninit` is what an upload takes, and unlike `Pod` it holds for a struct
+/// with an enum in it, since it promises nothing about bytes read back. A host
+/// that does read one back derives `bytemuck`'s `CheckedBitPattern` beside it,
+/// which checks that each enum is one of its variants. `bytemuck` checks no
+/// array that way, so that takes the struct's arrays to be of `Pod` elements.
+#[proc_macro_derive(Shared)]
 pub fn derive_shared(input: TokenStream) -> TokenStream {
     let item = parse_macro_input!(input as DeriveInput);
     match expand_shared(&item) {
@@ -261,38 +262,8 @@ fn expand_shared(item: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     }
     let name = &item.ident;
     let fields: Vec<&syn::Type> = data.fields.iter().map(|field| &field.ty).collect();
+    let elements = fields.iter().map(|ty| element(ty));
     let bytemuck = quote!(::synaga_shader::__private::bytemuck);
-    // What the struct is to `bytemuck`, and a check that every field can make
-    // it that, whose name is what `rustc` reports for a field that cannot.
-    let (data_impl, field_check) = if no_uninit(&item.attrs)? {
-        (
-            quote! {
-                // SAFETY: `#[repr(C)]`, every field `NoUninit`, and no padding
-                // between or after them, all checked below.
-                unsafe impl #bytemuck::NoUninit for #name {}
-            },
-            quote! {
-                fn every_field_is_no_uninit_and_zeroable() {
-                    fn no_uninit_and_zeroable<T: #bytemuck::NoUninit + #bytemuck::Zeroable>() {}
-                    #( no_uninit_and_zeroable::<#fields>(); )*
-                }
-            },
-        )
-    } else {
-        (
-            quote! {
-                // SAFETY: `#[repr(C)]`, every field `Pod`, and no padding
-                // between or after them, all checked below.
-                unsafe impl #bytemuck::Pod for #name {}
-            },
-            quote! {
-                fn every_field_is_pod() {
-                    fn pod<T: #bytemuck::Pod>() {}
-                    #( pod::<#fields>(); )*
-                }
-            },
-        )
-    };
     Ok(quote! {
         impl ::core::clone::Clone for #name {
             #[inline]
@@ -307,13 +278,19 @@ fn expand_shared(item: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 #bytemuck::Zeroable::zeroed()
             }
         }
-        // SAFETY: every field is `Zeroable`, which `Pod` includes, as
-        // checked below.
+        // SAFETY: every field is `Zeroable`, or an array of it, as checked
+        // below.
         unsafe impl #bytemuck::Zeroable for #name {}
-        #data_impl
+        // SAFETY: `#[repr(C)]`, every field `NoUninit` or an array of it, and
+        // no padding between or after them, all checked below.
+        unsafe impl #bytemuck::NoUninit for #name {}
         impl ::synaga_shader::Shared for #name {}
         const _: () = {
-            #field_check
+            // Named for what `rustc` reports about a field that is neither.
+            fn every_field_is_no_uninit_and_zeroable() {
+                fn no_uninit_and_zeroable<T: #bytemuck::NoUninit + #bytemuck::Zeroable>() {}
+                #( no_uninit_and_zeroable::<#elements>(); )*
+            }
             assert!(
                 ::core::mem::size_of::<#name>() == 0 #( + ::core::mem::size_of::<#fields>() )*,
                 "a `Shared` struct has no padding: add a field for it, as the build's layout check suggests",
@@ -322,20 +299,20 @@ fn expand_shared(item: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     })
 }
 
-/// Whether a `Shared` struct says `#[shared(no_uninit)]`.
-fn no_uninit(attrs: &[syn::Attribute]) -> syn::Result<bool> {
-    let mut found = false;
-    for attr in attrs.iter().filter(|attr| attr.path().is_ident("shared")) {
-        attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("no_uninit") {
-                found = true;
-                Ok(())
-            } else {
-                Err(meta.error("`#[shared(..)]` takes `no_uninit`"))
-            }
-        })?;
+/// What a field of type `ty` holds: an array's element, through any depth of
+/// arrays, or `ty` itself.
+///
+/// An array is checked by its element. `bytemuck` has an array be `NoUninit`
+/// only when its element is `Pod`, which a shared struct holding an enum is
+/// not, but an array leaves no bytes between its elements, so one of
+/// `NoUninit` elements has no uninitialized bytes either.
+fn element(ty: &syn::Type) -> &syn::Type {
+    match ty {
+        syn::Type::Array(array) => element(&array.elem),
+        syn::Type::Paren(paren) => element(&paren.elem),
+        syn::Type::Group(group) => element(&group.elem),
+        _ => ty,
     }
-    Ok(found)
 }
 
 /// `#[repr(C)]` or `#[repr(transparent)]`, with anything beside it.
