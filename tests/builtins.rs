@@ -29,6 +29,43 @@ fn packing_functions() {
 }
 
 #[test]
+fn packed_integer_dot_products_and_their_packing() {
+    let wgsl = roundtrip(
+        r#"
+        fn signed(a: u32, b: u32) -> i32 { dot4_i8_packed(a, b) }
+        fn unsigned(c: u32) -> u32 { dot4_u8_packed(c, 0x0101_0101) }
+        fn repack(bits: u32) -> u32 {
+            pack4x_i8(unpack4x_i8(bits)) ^ pack4x_u8(unpack4x_u8(bits))
+        }
+        fn clamped(v: vec4<i32>, w: vec4<u32>) -> u32 {
+            pack4x_i8_clamp(v) | pack4x_u8_clamp(w) | pack4x_u8(vec4(1, 2, 3, 4))
+        }
+        "#,
+    );
+    for builtin in [
+        "dot4I8Packed(a, b)",
+        "dot4U8Packed(c, 16843009u)",
+        "pack4xI8(unpack4xI8(bits))",
+        "pack4xU8(unpack4xU8(bits))",
+        "pack4xI8Clamp(v)",
+        "pack4xU8Clamp(w)",
+    ] {
+        assert!(wgsl.contains(builtin), "{builtin}\n{wgsl}");
+    }
+}
+
+#[test]
+fn an_unpack_builtin_reads_a_u32_literal() {
+    // The signature says `u32`, so the literal is one, as it is to `rustc`.
+    validate_only(
+        r#"
+        fn f() -> vec4 { unpack4x8unorm(0xFF) }
+        fn g() -> vec4<u32> { unpack4x_u8(0x0403_0201) }
+        "#,
+    );
+}
+
+#[test]
 fn relational_folds() {
     // WGSL's `any(a < b)` compares lane by lane inside the fold, as in WGSL:
     // `rustc` cannot write it, since its `a < b` is already one `bool`.

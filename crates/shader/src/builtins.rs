@@ -352,6 +352,91 @@ pub fn unpack2x16float(bits: u32) -> Vec2 {
     vec2(f16_value(bits as u16), f16_value((bits >> 16) as u16))
 }
 
+// The packed 4x8 integer builtins, which read a `u32` as four bytes, the
+// first in the lowest bits, as WGSL's `dot4U8Packed` and the rest do.
+
+/// The byte of `bits` at lane `lane`, as it is: `0..=255`.
+#[inline]
+fn byte_u8(bits: u32, lane: u32) -> u32 {
+    (bits >> (8 * lane)) & 0xFF
+}
+
+/// The byte of `bits` at lane `lane`, sign-extended: `-128..=127`.
+#[inline]
+fn byte_i8(bits: u32, lane: u32) -> i32 {
+    i32::from((bits >> (8 * lane)) as u8 as i8)
+}
+
+/// The dot product of two `u32`s read as four unsigned bytes each.
+///
+/// ```
+/// use synaga_shader::*;
+/// assert_eq!(dot4_u8_packed(0x0403_0201, 0x0101_0101), 1 + 2 + 3 + 4);
+/// ```
+#[inline]
+pub fn dot4_u8_packed(a: u32, b: u32) -> u32 {
+    (0..4).map(|lane| byte_u8(a, lane) * byte_u8(b, lane)).sum()
+}
+
+/// The dot product of two `u32`s read as four signed bytes each.
+///
+/// ```
+/// use synaga_shader::*;
+/// assert_eq!(dot4_i8_packed(0x0000_00FF, 0x0000_0002), -2);
+/// ```
+#[inline]
+pub fn dot4_i8_packed(a: u32, b: u32) -> i32 {
+    (0..4).map(|lane| byte_i8(a, lane) * byte_i8(b, lane)).sum()
+}
+
+/// Four `i32`s as signed bytes, each its lowest eight bits.
+#[inline]
+pub fn pack4x_i8(v: Vec4<i32>) -> u32 {
+    let byte = |x: i32| u32::from(x as u8);
+    byte(v.x) | byte(v.y) << 8 | byte(v.z) << 16 | byte(v.w) << 24
+}
+
+/// Four `u32`s as unsigned bytes, each its lowest eight bits.
+#[inline]
+pub fn pack4x_u8(v: Vec4<u32>) -> u32 {
+    let byte = |x: u32| x & 0xFF;
+    byte(v.x) | byte(v.y) << 8 | byte(v.z) << 16 | byte(v.w) << 24
+}
+
+/// Four `i32`s as signed bytes, each clamped to `-128..=127` first.
+#[inline]
+pub fn pack4x_i8_clamp(v: Vec4<i32>) -> u32 {
+    pack4x_i8(v.map(|x| Ord::clamp(x, -128, 127)))
+}
+
+/// Four `u32`s as unsigned bytes, each clamped to `0..=255` first.
+#[inline]
+pub fn pack4x_u8_clamp(v: Vec4<u32>) -> u32 {
+    pack4x_u8(v.map(|x| Ord::min(x, 255)))
+}
+
+/// Four signed bytes as `i32`s.
+#[inline]
+pub fn unpack4x_i8(bits: u32) -> Vec4<i32> {
+    vec4(
+        byte_i8(bits, 0),
+        byte_i8(bits, 1),
+        byte_i8(bits, 2),
+        byte_i8(bits, 3),
+    )
+}
+
+/// Four unsigned bytes as `u32`s.
+#[inline]
+pub fn unpack4x_u8(bits: u32) -> Vec4<u32> {
+    vec4(
+        byte_u8(bits, 0),
+        byte_u8(bits, 1),
+        byte_u8(bits, 2),
+        byte_u8(bits, 3),
+    )
+}
+
 /// `value` as a half-precision float's bits, rounded to the nearest, ties to
 /// even, as IEEE 754 rounds.
 fn f16_bits(value: f32) -> u16 {

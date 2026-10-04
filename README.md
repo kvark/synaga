@@ -625,8 +625,11 @@ the CPU runs a shader's pure functions, and the GPU the rest.
   `BindingArray<T, N>`
 - math builtins: `dot`, `cross`, `normalize`, `length`, `abs`, `min`, `max`,
   `clamp`, `mix`, `step`, `sin`, `cos`, `pow`, `transpose`, `determinant`, the
-  bit-twiddling set and the packing set; `select(reject, accept, condition)` in
-  WGSL's argument order; `all`, `any`, `isNan`, `isInf`; `bitcast::<T>(x)`
+  bit-twiddling set and the packing set; the packed 4x8 integer set,
+  `dot4_u8_packed`, `dot4_i8_packed`, `pack4x_i8`, `pack4x_u8` and their
+  `_clamp` forms, `unpack4x_i8` and `unpack4x_u8`;
+  `select(reject, accept, condition)` in WGSL's argument order; `all`, `any`,
+  `isNan`, `isInf`; `bitcast::<T>(x)`
 - `workgroup_barrier()`, `storage_barrier()`, `discard()`
 - `RayFlag` and `RayQueryIntersection`, and WGSL's predeclared `RAY_FLAG_*` and
   `RAY_QUERY_INTERSECTION_*` names they stand for

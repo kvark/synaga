@@ -304,6 +304,24 @@ fn packing_rounds_and_clamps_as_the_gpu_does() {
 }
 
 #[test]
+fn packed_bytes_multiply_and_pack_as_the_gpu_does() {
+    // The first lane is the lowest byte.
+    assert_eq!(dot4_u8_packed(0x0403_0201, 0x0807_0605), 5 + 12 + 21 + 32);
+    assert_eq!(dot4_u8_packed(u32::MAX, u32::MAX), 4 * 255 * 255);
+    // 0xFF is -1 and 0x80 is -128 to the signed one.
+    assert_eq!(dot4_i8_packed(0x0000_80FF, 0x0000_0102), -2 - 128);
+    assert_eq!(dot4_i8_packed(0x8080_8080, 0x8080_8080), 4 * 128 * 128);
+    assert_eq!(pack4x_i8(vec4(-1, 2, -128, 127)), 0x7F80_02FF);
+    assert_eq!(unpack4x_i8(0x7F80_02FF), vec4(-1, 2, -128, 127));
+    // Each lane keeps its lowest eight bits, or is clamped to a byte first.
+    assert_eq!(pack4x_i8(vec4(256 + 1, 0, 0, 0)), 0x0000_0001);
+    assert_eq!(pack4x_i8_clamp(vec4(-200, 200, 0, 1)), 0x0100_7F80);
+    assert_eq!(pack4x_u8(vec4(256 + 1, 2, 3, 4)), 0x0403_0201);
+    assert_eq!(pack4x_u8_clamp(vec4(300, 2, 3, 4)), 0x0403_02FF);
+    assert_eq!(unpack4x_u8(0x0403_02FF), vec4(255, 2, 3, 4));
+}
+
+#[test]
 fn half_floats_round_to_the_nearest_even() {
     assert_eq!(pack2x16float(vec2(1.0, -2.0)), 0xC000_3C00);
     assert_eq!(pack2x16float(vec2(65504.0, 0.0)), 0x7BFF);
