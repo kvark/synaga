@@ -14,9 +14,10 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;
-use quote::quote;
+use quote::{quote, quote_spanned};
 use syn::punctuated::Punctuated;
-use syn::{parse_macro_input, Data, DeriveInput, Fields, FnArg, ItemFn, LitInt, Meta, Token};
+use syn::spanned::Spanned;
+use syn::{parse_macro_input, Data, DeriveInput, Expr, Fields, FnArg, ItemFn, Meta, Token};
 
 /// Attributes on an entry point's parameters.
 const PARAM_ATTRS: &[&str] = &["location", "builtin", "flat", "interpolate", "invariant"];
@@ -26,7 +27,8 @@ fn strip(attrs: &mut Vec<syn::Attribute>, names: &[&str]) {
 }
 
 /// A shader entry point: `#[entry_point(vertex)]`, `#[entry_point(fragment)]`,
-/// or `#[entry_point(compute, threads(8, 4))]`.
+/// or `#[entry_point(compute, threads(8, 4))]`. A size is a literal or any
+/// constant expression of `u32`: `threads(LANES)`, `threads(TILE * 4, 1)`.
 ///
 /// Its parameters may carry `#[location(N)]` and `#[builtin(name)]`, or be
 /// named after the builtin they are: `global_invocation_id: Vec3<u32>`. A
@@ -37,10 +39,13 @@ fn strip(attrs: &mut Vec<syn::Attribute>, names: &[&str]) {
 pub fn entry_point(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut item = parse_macro_input!(input as ItemFn);
     let args = parse_macro_input!(args with Punctuated::<Meta, Token![,]>::parse_terminated);
-    let error = check_stage(&args)
-        .and_then(|()| check_no_output(&item))
-        .err()
-        .map(|err| err.to_compile_error());
+    let (sizes, error) = match check_stage(&args).and_then(|sizes| {
+        check_no_output(&item)?;
+        Ok(sizes)
+    }) {
+        Ok(sizes) => (sizes, None),
+        Err(err) => (Vec::new(), Some(err.to_compile_error())),
+    };
 
     for arg in &mut item.sig.inputs {
         match arg {
@@ -49,12 +54,26 @@ pub fn entry_point(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     }
 
+    // A size that is not a literal is a constant expression, `threads(LANES)`,
+    // which `rustc` checks here as it would any `const`: that it names
+    // something, that it is a `u32`, and that it is not 0. The transpiler
+    // evaluates the same expression.
+    let checks = sizes.iter().map(|size| {
+        quote_spanned! {size.span()=>
+            const _: () = {
+                let size: u32 = #size;
+                assert!(size != 0, "a workgroup size cannot be 0");
+            };
+        }
+    });
+
     // Nothing on the CPU calls an entry point, so `rustc` would call every one
     // of them dead.
     quote!(
         #error
         #[allow(dead_code)]
         #item
+        #(#checks)*
     )
     .into()
 }
@@ -80,7 +99,10 @@ fn check_no_output(item: &ItemFn) -> syn::Result<()> {
 /// The stage comes first; a compute entry point also says its workgroup size.
 /// The transpiler checks all of this again, but saying it here puts the
 /// complaint where an editor shows it.
-fn check_stage(args: &Punctuated<Meta, Token![,]>) -> syn::Result<()> {
+///
+/// Gives back the sizes that are not literals, for `rustc` to check as the
+/// constants they are.
+fn check_stage(args: &Punctuated<Meta, Token![,]>) -> syn::Result<Vec<Expr>> {
     let mut args = args.iter();
     let stage = match args.next() {
         Some(Meta::Path(path))
@@ -105,6 +127,7 @@ fn check_stage(args: &Punctuated<Meta, Token![,]>) -> syn::Result<()> {
     };
 
     let mut threads = None;
+    let mut constants = Vec::new();
     for arg in args {
         match arg {
             Meta::List(list) if list.path.is_ident("threads") => {
@@ -112,19 +135,27 @@ fn check_stage(args: &Punctuated<Meta, Token![,]>) -> syn::Result<()> {
                     return Err(syn::Error::new_spanned(list, "`threads` is given twice"));
                 }
                 let sizes =
-                    list.parse_args_with(Punctuated::<LitInt, Token![,]>::parse_terminated)?;
+                    list.parse_args_with(Punctuated::<Expr, Token![,]>::parse_terminated)?;
                 if sizes.is_empty() || sizes.len() > 3 {
                     return Err(syn::Error::new_spanned(
                         list,
                         "`threads` takes one to three sizes",
                     ));
                 }
-                for size in &sizes {
-                    if size.base10_parse::<u32>()? == 0 {
-                        return Err(syn::Error::new_spanned(
-                            size,
-                            "a workgroup size cannot be 0",
-                        ));
+                for size in sizes {
+                    match &size {
+                        Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Int(int),
+                            ..
+                        }) => {
+                            if int.base10_parse::<u32>()? == 0 {
+                                return Err(syn::Error::new_spanned(
+                                    int,
+                                    "a workgroup size cannot be 0",
+                                ));
+                            }
+                        }
+                        _ => constants.push(size),
                     }
                 }
                 threads = Some(list);
@@ -147,7 +178,7 @@ fn check_stage(args: &Punctuated<Meta, Token![,]>) -> syn::Result<()> {
             list,
             "`threads` is only for a compute entry point",
         )),
-        _ => Ok(()),
+        _ => Ok(constants),
     }
 }
 

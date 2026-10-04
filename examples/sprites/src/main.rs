@@ -64,6 +64,13 @@ fn main() {
                 assert_eq!(size, span as usize, "`{global}` in {name}");
             }
         }
+        // A workgroup is as large as the constant the host dispatches by.
+        for entry in &module.entry_points {
+            if entry.name == "tonemap" {
+                let tile = shaders::tonemap::TILE;
+                assert_eq!(entry.workgroup_size, [tile, tile, 1], "{name}");
+            }
+        }
     }
     println!("uploaded a sprite at {:?}", sprite.position);
 }

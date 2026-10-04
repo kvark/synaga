@@ -159,10 +159,19 @@ fn const_can_name_another_const() {
 }
 
 #[test]
-fn rejects_arithmetic_in_a_const() {
-    // Naga wants constants folded; saying so beats a validation failure.
-    let msg = reject("const X: f32 = 1.0 + 2.0; fn f() -> f32 { X }");
-    assert!(msg.contains("constant"), "{msg}");
+fn folds_arithmetic_in_a_const() {
+    // Folded as `rustc` folds it, so Naga gets the literal it wants.
+    let module = synaga::parse_str("const X: f32 = 1.0 + 2.0; fn f() -> f32 { X }").unwrap();
+    synaga::validate(&module).unwrap();
+    let (_, x) = module.constants.iter().next().unwrap();
+    assert!(
+        matches!(
+            module.global_expressions[x.init],
+            synaga::naga::Expression::Literal(synaga::naga::Literal::F32(v)) if v == 3.0
+        ),
+        "{:?}",
+        module.global_expressions[x.init]
+    );
 }
 
 #[test]

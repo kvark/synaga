@@ -147,8 +147,8 @@ fn half_a_binding_is_a_typo() {
 fn a_binding_number_is_known_before_the_shader_runs() {
     for (src, what) in [
         (
-            "static a: Uniform<f32> = group(1 + 1).binding(0);",
-            "`1 + 1`",
+            "fn two() -> u32 { 2 } static a: Uniform<f32> = group(two()).binding(0);",
+            "`two ()`",
         ),
         (
             "const G: f32 = 1.0; static a: Uniform<f32> = group(0).binding(G);",

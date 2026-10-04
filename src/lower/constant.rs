@@ -3,11 +3,13 @@
 //! Naga keeps constant initializers in a separate arena from function bodies,
 //! with its own rule: everything in it has to be evaluatable without running
 //! the shader. So these are lowered by a small separate walk rather than by
-//! `lower_expr`, which builds runtime expressions.
+//! `lower_expr`, which builds runtime expressions, and the arithmetic in them is
+//! folded first, by [`super::fold`], into the literal `rustc` would get.
 
-use naga::{Constant, Expression, Handle, Scalar, Type};
+use naga::{Constant, Expression, Handle, Literal, Scalar, Type};
 use syn::{Expr, ItemConst};
 
+use super::fold::{self, Ty, Value};
 use super::{parse_mat_ident, parse_vec_ident, Context, Shape};
 use crate::Error;
 
@@ -24,8 +26,8 @@ pub(super) fn lower_const_item(ctx: &mut Context, item: ItemConst) -> Result<usi
     }
     let name = item.ident.to_string();
     let ty = ctx.lower_type(&item.ty)?;
-    let hint = ctx.shape(ty).int_hint();
-    let (init, init_ty) = lower_const_expr(ctx, &item.expr, hint)?;
+    let want = ctx.shape(ty).scalar();
+    let (init, init_ty) = lower_const_expr(ctx, &item.expr, want)?;
     if init_ty != ty {
         return Err(Error::TypeMismatch);
     }
@@ -45,68 +47,34 @@ pub(super) fn lower_const_item(ctx: &mut Context, item: ItemConst) -> Result<usi
     Ok(ctx.consts.len() - 1)
 }
 
-/// Lower `expr` into `module.global_expressions`.
+/// Lower `expr` into `module.global_expressions`, with `want` the scalar its
+/// context gives it, as the `const`'s declared type does.
 ///
-/// Deliberately narrow: literals, negation, and vector/matrix constructors are
-/// what constants are actually written with, and everything else gets a clear
-/// refusal instead of a module Naga rejects later.
+/// A literal, a constant or a type's constant is kept as written, and a
+/// vector or matrix constructor is composed from its arguments. Anything
+/// with arithmetic in it is folded to the literal it comes to, so what Naga
+/// gets is already evaluated, the way it wants a constant.
 fn lower_const_expr(
     ctx: &mut Context,
     expr: &Expr,
-    hint: Option<Scalar>,
+    want: Option<Scalar>,
 ) -> Result<(Handle<Expression>, Handle<Type>), Error> {
     match expr {
-        Expr::Paren(inner) => lower_const_expr(ctx, &inner.expr, hint),
-        Expr::Group(inner) => lower_const_expr(ctx, &inner.expr, hint),
+        Expr::Paren(inner) => lower_const_expr(ctx, &inner.expr, want),
+        Expr::Group(inner) => lower_const_expr(ctx, &inner.expr, want),
         Expr::Lit(lit) => {
-            let (literal, ty) = super::expr::const_literal(ctx, lit, hint)?;
+            let int_hint = want.and_then(|s| Shape::Scalar(s).int_hint());
+            let (literal, ty) = super::expr::const_literal(ctx, lit, int_hint)?;
             let handle = ctx
                 .module
                 .global_expressions
                 .append(Expression::Literal(literal), ctx.span);
             Ok((handle, ty))
         }
-        // Naga wants constants already folded, so `-1.0` negates the literal
-        // rather than becoming a `Unary` expression the validator would reject.
-        Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
-            let syn::Expr::Lit(lit) = strip_parens(&unary.expr) else {
-                return Err(Error::UnsupportedConstExpr("negation".into()));
-            };
-            let (literal, ty) = super::expr::const_literal(ctx, lit, hint)?;
-            let negated = match literal {
-                naga::Literal::F32(v) => naga::Literal::F32(-v),
-                naga::Literal::I32(v) => naga::Literal::I32(-v),
-                _ => return Err(Error::BadOperandTypes("-".into())),
-            };
-            let handle = ctx
-                .module
-                .global_expressions
-                .append(Expression::Literal(negated), ctx.span);
-            Ok((handle, ty))
-        }
         Expr::Path(path) => {
             let segments = super::path_segments(&path.path);
             if let [ty_name, item] = segments.as_slice() {
-                // A set's flag, or an enum's variant, is its own type when
-                // that type is a `u32` on the GPU.
-                let nominal = match ctx.scope.flags.get(ty_name) {
-                    Some(info) => info.flag(item).map(|value| (value, true)),
-                    None => ctx.scope.enum_variant(ty_name, item).map(|value| {
-                        let repr_u32 = ctx.scope.enums.get(ty_name).is_some_and(|e| e.repr_u32);
-                        (value, repr_u32)
-                    }),
-                };
-                let typed = match nominal {
-                    Some((value, true)) => {
-                        Some((naga::Literal::U32(value), ctx.intern_named_u32(ty_name)))
-                    }
-                    Some((value, false)) => {
-                        Some((naga::Literal::U32(value), ctx.intern_scalar(Scalar::U32)))
-                    }
-                    None => scalar_const(ty_name, item)
-                        .map(|literal| (literal, ctx.intern_scalar(literal.scalar()))),
-                };
-                if let Some((literal, ty)) = typed {
+                if let Some((literal, ty)) = type_const(ctx, ty_name, item) {
                     let handle = ctx
                         .module
                         .global_expressions
@@ -132,7 +100,7 @@ fn lower_const_expr(
                 .append(Expression::Constant(handle), ctx.span);
             Ok((expr, ty))
         }
-        Expr::Call(call) => lower_const_ctor(ctx, call, hint),
+        Expr::Call(call) if is_constructor(call) => lower_const_ctor(ctx, call, want),
         // `cfg!(debug_assertions)`, settled by what the build was told.
         Expr::Macro(mac) if mac.mac.path.is_ident("cfg") => {
             let value = super::expr::eval_cfg(ctx, &mac.mac)?;
@@ -142,7 +110,56 @@ fn lower_const_expr(
                 .append(Expression::Literal(naga::Literal::Bool(value)), ctx.span);
             Ok((handle, ctx.intern_scalar(Scalar::BOOL)))
         }
-        other => Err(Error::UnsupportedConstExpr(super::emit::expr_kind(other))),
+        _ => {
+            let want = want.and_then(Ty::of);
+            let value = match fold::fold(ctx, expr, want)? {
+                // A float nothing gave a type is an `f64` to `rustc`, which a
+                // shader has not; its context here is a vector's, unread.
+                Value::F64(v) if want.is_none() => Value::F32(v as f32),
+                value => value,
+            };
+            let literal = value.literal().map_err(|err| err.at(super::pos(expr)))?;
+            let ty = ctx.intern_scalar(literal.scalar());
+            let handle = ctx
+                .module
+                .global_expressions
+                .append(Expression::Literal(literal), ctx.span);
+            Ok((handle, ty))
+        }
+    }
+}
+
+/// `Ty::ITEM` where that is a literal: a set's flag or an enum's variant,
+/// which is its own type when that type is a `u32` on the GPU, or a
+/// primitive's own constant, as `u32::MAX` is.
+pub(super) fn type_const(
+    ctx: &mut Context,
+    ty_name: &str,
+    item: &str,
+) -> Option<(Literal, Handle<Type>)> {
+    let nominal = match ctx.scope.flags.get(ty_name) {
+        Some(info) => info.flag(item).map(|value| (value, true)),
+        None => ctx.scope.enum_variant(ty_name, item).map(|value| {
+            let repr_u32 = ctx.scope.enums.get(ty_name).is_some_and(|e| e.repr_u32);
+            (value, repr_u32)
+        }),
+    };
+    match nominal {
+        Some((value, true)) => Some((Literal::U32(value), ctx.intern_named_u32(ty_name))),
+        Some((value, false)) => Some((Literal::U32(value), ctx.intern_scalar(Scalar::U32))),
+        None => scalar_const(ty_name, item)
+            .map(|literal| (literal, ctx.intern_scalar(literal.scalar()))),
+    }
+}
+
+/// `vec3(..)` or `mat2(..)`: a call a constant composes rather than folds.
+fn is_constructor(call: &syn::ExprCall) -> bool {
+    match strip_parens(&call.func) {
+        Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
+            let name = path.path.segments[0].ident.to_string();
+            parse_vec_ident(&name).is_some() || parse_mat_ident(&name).is_some()
+        }
+        _ => false,
     }
 }
 
@@ -210,7 +227,7 @@ pub(super) fn strip_parens(expr: &Expr) -> &Expr {
 fn lower_const_ctor(
     ctx: &mut Context,
     call: &syn::ExprCall,
-    hint: Option<Scalar>,
+    want: Option<Scalar>,
 ) -> Result<(Handle<Expression>, Handle<Type>), Error> {
     let name = match call.func.as_ref() {
         Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
@@ -228,12 +245,12 @@ fn lower_const_ctor(
         return Err(Error::VecCtorArgs);
     }
 
-    let mut hint = shorthand.and_then(|s| Shape::Scalar(s).int_hint()).or(hint);
+    let mut want = shorthand.or(want);
     let mut components = Vec::new();
     let mut component_tys = Vec::new();
     for arg in &call.args {
-        let (handle, ty) = lower_const_expr(ctx, arg, hint)?;
-        hint = hint.or_else(|| ctx.shape(ty).int_hint());
+        let (handle, ty) = lower_const_expr(ctx, arg, want)?;
+        want = want.or_else(|| ctx.shape(ty).scalar());
         components.push(handle);
         component_tys.push(ty);
     }
