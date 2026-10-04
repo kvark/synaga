@@ -188,6 +188,10 @@ macro_rules! include_ir {
 ///
 /// The file is named after the generated module: `shaders_layout.rs` for the
 /// default `shaders.rs`, or name it for another.
+///
+/// The build reads the module for this call, in `mod.rs` or in the file named
+/// after the shader directory beside it, and warns when there are shared
+/// structs and the call is missing.
 #[macro_export]
 macro_rules! check_layout {
     () => {

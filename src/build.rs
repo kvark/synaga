@@ -36,8 +36,8 @@
 //! one module. The other files are what those use: a shader's `use
 //! super::common::*` or `common::luminance(..)` is what brings `common.rs`
 //! along, the same way it tells `rustc` where to look. A file no shader
-//! reaches is left alone. `mod.rs` lists the modules for `rustc` and is not
-//! read here.
+//! reaches is left alone. `mod.rs` lists the modules for `rustc` and is not a
+//! shader; it is read only for `check_layout!`, below.
 //!
 //! What an entry point does not reach is pruned from its module, so a helper
 //! file can hold everything the shaders need between them.
@@ -55,6 +55,11 @@
 //! includes. The transpiler works out `rustc`'s layout of those structs from
 //! their types and refuses one the GPU lays out differently; the assertions
 //! have `rustc` confirm it on the target being built.
+//!
+//! The build looks for that `check_layout!` where `rustc` looks for the
+//! module: `mod.rs` in the directory, or the file named after the directory
+//! beside it, as in `src/shaders.rs`. When there are shared structs and it is
+//! not there, the build warns.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -69,6 +74,10 @@ use crate::{Cfg, Error, Source};
 /// [`synaga_shader::ir::NAGA_MAJOR`] in the file it generates. Kept in step
 /// with `Cargo.toml`, and with the shader crate, by tests.
 pub const NAGA_MAJOR: u8 = synaga_shader::ir::NAGA_MAJOR;
+
+/// The generated file's name unless [`Shaders::module_name`] says otherwise,
+/// and so what `include_ir!()` and `check_layout!()` with no file include.
+const DEFAULT_MODULE_NAME: &str = "shaders.rs";
 
 /// The first bytes of each module: `SYNAGA`, the format, and the Naga major
 /// version. `synaga_shader::ir` reads the same.
@@ -238,9 +247,6 @@ pub struct Shaders {
     wgsl: Option<PathBuf>,
     /// Keep each module in [`Shader`], for a caller that wants to look at one.
     keep_modules: bool,
-    /// Whether the crate includes the generated layout checks, which the build
-    /// script cannot see for itself.
-    layout_included: bool,
 }
 
 impl Default for Shaders {
@@ -255,7 +261,7 @@ impl Shaders {
     pub fn new() -> Self {
         Self {
             dir: PathBuf::from("src/shaders"),
-            module_name: "shaders.rs".into(),
+            module_name: DEFAULT_MODULE_NAME.into(),
             prune: true,
             bindings: Bindings::Explicit,
             capabilities: naga::valid::Capabilities::empty(),
@@ -263,7 +269,6 @@ impl Shaders {
             #[cfg(feature = "wgsl")]
             wgsl: None,
             keep_modules: false,
-            layout_included: false,
         }
     }
 
@@ -324,19 +329,6 @@ impl Shaders {
     pub fn wgsl_dir(mut self, dir: impl AsRef<std::path::Path>) -> Self {
         self.wgsl = Some(dir.as_ref().to_path_buf());
         self.keep_modules = true;
-        self
-    }
-
-    /// The crate includes the generated layout checks, so the build script
-    /// should not warn about them.
-    ///
-    /// The include happens in the crate being built and the build script cannot
-    /// see it, so this is how a crate that has already added
-    /// `synaga_shader::check_layout!()` says so. Without it the build warns
-    /// whenever there are shared structs, which is the case where a missing
-    /// include means a uniform read from the wrong place.
-    pub fn layout_checks_included(mut self) -> Self {
-        self.layout_included = true;
         self
     }
 
@@ -531,19 +523,10 @@ impl Shaders {
         // Only when the build is not already failing: a tree with a dozen
         // mistakes in it should hear what is wrong with its shaders before it
         // hears what is wrong with the build script's own output.
-        //
-        // A build script cannot see whether the crate included the file — the
-        // include happens in the crate, not here — so a crate that has included
-        // it says so with [`Shaders::layout_checks_included`], and this goes
-        // quiet.
-        if !shared.is_empty() && errors.is_empty() && !self.layout_included {
-            println!(
-                "cargo::warning=synaga: {} shared struct(s) in {} have `rustc` layout checks in {}, which nothing has included — add `synaga_shader::check_layout!({:?});` to the module that lists the shader modules, or say `synaga::build::Shaders::new().layout_checks_included()` in this build script if it is already there, or the layout is checked only by synaga's own model of `rustc`",
-                shared.len(),
-                self.dir.display(),
-                layout_path.display(),
-                layout_name(&self.module_name),
-            );
+        if errors.is_empty() {
+            if let Some(warning) = self.layout_warning(shared.len(), &layout_path, &cfg) {
+                println!("cargo::warning={warning}");
+            }
         }
 
         // Reported once everything is built, so a shader that is broken for one
@@ -577,6 +560,62 @@ impl Shaders {
         // `#[cfg(test)]` is never in `CARGO_CFG_*`: Cargo tells a build script
         // nothing about the profile's test run. Below.
         println!("cargo::rerun-if-env-changed=PROFILE");
+        // The file that lists the shader modules is read for `check_layout!`,
+        // and one beside the directory is not under it.
+        if let Some(file) = self.module_file() {
+            println!("cargo::rerun-if-changed={}", file.display());
+        }
+    }
+
+    /// The file that lists the shader modules for `rustc`: `mod.rs` in the
+    /// directory, or the file named after the directory beside it, the two
+    /// places `mod shaders;` looks.
+    fn module_file(&self) -> Option<PathBuf> {
+        let mod_rs = self.dir.join("mod.rs");
+        if mod_rs.is_file() {
+            return Some(mod_rs);
+        }
+        let name = self.dir.file_name()?.to_str()?;
+        let beside = self.dir.with_file_name(format!("{name}.rs"));
+        beside.is_file().then_some(beside)
+    }
+
+    /// What to say about the layout checks, if anything: there are shared
+    /// structs, and the file that lists the shader modules does not include
+    /// the checks for them.
+    ///
+    /// Quiet when that file cannot be read or parsed. `rustc` says what is
+    /// wrong with it, and whether it includes the checks is not known.
+    fn layout_warning(&self, shared: usize, layout_path: &Path, cfg: &Cfg) -> Option<String> {
+        if shared == 0 {
+            return None;
+        }
+        let layout = layout_name(&self.module_name);
+        let call = if layout == layout_name(DEFAULT_MODULE_NAME) {
+            "synaga_shader::check_layout!();".to_owned()
+        } else {
+            format!("synaga_shader::check_layout!({layout:?});")
+        };
+        let found = format!(
+            "synaga: {shared} shared struct(s) in {} have `rustc` layout checks in {}",
+            self.dir.display(),
+            layout_path.display(),
+        );
+        let otherwise = "or the layout is checked only by synaga's own model of `rustc`";
+        let Some(file) = self.module_file() else {
+            return Some(format!(
+                "{found}, which nothing includes — list the shader modules in {}, with `{call}` beside them, {otherwise}",
+                self.dir.join("mod.rs").display(),
+            ));
+        };
+        let source = std::fs::read_to_string(&file).ok()?;
+        if includes_layout(&source, &layout, cfg)? {
+            return None;
+        }
+        Some(format!(
+            "{found}, which {} does not include — add `{call}` to it, {otherwise}",
+            file.display(),
+        ))
     }
 
     /// Every `.rs` file in the directory but `mod.rs`, read and looked over, in
@@ -1006,6 +1045,40 @@ pub fn layout_name(module_name: &str) -> String {
     format!("{stem}_layout.rs")
 }
 
+/// Does `source` say `check_layout!` for the file `layout`, as one of its own
+/// items that `cfg` keeps? `None` if it does not parse.
+///
+/// Only the file's own items count: inside a nested `mod`, the checks'
+/// `self::` paths would start from the wrong module.
+fn includes_layout(source: &str, layout: &str, cfg: &Cfg) -> Option<bool> {
+    let file: syn::File = syn::parse_str(source).ok()?;
+    Some(file.items.iter().any(|item| {
+        let syn::Item::Macro(item) = item else {
+            return false;
+        };
+        let named_check_layout = item
+            .mac
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "check_layout");
+        // A `cfg` this cannot settle is left to `rustc` rather than warned
+        // about.
+        if !named_check_layout || !cfg.keeps(&item.attrs).unwrap_or(true) {
+            return false;
+        }
+        let included = if item.mac.tokens.is_empty() {
+            layout_name(DEFAULT_MODULE_NAME)
+        } else {
+            match syn::parse2::<syn::LitStr>(item.mac.tokens.clone()) {
+                Ok(name) => name.value(),
+                Err(_) => return false,
+            }
+        };
+        included == layout
+    }))
+}
+
 /// `rustc`'s layout of each shared struct, asserted to be the GPU's: the
 /// layout check in the transpiler works out Rust's from the types, and this
 /// asks `rustc` itself, on the target being built.
@@ -1061,10 +1134,124 @@ fn layout_checks(shared: &BTreeSet<crate::lower::SharedStruct>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn the_recorded_naga_version_is_the_one_depended_on() {
         let manifest = include_str!("../Cargo.toml");
         let wanted = format!("naga = {{ version = \"{}\"", super::NAGA_MAJOR);
         assert!(manifest.contains(&wanted), "update NAGA_MAJOR");
+    }
+
+    fn includes_default(source: &str) -> Option<bool> {
+        includes_layout(source, "shaders_layout.rs", &Cfg::new())
+    }
+
+    #[test]
+    fn check_layout_is_found_however_it_is_spelled() {
+        for source in [
+            "pub mod sprite;\nsynaga_shader::check_layout!();",
+            "use synaga_shader::check_layout;\ncheck_layout!();",
+            "synaga_shader::check_layout!(\"shaders_layout.rs\");",
+            "//! Shaders.\n#![allow(non_upper_case_globals)]\npub mod sprite;\nsynaga_shader::check_layout! {}",
+        ] {
+            assert_eq!(includes_default(source), Some(true), "{source}");
+        }
+    }
+
+    #[test]
+    fn check_layout_counts_only_for_this_build_s_file() {
+        assert_eq!(includes_default("pub mod sprite;"), Some(false));
+        // Another build's file, and the default one for a build that renamed
+        // its own.
+        assert_eq!(
+            includes_default("synaga_shader::check_layout!(\"gpu_layout.rs\");"),
+            Some(false)
+        );
+        assert_eq!(
+            includes_layout(
+                "synaga_shader::check_layout!();",
+                "gpu_layout.rs",
+                &Cfg::new()
+            ),
+            Some(false)
+        );
+        // In a nested module, its paths would start from the wrong place.
+        assert_eq!(
+            includes_default("mod checks { synaga_shader::check_layout!(); }"),
+            Some(false)
+        );
+        // Under a `cfg` that does not hold, `rustc` never sees it.
+        let gated = "#[cfg(feature = \"checks\")]\nsynaga_shader::check_layout!();";
+        assert_eq!(includes_default(gated), Some(false));
+        let cfg = Cfg::new().with_value("feature", "checks");
+        assert_eq!(
+            includes_layout(gated, "shaders_layout.rs", &cfg),
+            Some(true)
+        );
+        // Broken, it is `rustc`'s to report.
+        assert_eq!(includes_default("pub mod sprite"), None);
+    }
+
+    /// An empty `shaders` directory in a directory of its own under the
+    /// system's temporary directory.
+    fn scratch(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("synaga-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("shaders");
+        std::fs::create_dir_all(&dir).expect("create scratch");
+        dir
+    }
+
+    #[test]
+    fn the_layout_warning_looks_where_rustc_looks_for_the_module() {
+        let out = Path::new("out/shaders_layout.rs");
+        let cfg = Cfg::new();
+        let dir = scratch("module_file");
+        let shaders = Shaders::new().dir(&dir);
+
+        // Nothing shared, nothing to check.
+        assert_eq!(shaders.layout_warning(0, out, &cfg), None);
+        // Nothing lists the modules where `rustc` would look.
+        let warning = shaders.layout_warning(2, out, &cfg).expect("a warning");
+        assert!(warning.contains("which nothing includes"), "{warning}");
+        assert!(
+            warning.contains(&*dir.join("mod.rs").to_string_lossy()),
+            "{warning}"
+        );
+
+        std::fs::write(dir.join("mod.rs"), "pub mod sprite;\n").expect("write");
+        let warning = shaders.layout_warning(2, out, &cfg).expect("a warning");
+        assert!(warning.contains("mod.rs does not include"), "{warning}");
+        assert!(
+            warning.contains("add `synaga_shader::check_layout!();` to it"),
+            "{warning}"
+        );
+        std::fs::write(
+            dir.join("mod.rs"),
+            "pub mod sprite;\nsynaga_shader::check_layout!();\n",
+        )
+        .expect("write");
+        assert_eq!(shaders.layout_warning(2, out, &cfg), None);
+
+        // `shaders.rs` beside the directory, for a renamed module.
+        std::fs::remove_file(dir.join("mod.rs")).expect("remove");
+        let beside = dir.with_file_name("shaders.rs");
+        std::fs::write(&beside, "pub mod sprite;\n").expect("write");
+        let renamed = Shaders::new().dir(&dir).module_name("gpu.rs");
+        let warning = renamed.layout_warning(2, out, &cfg).expect("a warning");
+        assert!(warning.contains("shaders.rs does not include"), "{warning}");
+        assert!(
+            warning.contains("add `synaga_shader::check_layout!(\"gpu_layout.rs\");` to it"),
+            "{warning}"
+        );
+        std::fs::write(
+            &beside,
+            "pub mod sprite;\nsynaga_shader::check_layout!(\"gpu_layout.rs\");\n",
+        )
+        .expect("write");
+        assert_eq!(renamed.layout_warning(2, out, &cfg), None);
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a parent"));
     }
 }
