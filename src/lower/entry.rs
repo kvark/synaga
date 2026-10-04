@@ -2,7 +2,7 @@ use naga::{
     Binding, BuiltIn, EntryPoint, Function, FunctionResult, Handle, Interpolation, Sampling,
     ScalarKind, ShaderStage, Type,
 };
-use syn::{Attribute, FnArg, ItemFn, LitInt, Meta, ReturnType};
+use syn::{Attribute, Expr, FnArg, ItemFn, LitInt, Meta, ReturnType};
 
 use super::env::Env;
 use super::{is_unit, lower_signature, Context};
@@ -12,7 +12,9 @@ use crate::Error;
 #[derive(Default)]
 pub(super) struct StageInfo {
     pub stage: Option<ShaderStage>,
-    pub workgroup_size: Option<[u32; 3]>,
+    /// `threads(..)`'s sizes as written: each a constant expression, which is
+    /// evaluated once the entry point's names can be resolved.
+    pub workgroup_size: Option<Vec<Expr>>,
 }
 
 pub(super) fn parse_fn_attrs(attrs: &[Attribute]) -> Result<StageInfo, Error> {
@@ -65,20 +67,28 @@ fn parse_entry_point(attr: &Attribute, info: &mut StageInfo) -> Result<(), Error
     Ok(())
 }
 
-fn parse_threads(list: &syn::MetaList) -> Result<[u32; 3], Error> {
-    let lits = list
-        .parse_args_with(syn::punctuated::Punctuated::<LitInt, syn::Token![,]>::parse_terminated)
+fn parse_threads(list: &syn::MetaList) -> Result<Vec<Expr>, Error> {
+    let sizes = list
+        .parse_args_with(syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated)
         .map_err(|e| Error::UnsupportedBinding(e.to_string()))?;
-    if lits.is_empty() || lits.len() > 3 {
+    if sizes.is_empty() || sizes.len() > 3 {
         return Err(Error::UnsupportedBinding("threads".into()));
     }
+    Ok(sizes.into_iter().collect())
+}
+
+/// The workgroup size `threads(..)` says: a literal or any constant
+/// expression, `threads(LANES * 2)`, folded as `rustc` folds it. A missing
+/// dimension is 1.
+fn workgroup_size(ctx: &mut Context, sizes: &[Expr]) -> Result<[u32; 3], Error> {
     let mut size = [1u32, 1, 1];
-    for (i, lit) in lits.iter().enumerate() {
-        size[i] = lit
-            .base10_parse()
-            .map_err(|_| Error::UnsupportedBinding("threads".into()))?;
-        if size[i] == 0 {
-            return Err(Error::UnsupportedBinding("threads(0)".into()));
+    for (dimension, expr) in size.iter_mut().zip(sizes) {
+        *dimension = ctx
+            .const_u32(expr)
+            .map_err(|err| err.at(super::pos(expr)))?
+            .ok_or_else(|| Error::UnsupportedBinding("threads".into()).at(super::pos(expr)))?;
+        if *dimension == 0 {
+            return Err(Error::UnsupportedBinding("threads(0)".into()).at(super::pos(expr)));
         }
     }
     Ok(size)
@@ -361,13 +371,11 @@ pub(super) fn lower_entry(ctx: &mut Context, item: ItemFn, info: StageInfo) -> R
     let name = item.sig.ident.to_string();
     ctx.claim_entry_point_name(&name)?;
 
-    if stage != ShaderStage::Compute && info.workgroup_size.is_some() {
-        return Err(Error::UnexpectedWorkgroupSize);
-    }
-    let workgroup_size = if stage == ShaderStage::Compute {
-        info.workgroup_size.ok_or(Error::MissingWorkgroupSize)?
-    } else {
-        [0, 0, 0]
+    let workgroup_size = match (stage, info.workgroup_size) {
+        (ShaderStage::Compute, Some(sizes)) => workgroup_size(ctx, &sizes)?,
+        (ShaderStage::Compute, None) => return Err(Error::MissingWorkgroupSize),
+        (_, Some(_)) => return Err(Error::UnexpectedWorkgroupSize),
+        (_, None) => [0, 0, 0],
     };
 
     let result = match &item.sig.output {

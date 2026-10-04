@@ -17,6 +17,7 @@ mod emit;
 mod entry;
 mod env;
 mod expr;
+mod fold;
 mod global;
 mod matrix;
 mod method;
@@ -668,9 +669,9 @@ impl Context {
         NonZeroU32::new(value).ok_or_else(|| Error::UnsupportedType("zero-length array".into()))
     }
 
-    /// A `u32` known before the shader runs: an integer literal, or a `const`
-    /// naming one. `None` for anything else, which each caller refuses in its
-    /// own words.
+    /// A `u32` known before the shader runs: an integer literal, a `const`
+    /// naming one, or arithmetic on those, folded as `rustc` folds it. `None`
+    /// for anything else, which each caller refuses in its own words.
     pub(super) fn const_u32(&mut self, expr: &syn::Expr) -> Result<Option<u32>, Error> {
         match constant::strip_parens(expr) {
             syn::Expr::Lit(syn::ExprLit {
@@ -682,22 +683,22 @@ impl Context {
                 let index = self
                     .constant(&segments)?
                     .ok_or_else(|| Error::UnknownIdent(last(&segments)))?;
-                // A `const` may be defined as another one, so follow the chain
-                // down to the literal.
-                let mut init = self.consts[index].init_expr;
-                loop {
-                    match self.module.global_expressions[init] {
-                        naga::Expression::Literal(naga::Literal::U32(v)) => return Ok(Some(v)),
-                        naga::Expression::Literal(naga::Literal::I32(v)) if v >= 0 => {
-                            return Ok(Some(v as u32))
-                        }
-                        naga::Expression::Constant(other) => {
-                            init = self.module.constants[other].init
-                        }
-                        _ => return Ok(None),
-                    }
+                match fold::const_value(self, index) {
+                    Ok(fold::Value::U32(v)) => Ok(Some(v)),
+                    Ok(fold::Value::I32(v)) => Ok(u32::try_from(v).ok()),
+                    _ => Ok(None),
                 }
             }
+            syn::Expr::Binary(_)
+            | syn::Expr::Unary(_)
+            | syn::Expr::Cast(_)
+            | syn::Expr::MethodCall(_)
+            | syn::Expr::If(_)
+            | syn::Expr::Block(_) => match fold::fold(self, expr, Some(fold::Ty::U32))? {
+                fold::Value::U32(v) => Ok(Some(v)),
+                fold::Value::I32(v) => Ok(u32::try_from(v).ok()),
+                _ => Ok(None),
+            },
             _ => Ok(None),
         }
     }

@@ -164,6 +164,8 @@ pub enum Error {
     DuplicateConst(String),
     #[error("`{0}` is not allowed in a constant")]
     UnsupportedConstExpr(String),
+    #[error("constant arithmetic {0}")]
+    ConstArithmetic(String),
     #[error("duplicate struct `{0}`")]
     DuplicateStruct(String),
     #[error("unknown struct `{0}`")]

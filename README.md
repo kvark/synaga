@@ -177,7 +177,8 @@ the ones a host that binds by name looks for.
 ### Entry points and their interface
 
 `#[entry_point(vertex)]`, `#[entry_point(fragment)]` or
-`#[entry_point(compute, threads(8, 4))]`. A parameter carries `#[location(N)]`
+`#[entry_point(compute, threads(8, 4))]`, whose sizes are any constant `u32`:
+`threads(LANES)`, `threads(TILE * 4, 1)`. A parameter carries `#[location(N)]`
 or `#[builtin(name)]`, or is named after a builtin its stage takes and needs
 neither:
 
@@ -613,7 +614,11 @@ the CPU runs a shader's pure functions, and the GPU the rest.
   `is_empty`, `is_all`, `bits`, `Flags::empty()`, `Flags::all()`,
   `Flags::from_bits_truncate(b)`, an enum's `#[default]` variant
 - `const NAME: T = …` (literals, vector/matrix constructors, other constants,
-  `u32::MAX` and the rest of a primitive's own, `core::f32::consts`, `cfg!(..)`)
+  `u32::MAX` and the rest of a primitive's own, `core::f32::consts`, `cfg!(..)`),
+  and arithmetic on them, folded to the literal `rustc` gets: the operators,
+  `as`, `if`, and a primitive's `const fn`s, `wrapping_add`, `pow`, `div_ceil`,
+  `to_bits` and the like. An array length and a binding number fold the same
+  way
 - structs, their literals, with `..Default::default()` or `..other` for the rest,
   and fields; arrays `[T; N]` and `[a, b, c]`; `[T]`
   for a runtime-sized storage buffer; `BindingArray<T>` and
@@ -627,9 +632,8 @@ the CPU runs a shader's pure functions, and the GPU the rest.
   `RAY_QUERY_INTERSECTION_*` names they stand for
 
 Not yet: labeled loops, `break` values, `match` guards and range patterns,
-generics, cooperative matrices, `f16`, `const` arithmetic (Naga wants constants
-already folded). Swizzles are values, so `v.xy = a` is rejected — as it is in
-WGSL. Assignment to function arguments is rejected.
+generics, cooperative matrices, `f16`. Swizzles are values, so `v.xy = a` is
+rejected — as it is in WGSL. Assignment to function arguments is rejected.
 
 ### What the transpiler will not read
 

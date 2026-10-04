@@ -19,7 +19,11 @@ pub fn encode_srgb(linear: Vec3) -> Vec3 {
     select(high, low, linear.cmple(Vec3::splat(0.0031308)))
 }
 
-#[entry_point(compute, threads(8, 8))]
+/// The side of the square of pixels a workgroup covers, which the host divides
+/// the image by to dispatch.
+pub const TILE: u32 = 8;
+
+#[entry_point(compute, threads(TILE, TILE))]
 pub fn tonemap(#[builtin(global_invocation_id)] gid: Vec3<u32>) {
     let size = hdr.dimensions();
     if gid.x >= size.x || gid.y >= size.y {
