@@ -17,19 +17,20 @@
 //! The bytes are bincode, after an eight-byte header: `SYNAGA`, the format
 //! version, and the major version of the Naga that wrote them. `decode`
 //! produces whatever `naga::Module` the caller names, so the caller's own copy
-//! of Naga does the reading. That copy has to agree with the writer's about
-//! the format, which in practice means the same major version.
+//! of Naga does the reading. The host and writer must resolve to the same
+//! Naga package; a major version alone does not identify a git revision's
+//! serialization layout.
 
 /// The first six bytes of every module the build step writes.
 pub const MAGIC: &[u8; 6] = b"SYNAGA";
 
-/// The major version of the Naga whose modules this crate reads.
+/// The Naga major this shader crate supports.
 ///
-/// Every module records the Naga that wrote it, and the generated file asserts
-/// that the two agree — a build error naming both versions, rather than a panic
-/// at the first `decode` where the bytes stop making sense. A crate that
-/// depends on `synaga` as a build-dependency and on `synaga-shader` normally
-/// gets the same version of each, and this is what proves it did.
+/// Every module records the writer's major, and generated files compare it
+/// with this constant at compile time. This checks the declared support of
+/// `synaga` and `synaga-shader`; it cannot inspect the host's Naga dependency
+/// or distinguish git revisions within one major. The host must resolve its
+/// reader and the writer to the same Naga package.
 pub const NAGA_MAJOR: u8 = 30;
 
 /// The layout after the header. Bumped when it changes.
@@ -97,6 +98,12 @@ pub fn decode<M: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<M, DecodeE
             expected: FORMAT,
         });
     }
+    if naga_major != NAGA_MAJOR {
+        return Err(DecodeError::NagaMajor {
+            found: naga_major,
+            expected: NAGA_MAJOR,
+        });
+    }
     let payload = &bytes[HEADER_LEN..];
     let (module, read) =
         bincode::serde::decode_from_slice::<M, _>(payload, bincode::config::standard()).map_err(
@@ -123,6 +130,8 @@ pub enum DecodeError {
     NotIr,
     /// Written in a layout this version of `synaga-shader` does not read.
     Format { found: u8, expected: u8 },
+    /// The header names a different Naga major than this reader supports.
+    NagaMajor { found: u8, expected: u8 },
     /// The module did not decode. The usual reason is that the Naga reading
     /// it is not the version that wrote it.
     Payload { naga_major: u8, message: String },
@@ -136,13 +145,17 @@ impl core::fmt::Display for DecodeError {
                 f,
                 "synaga IR format {found}, but this synaga-shader reads format {expected}"
             ),
+            DecodeError::NagaMajor { found, expected } => write!(
+                f,
+                "the module was written by Naga {found}, but this synaga-shader supports Naga {expected}"
+            ),
             DecodeError::Payload {
                 naga_major,
                 message,
             } => write!(
                 f,
                 "the module was written by Naga {naga_major} and did not decode ({message}); \
-                 the Naga reading it has to be the same major version"
+                 the Naga reading it has to be the same package as the writer's"
             ),
         }
     }

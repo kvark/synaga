@@ -790,6 +790,29 @@ fn the_written_module_carries_the_version_in_its_header() {
 }
 
 #[test]
+fn a_different_naga_major_is_rejected_even_if_its_payload_decodes() {
+    let dir = scratch("wrong_naga_major");
+    write(&dir, "solid.rs", SOLID);
+    Shaders::new()
+        .dir(dir.join("shaders"))
+        .emit_to(&dir.join("out"))
+        .expect("emit");
+    let mut bytes = std::fs::read(dir.join("out/solid.naga")).expect("read module");
+    // The payload remains valid for this Naga. Ignoring the header used to
+    // accept it anyway, so a successfully parsed payload was no version check.
+    let found = synaga::build::NAGA_MAJOR + 1;
+    bytes[7] = found;
+    let err = synaga_shader::ir::decode::<naga::Module>(&bytes).expect_err("wrong Naga major");
+    assert_eq!(
+        err,
+        synaga_shader::ir::DecodeError::NagaMajor {
+            found,
+            expected: synaga::build::NAGA_MAJOR,
+        }
+    );
+}
+
+#[test]
 fn the_layout_file_asserts_what_rustc_has_to_agree_with() {
     let dir = scratch("layout_shape");
     write(

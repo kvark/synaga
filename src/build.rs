@@ -407,11 +407,10 @@ impl Shaders {
              //\n\
              // Each constant is a serialized Naga module; see `synaga_shader::ir`.\n\
              //\n\
-             // A module is written by one Naga and read by another, which have to\n\
-             // agree on the format. `synaga_shader::ir::NAGA_MAJOR` is the one that\n\
-             // wrote these; the number below is the one the host reads with. A\n\
-             // difference is a build error here, rather than a panic on the first\n\
-             // `decode()`.\n\
+             // This checks that synaga and synaga-shader agree on Naga's major\n\
+             // version. The number below is the writer's; the constant is the\n\
+             // shader crate's supported version. It cannot inspect the host's\n\
+             // own Naga dependency, which must resolve to the writer's package.\n\
              const _: () = assert!(\n",
         );
         let _ = write!(
@@ -420,7 +419,7 @@ impl Shaders {
              \x20   \"synaga wrote these modules with Naga {NAGA_MAJOR}, but this crate's \
              synaga-shader reads them with a different Naga major version; the synaga \
              build-dependency and the synaga-shader dependency must be the same \
-             version, and their `naga`s the same major version\"\n\
+             version, and their `naga`s must resolve to the same package\"\n\
              );\n"
         );
 
