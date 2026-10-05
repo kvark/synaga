@@ -70,11 +70,11 @@ pub(crate) fn rewrite(module: &mut naga::Module) -> Result<(), String> {
         terminate: dummy_handles[6],
     };
     for (_, function) in module.functions.iter_mut() {
-        rewrite_function(function, &ops);
+        rewrite_function(function, &ops)?;
     }
     for entry in &mut module.entry_points {
         remap_calls(&mut entry.function, &relocated);
-        rewrite_function(&mut entry.function, &ops);
+        rewrite_function(&mut entry.function, &ops)?;
     }
     Ok(())
 }
@@ -115,10 +115,11 @@ fn remap_block(block: &mut Block, relocated: &[Handle<Function>]) {
     }
 }
 
-fn rewrite_function(function: &mut Function, ops: &Ops) {
+fn rewrite_function(function: &mut Function, ops: &Ops) -> Result<(), String> {
     let mut body = std::mem::take(&mut function.body);
-    rewrite_block(&mut body, function, ops);
+    rewrite_block(&mut body, function, ops)?;
     function.body = body;
+    Ok(())
 }
 
 /// Delete the invented functions from backend output and request the extension
@@ -255,28 +256,33 @@ fn find_type(module: &naga::Module, pred: impl Fn(&TypeInner) -> bool) -> Option
         .find_map(|(handle, ty)| pred(&ty.inner).then_some(handle))
 }
 
-fn rewrite_block(block: &mut Block, function: &mut Function, ops: &Ops) {
+fn rewrite_block(block: &mut Block, function: &mut Function, ops: &Ops) -> Result<(), String> {
     let old = std::mem::take(block);
     let mut rebuilt = Block::new();
     for (stmt, span) in old.span_into_iter() {
-        for stmt in rewrite_stmt(stmt, function, ops) {
+        for stmt in rewrite_stmt(stmt, function, ops)? {
             rebuilt.push(stmt, span);
         }
     }
     *block = rebuilt;
+    Ok(())
 }
 
-fn rewrite_stmt(stmt: Statement, function: &mut Function, ops: &Ops) -> Vec<Statement> {
-    match stmt {
+fn rewrite_stmt(
+    stmt: Statement,
+    function: &mut Function,
+    ops: &Ops,
+) -> Result<Vec<Statement>, String> {
+    Ok(match stmt {
         Statement::Emit(range) => rewrite_emit(range, function, ops),
-        Statement::RayQuery { query, fun } => vec![rewrite_ray(query, fun, function, ops)],
+        Statement::RayQuery { query, fun } => vec![rewrite_ray(query, fun, function, ops)?],
         Statement::If {
             condition,
             mut accept,
             mut reject,
         } => {
-            rewrite_block(&mut accept, function, ops);
-            rewrite_block(&mut reject, function, ops);
+            rewrite_block(&mut accept, function, ops)?;
+            rewrite_block(&mut reject, function, ops)?;
             vec![Statement::If {
                 condition,
                 accept,
@@ -288,8 +294,8 @@ fn rewrite_stmt(stmt: Statement, function: &mut Function, ops: &Ops) -> Vec<Stat
             mut continuing,
             break_if,
         } => {
-            rewrite_block(&mut body, function, ops);
-            rewrite_block(&mut continuing, function, ops);
+            rewrite_block(&mut body, function, ops)?;
+            rewrite_block(&mut continuing, function, ops)?;
             vec![Statement::Loop {
                 body,
                 continuing,
@@ -301,16 +307,16 @@ fn rewrite_stmt(stmt: Statement, function: &mut Function, ops: &Ops) -> Vec<Stat
             mut cases,
         } => {
             for case in &mut cases {
-                rewrite_block(&mut case.body, function, ops);
+                rewrite_block(&mut case.body, function, ops)?;
             }
             vec![Statement::Switch { selector, cases }]
         }
         Statement::Block(mut inner) => {
-            rewrite_block(&mut inner, function, ops);
+            rewrite_block(&mut inner, function, ops)?;
             vec![Statement::Block(inner)]
         }
         other => vec![other],
-    }
+    })
 }
 
 /// An intersection read is an expression the backend cannot print. Name it
@@ -367,7 +373,12 @@ fn rewrite_ray(
     fun: naga::RayQueryFunction,
     function: &mut Function,
     ops: &Ops,
-) -> Statement {
+) -> Result<Statement, String> {
+    // Git revisions can add operations absent from the registry's Naga. The
+    // frontend only emits the known subset; printing someone else's module
+    // must report an unsupported operation rather than prevent this crate
+    // from building or quietly discard it.
+    #[allow(unreachable_patterns)]
     let (fun_handle, arguments, result) = match fun {
         naga::RayQueryFunction::Initialize {
             acceleration_structure,
@@ -386,12 +397,17 @@ fn rewrite_ray(
         }
         naga::RayQueryFunction::ConfirmIntersection => (ops.confirm, vec![query], None),
         naga::RayQueryFunction::Terminate => (ops.terminate, vec![query], None),
+        other => {
+            return Err(format!(
+                "unsupported ray-query operation in WGSL output: {other:?}"
+            ))
+        }
     };
-    Statement::Call {
+    Ok(Statement::Call {
         function: fun_handle,
         arguments,
         result,
-    }
+    })
 }
 
 /// Remove each `struct <name> { ... }` the backend emitted for a predeclared type.

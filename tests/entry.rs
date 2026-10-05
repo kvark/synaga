@@ -295,7 +295,7 @@ fn any_other_result_is_a_struct_of_bound_fields() {
 
 #[test]
 fn interpolate_says_how_a_location_varies() {
-    let wgsl = roundtrip(
+    let module = synaga::parse_str(
         r#"
         #[entry_point(vertex)]
         fn vs() -> Out { Out { pos: Vec4::ZERO, flat: 1.0, centroid: 2.0 } }
@@ -306,7 +306,15 @@ fn interpolate_says_how_a_location_varies() {
             #[location(1)] #[interpolate(linear, centroid)] centroid: f32,
         }
         "#,
-    );
+    )
+    .expect("parse interpolation");
+    // Newer Naga revisions gate linear interpolation separately because
+    // WebGL cannot represent it. Older revisions have no such capability.
+    let caps = synaga::naga::valid::Capabilities::from_name("LINEAR_INTERPOLATION")
+        .unwrap_or_else(synaga::naga::valid::Capabilities::empty);
+    let info = synaga::validate_with(&module, synaga::naga::valid::ValidationFlags::all(), caps)
+        .expect("validate interpolation");
+    let wgsl = synaga::to_wgsl(&module, &info).expect("print interpolation");
     // WGSL's own spelling: the mode and the sampling, as `interpolate` takes
     // them. Naga prints a float varying as `@interpolate(...)`.
     assert!(wgsl.contains("@interpolate(flat, first)"), "{wgsl}");
