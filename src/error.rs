@@ -202,6 +202,10 @@ pub enum Error {
     MissingFlat(String),
     #[error("unsupported `cfg` predicate `{0}`; `all`, `any`, and a one-armed `not` over name or `name = \"value\"` predicates are understood")]
     UnsupportedCfg(String),
+    #[error("Cargo does not tell a build script whether `cfg({0})` holds; `PROFILE` cannot distinguish an ordinary build from its test harness. Use a Cargo feature, or pass an explicit choice through `Shaders::cfg` and `Cfg::with`/`Cfg::without`")]
+    UnavailableCfg(String),
+    #[error("`#[cfg_attr]` is not supported: it can change an entry point, a binding or a shared layout, so ignoring it would compile a different shader. Write separate items with plain `#[cfg]` attributes instead")]
+    CfgAttr,
     #[error("a shader's sources are read one at a time, so `mod {{ .. }}` holds nothing of the shader: an `#[entry_point]` inside one would be a shader `rustc` checks and the build never compiles, with nothing to say so. Move {0} into a file of its own and reach it with `use super::..`")]
     InlineModule(String),
     #[error("`mod {0};` names a file the transpiler does not read: every source is a module named after its own file, and shaders reach each other with `use super::..`. Write what it holds in `{0}.rs` itself")]

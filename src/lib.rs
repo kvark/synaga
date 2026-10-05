@@ -90,6 +90,7 @@ pub(crate) fn parse_shared(
             index,
             error: Error::from(e),
         })?;
+        crate::cfg::reject_cfg_attr(&file).map_err(|error| SourceError { index, error })?;
         files.push((source.name.map(str::to_string), file));
     }
     let mut ctx = Context::new(cfg.clone(), bindings);

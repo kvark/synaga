@@ -389,10 +389,7 @@ impl Shaders {
     /// `emit` is what a build script wants; this is for testing the same path
     /// without one.
     pub fn emit_to(&self, out_dir: &Path) -> Result<Vec<Shader>, BuildError> {
-        let cfg = self
-            .cfg
-            .clone()
-            .unwrap_or_else(Cfg::from_cargo_env_agreeing_with_rustc);
+        let cfg = self.cfg.clone().unwrap_or_else(Cfg::from_cargo_env);
         self.declare_rebuild_triggers();
 
         let mut errors = Errors::default();
@@ -557,9 +554,6 @@ impl Shaders {
                 }
             }
         }
-        // `#[cfg(test)]` is never in `CARGO_CFG_*`: Cargo tells a build script
-        // nothing about the profile's test run. Below.
-        println!("cargo::rerun-if-env-changed=PROFILE");
         // The file that lists the shader modules is read for `check_layout!`,
         // and one beside the directory is not under it.
         if let Some(file) = self.module_file() {
@@ -647,6 +641,13 @@ impl Shaders {
                     continue;
                 }
             };
+            if let Err(error) = crate::cfg::reject_cfg_attr(&syntax) {
+                errors.push(BuildError::new(
+                    Some(path),
+                    BuildErrorKind::Transpile(error),
+                ));
+                continue;
+            }
             let stem = path
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())

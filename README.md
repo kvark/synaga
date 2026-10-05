@@ -689,9 +689,13 @@ exists to prevent.
   type into the call, so the call says it: `CoopMat8x8::<f32, A>::load(..)`, or
   `Lhs::load(..)` after `type Lhs = CoopMat8x8<f32, A>;`.
 
-`#[cfg(...)]` and `cfg!(...)` hold or not as they do for `rustc`, including
-`#[cfg(test)]`, which Cargo does not pass to a build script and which is
-recovered from the profile it does.
+`#[cfg(...)]` and `cfg!(...)` follow the `CARGO_CFG_*` values Cargo passes to
+the build script. Cargo does not pass `test`, `doctest` or `miri`, and a debug
+profile cannot distinguish `cargo build` from `cargo test`. Those predicates
+are refused unless the caller supplies an explicit `Shaders::cfg` choice.
+Use a Cargo feature when the host and shader must agree in both builds.
+`#[cfg_attr]` is refused, since ignoring a conditional entry point or layout
+attribute would compile a different shader; use separate items with `#[cfg]`.
 
 ### Typing
 

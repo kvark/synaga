@@ -238,7 +238,7 @@ fn cfg_follows_the_build() {
 }
 
 #[test]
-fn cfg_test_agrees_with_rustc() {
+fn cfg_test_needs_an_explicit_choice() {
     let dir = scratch("cfg_test");
     write(
         &dir,
@@ -272,12 +272,74 @@ fn cfg_test_agrees_with_rustc() {
             .expect("which");
         value
     };
-    // Cargo tells a build script nothing about a test run: `cfg(test)` is set by
-    // rustc afterwards and appears in no `CARGO_CFG_*`. Left out, `rustc` would
-    // keep the `#[cfg(test)]` arm and the transpiler would compile the other
-    // one, and the two would disagree about the shader.
+    // A build script's output is shared by the library and its test harness,
+    // so it cannot infer which Rust branch that consumer is compiling.
+    let err = Shaders::new()
+        .dir(dir.join("shaders"))
+        .emit_to(&dir.join("out"))
+        .expect_err("Cargo cannot decide cfg(test)");
+    let msg = reported(err);
+    assert!(
+        msg.contains("cfg(test)") && msg.contains("PROFILE"),
+        "{msg}"
+    );
     assert_eq!(which(synaga::Cfg::new()), 0.0);
     assert_eq!(which(synaga::Cfg::new().with("test")), 1.0);
+    assert_eq!(which(synaga::Cfg::from_cargo_env().without("test")), 0.0);
+    assert_eq!(which(synaga::Cfg::from_cargo_env().with("test")), 1.0);
+}
+
+#[test]
+fn cfg_macros_cannot_guess_rustc_only_flags() {
+    for predicate in ["test", "doctest", "miri"] {
+        let dir = scratch(&format!("cfg_macro_{predicate}"));
+        write(
+            &dir,
+            "branch.rs",
+            &format!(
+                "#[entry_point(fragment)] fn fs() -> Vec4 {{\n\
+                      Vec4::splat(if cfg!({predicate}) {{ 1.0 }} else {{ 0.0 }}) }}"
+            ),
+        );
+        let err = Shaders::new()
+            .dir(dir.join("shaders"))
+            .emit_to(&dir.join("out"))
+            .expect_err("Cargo cannot decide this predicate");
+        let msg = reported(err);
+        assert!(msg.contains(&format!("cfg({predicate})")), "{msg}");
+    }
+}
+
+#[test]
+fn a_conditional_entry_point_cannot_disappear_from_the_build() {
+    let dir = scratch("cfg_attr_entry_point");
+    write(
+        &dir,
+        "conditional.rs",
+        "#[cfg_attr(debug_assertions, entry_point(fragment))]\n\
+         fn fs() -> Vec4 { Vec4::splat(1.0) }",
+    );
+    let err = Shaders::new()
+        .dir(dir.join("shaders"))
+        .cfg(synaga::Cfg::new().with("debug_assertions"))
+        .emit_to(&dir.join("out"))
+        .expect_err("a conditional entry point must not produce an empty shader tree");
+    let msg = reported(err);
+    assert!(
+        msg.contains("conditional.rs:1:1") && msg.contains("cfg_attr"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn conditional_layout_and_binding_attributes_are_rejected_by_the_frontend() {
+    for source in [
+        "#[cfg_attr(debug_assertions, repr(C))] struct P { x: f32 }",
+        "struct P { #[cfg_attr(debug_assertions, location(0))] x: f32 }",
+    ] {
+        let err = synaga::parse_str(source).expect_err("cannot ignore a conditional attribute");
+        assert!(err.to_string().contains("cfg_attr"), "{err}");
+    }
 }
 
 #[test]

@@ -17,23 +17,45 @@ use crate::Error;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cfg {
     set: HashSet<(String, Option<String>)>,
+    /// Predicates Cargo does not tell a build script about. Treating one as
+    /// false would silently pick a different shader from the Rust source.
+    unavailable: HashSet<String>,
 }
 
-/// The `cfg` predicates that are always set or always clear, whatever Cargo
-/// said.
-///
-/// `CARGO_CFG_*` covers features, target and `debug_assertions`, but not the
-/// flags Cargo only tells `rustc`: `test`, `doctest` and `miri` are decided
-/// after the build script runs, and no `CARGO_CFG_*` says so. A shader written
-/// `#[cfg(test)]` would be compiled by `rustc` under `cargo test` and dropped
-/// here, which is the gap this closes.
-///
-/// `PROFILE` is the one signal Cargo does give a build script about it, since
-/// it is passed as an environment variable. `test` and `debug_assertions` hold
-/// together in practice — `cargo test` builds the test profile in debug mode —
-/// so a `PROFILE` of `debug` is taken to mean the crate is being tested, and
-/// `test` follows `debug_assertions`.
-const TEST_PROFILES: [&str; 1] = ["debug"];
+/// These may differ between the normal library and its test harness, which
+/// share a build script's output. `PROFILE=debug` holds for both `cargo build`
+/// and `cargo test`, and cannot decide them.
+const RUSTC_ONLY: [&str; 3] = ["test", "doctest", "miri"];
+
+/// `cfg_attr` can introduce an entry point, change a field's binding, or alter
+/// a shared layout. Ignoring it would accept different Rust and GPU programs.
+/// Check before even looking for entry points, including in helper-only trees.
+pub(crate) fn reject_cfg_attr(file: &syn::File) -> Result<(), Error> {
+    use syn::visit::Visit;
+
+    #[derive(Default)]
+    struct ConditionalAttribute(Option<proc_macro2::Span>);
+    impl<'ast> Visit<'ast> for ConditionalAttribute {
+        fn visit_attribute(&mut self, attr: &'ast syn::Attribute) {
+            if self.0.is_none() && attr.path().is_ident("cfg_attr") {
+                self.0 = Some(attr.pound_token.span);
+            }
+        }
+    }
+    let mut visitor = ConditionalAttribute::default();
+    visitor.visit_file(file);
+    match visitor.0 {
+        Some(span) => {
+            let at = span.start();
+            Err(Error::Pos {
+                line: at.line,
+                column: at.column + 1,
+                source: Box::new(Error::CfgAttr),
+            })
+        }
+        None => Ok(()),
+    }
+}
 
 impl Cfg {
     /// Nothing holds.
@@ -41,23 +63,22 @@ impl Cfg {
         Self::default()
     }
 
-    /// What Cargo says holds, plus the flags Cargo does not pass on but that
-    /// `rustc` sets anyway.
+    /// What Cargo says holds. Kept as an alias of [`Cfg::from_cargo_env`].
     ///
-    /// See [`Cfg::from_cargo_env`] for the environment; this is that plus
-    /// `#[cfg(test)]`, which a shader written for both the GPU and the CPU
-    /// needs.
+    /// Earlier versions guessed `test` from `PROFILE=debug`, which is also
+    /// the profile of an ordinary build. Rustc-only predicates now require an
+    /// explicit choice, as described in [`Cfg::from_cargo_env`].
     pub fn from_cargo_env_agreeing_with_rustc() -> Self {
-        let mut cfg = Self::from_cargo_env();
-        if std::env::var("PROFILE").is_ok_and(|p| TEST_PROFILES.contains(&p.as_str())) {
-            cfg.set.insert(("test".into(), None));
-        }
-        cfg
+        Self::from_cargo_env()
     }
 
     /// What Cargo says holds for the crate being built: `debug_assertions` in a
     /// debug build, `feature = "..."` for each enabled feature, `target_os` and
     /// the rest. Only meaningful inside a build script.
+    ///
+    /// Cargo does not pass `test`, `doctest` or `miri`. Evaluating those is an
+    /// error unless the caller chooses with [`Cfg::with`] or [`Cfg::without`].
+    /// Prefer a Cargo feature when the shader and host must share the choice.
     pub fn from_cargo_env() -> Self {
         let mut cfg = Self::new();
         for (key, value) in std::env::vars() {
@@ -75,12 +96,26 @@ impl Cfg {
                 }
             }
         }
+        cfg.unavailable.extend(
+            RUSTC_ONLY
+                .iter()
+                .filter(|&&name| !cfg.set.contains(&(name.into(), None)))
+                .map(|&name| name.into()),
+        );
         cfg
     }
 
     /// Make `name` hold, as `--cfg name` would.
     pub fn with(mut self, name: &str) -> Self {
+        self.unavailable.remove(name);
         self.set.insert((name.to_string(), None));
+        self
+    }
+
+    /// Make a bare predicate false, including one Cargo cannot decide.
+    pub fn without(mut self, name: &str) -> Self {
+        self.unavailable.remove(name);
+        self.set.remove(&(name.to_string(), None));
         self
     }
 
@@ -96,6 +131,9 @@ impl Cfg {
         match meta {
             syn::Meta::Path(path) => {
                 let name = path.get_ident().ok_or_else(unsupported)?.to_string();
+                if self.unavailable.contains(&name) {
+                    return Err(Error::UnavailableCfg(name));
+                }
                 Ok(self.set.contains(&(name, None)))
             }
             syn::Meta::NameValue(pair) => {
